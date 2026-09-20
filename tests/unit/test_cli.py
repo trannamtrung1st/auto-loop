@@ -30,7 +30,7 @@ def test_init_accepts_path_argument(tmp_path: Path):
 
 def test_doctor_accepts_path_argument(tmp_path: Path):
     result = runner.invoke(app, ["doctor", str(tmp_path)])
-    assert result.exit_code == 18
+    assert result.exit_code == 10
 
 
 def test_run_accepts_path_and_flags(tmp_path: Path):

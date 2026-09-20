@@ -9,6 +9,7 @@ import typer
 
 from auto_loop import __version__
 from auto_loop.exits import ExitCode
+from auto_loop.doctor import run_doctor
 from auto_loop.init_cmd import InitError, run_init
 from auto_loop.paths import resolve_repository_path
 
@@ -75,11 +76,15 @@ def init_cmd(
 @app.command("doctor")
 def doctor_cmd(
     path: PathArgument = None,
+    verbose: Annotated[bool, typer.Option("--verbose", help="Show passing checks.")] = False,
 ) -> None:
     """Validate workspace, Git, provider, and configuration."""
-    _resolve_path(path)
-    typer.echo("doctor: not yet implemented", err=True)
-    raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR))
+    repo = _resolve_path(path)
+    report = run_doctor(repo, verbose=verbose)
+    typer.echo(report.render(verbose=verbose))
+    if not report.ok:
+        raise typer.Exit(code=int(ExitCode.CONFIG_ERROR))
+    raise typer.Exit(code=int(ExitCode.COMPLETE))
 
 
 @app.command("run")
