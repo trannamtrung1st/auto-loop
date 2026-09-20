@@ -15,6 +15,14 @@ class TurnContext:
     head_commit: str
     product_clean: bool
     interrupted: bool = False
+    resource_manifest: str = ""
+
+
+def _append_manifest(body: str, manifest: str) -> str:
+    manifest = manifest.strip()
+    if not manifest:
+        return body
+    return f"{body}\n\n{manifest}"
 
 
 def _format_review_path(path: str | None) -> str:
@@ -50,7 +58,7 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
             ]
         )
     lines.append("End with one valid AUTO_LOOP_RESULT.")
-    return "\n".join(lines)
+    return _append_manifest("\n".join(lines), ctx.resource_manifest)
 
 
 def build_reviewer_prompt(
@@ -59,7 +67,7 @@ def build_reviewer_prompt(
     review: ActiveReview,
 ) -> str:
     if review.scope == "final":
-        return "\n".join(
+        body = "\n".join(
             [
                 "Perform a whole-task final review.",
                 "",
@@ -73,6 +81,7 @@ def build_reviewer_prompt(
                 "End with one valid AUTO_LOOP_RESULT.",
             ]
         )
+        return _append_manifest(body, ctx.resource_manifest)
 
     lines = [
         "Continue your reviewer role.",
@@ -102,4 +111,4 @@ def build_reviewer_prompt(
             "End with one valid AUTO_LOOP_RESULT.",
         ]
     )
-    return "\n".join(lines)
+    return _append_manifest("\n".join(lines), ctx.resource_manifest)
