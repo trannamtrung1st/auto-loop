@@ -12,6 +12,7 @@ from auto_loop.config import AutoLoopConfig, ConfigurationError, load_config
 from auto_loop.git import is_git_repository
 from auto_loop.paths import auto_loop_root
 from auto_loop.product_state import is_product_tree_clean
+from auto_loop.instructions import validate_custom_instruction_files
 from auto_loop.lifecycle import session_consistency_errors
 from auto_loop.providers.cursor import resolve_cursor_binary
 from auto_loop.runtime import RuntimeStateError, load_lifecycle_state
@@ -97,6 +98,15 @@ def _check_role_and_task_files(repo: Path, config: AutoLoopConfig, report: Docto
             report.add(f"file:{label}", Severity.OK, f"{rel} is readable")
         else:
             report.add(f"file:{label}", Severity.ERROR, f"Missing or unreadable {rel}")
+
+
+def _check_instruction_composition(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
+    errors = validate_custom_instruction_files(repo, config)
+    if errors:
+        for message in errors:
+            report.add("instructions:composition", Severity.ERROR, message)
+    else:
+        report.add("instructions:composition", Severity.OK, "Instruction composition paths are valid")
 
 
 def _check_instruction_templates(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
@@ -237,6 +247,7 @@ def run_doctor(repo: Path, *, verbose: bool = False) -> DoctorReport:
         return report
     _check_role_and_task_files(repo, config, report)
     _check_instruction_templates(repo, config, report)
+    _check_instruction_composition(repo, config, report)
     _check_git(repo, config, report)
     _check_runtime_writable(repo, report)
     _check_lifecycle_sessions(repo, report)
