@@ -1,0 +1,2 @@
+# Local-only: env, secrets, credentials, machine-specific data (never commit)
+local/
