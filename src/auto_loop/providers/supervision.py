@@ -1,0 +1,214 @@
+"""Subprocess supervision, timeouts, and provider retries."""
+
+from __future__ import annotations
+
+import subprocess
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import TypeVar
+
+from auto_loop.exits import ExitCode
+from auto_loop.process import terminate_process_tree
+from auto_loop.providers.cursor import CursorStreamParseResult, parse_cursor_stream
+
+
+class ProviderFailureKind(StrEnum):
+    NONZERO_EXIT = "nonzero_exit"
+    IDLE_TIMEOUT = "idle_timeout"
+    WALL_TIMEOUT = "wall_timeout"
+    INTERRUPTED = "interrupted"
+    MISSING_RESULT = "missing_result"
+    TRUNCATED = "truncated"
+
+
+class ProviderError(Exception):
+    """Provider infrastructure failure after retries are exhausted."""
+
+    exit_code = ExitCode.PROVIDER_ERROR
+
+
+@dataclass
+class SupervisionOutcome:
+    lines: list[str] = field(default_factory=list)
+    exit_code: int | None = None
+    failure: ProviderFailureKind | None = None
+    timed_out: bool = False
+    idle_timed_out: bool = False
+    interrupted: bool = False
+    parsed: CursorStreamParseResult | None = None
+
+
+@dataclass
+class RetryOutcome:
+    attempts: int
+    last: SupervisionOutcome
+    session_id: str
+
+
+Clock = Callable[[], float]
+LineIterator = Callable[[], str | None]
+
+
+def supervise_stream(
+    next_line: LineIterator,
+    *,
+    clock: Clock = time.monotonic,
+    wall_timeout_seconds: float,
+    idle_timeout_seconds: float,
+) -> SupervisionOutcome:
+    """Read NDJSON lines until EOF or a timeout; refresh idle clock on each line."""
+    outcome = SupervisionOutcome()
+    started = clock()
+    last_activity = started
+
+    while True:
+        now = clock()
+        if now - started > wall_timeout_seconds:
+            outcome.failure = ProviderFailureKind.WALL_TIMEOUT
+            outcome.timed_out = True
+            return outcome
+        if now - last_activity > idle_timeout_seconds:
+            outcome.failure = ProviderFailureKind.IDLE_TIMEOUT
+            outcome.idle_timed_out = True
+            return outcome
+
+        line = next_line()
+        if line is None:
+            return outcome
+        if line == "":
+            continue
+        outcome.lines.append(line.rstrip("\n"))
+        last_activity = clock()
+
+
+def classify_stream_outcome(
+    outcome: SupervisionOutcome,
+    *,
+    expected_session_id: str | None = None,
+) -> SupervisionOutcome:
+    if outcome.failure is not None:
+        return outcome
+    try:
+        parsed = parse_cursor_stream(outcome.lines, expected_session_id=expected_session_id)
+    except Exception:
+        outcome.failure = ProviderFailureKind.TRUNCATED
+        return outcome
+    outcome.parsed = parsed
+    if parsed.diagnostics or not parsed.final_text:
+        outcome.failure = ProviderFailureKind.MISSING_RESULT
+    return outcome
+
+
+def run_subprocess_streaming(
+    argv: list[str],
+    *,
+    wall_timeout_seconds: float,
+    idle_timeout_seconds: float,
+    graceful_seconds: float = 5.0,
+    clock: Clock = time.monotonic,
+    expected_session_id: str | None = None,
+) -> SupervisionOutcome:
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None
+
+    def _read() -> str | None:
+        line = proc.stdout.readline()
+        if line:
+            return line
+        if proc.poll() is not None:
+            return None
+        return ""
+
+    try:
+        outcome = supervise_stream(
+            _read,
+            clock=clock,
+            wall_timeout_seconds=wall_timeout_seconds,
+            idle_timeout_seconds=idle_timeout_seconds,
+        )
+        if outcome.failure in {
+            ProviderFailureKind.IDLE_TIMEOUT,
+            ProviderFailureKind.WALL_TIMEOUT,
+        }:
+            terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
+            proc.wait(timeout=graceful_seconds)
+            return classify_stream_outcome(outcome, expected_session_id=expected_session_id)
+
+        outcome.exit_code = proc.wait(timeout=graceful_seconds)
+        if outcome.exit_code != 0 and outcome.failure is None:
+            outcome.failure = ProviderFailureKind.NONZERO_EXIT
+        return classify_stream_outcome(outcome, expected_session_id=expected_session_id)
+    except KeyboardInterrupt:
+        outcome = SupervisionOutcome(interrupted=True, failure=ProviderFailureKind.INTERRUPTED)
+        terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
+        raise
+    finally:
+        if proc.poll() is None:
+            terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
+
+
+def is_retryable_failure(outcome: SupervisionOutcome) -> bool:
+    return outcome.failure in {
+        ProviderFailureKind.NONZERO_EXIT,
+        ProviderFailureKind.IDLE_TIMEOUT,
+        ProviderFailureKind.WALL_TIMEOUT,
+        ProviderFailureKind.MISSING_RESULT,
+        ProviderFailureKind.TRUNCATED,
+    }
+
+
+T = TypeVar("T")
+
+
+def run_with_provider_retries(
+    attempt: Callable[[int], SupervisionOutcome],
+    *,
+    provider_retries: int,
+    session_id: str,
+) -> RetryOutcome:
+    """Retry infrastructure failures without rotating the persistent session ID."""
+    max_attempts = 1 + max(provider_retries, 0)
+    last = SupervisionOutcome()
+    for attempt_index in range(1, max_attempts + 1):
+        last = attempt(attempt_index)
+        if last.failure is None:
+            return RetryOutcome(attempts=attempt_index, last=last, session_id=session_id)
+        if not is_retryable_failure(last) or attempt_index >= max_attempts:
+            break
+    raise ProviderError(
+        f"Provider failed after {max_attempts} attempt(s) for session {session_id}: "
+        f"{last.failure}"
+    )
+
+
+def iter_lines_from_list(lines: list[str]) -> LineIterator:
+    index = 0
+
+    def _next() -> str | None:
+        nonlocal index
+        if index >= len(lines):
+            return None
+        line = lines[index]
+        index += 1
+        return line + "\n"
+
+    return _next
+
+
+def fake_clock(start: float = 0.0, step: float = 0.0) -> tuple[Clock, Callable[[float], None]]:
+    state = {"now": start}
+
+    def now() -> float:
+        return state["now"]
+
+    def advance(seconds: float) -> None:
+        state["now"] += seconds
+
+    return now, advance
