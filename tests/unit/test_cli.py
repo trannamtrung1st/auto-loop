@@ -44,7 +44,7 @@ def test_run_accepts_path_and_flags(tmp_path: Path):
             "--verbose",
         ],
     )
-    assert result.exit_code == 18
+    assert result.exit_code == 10
 
 
 def test_resources_install_subgroup(tmp_path: Path):

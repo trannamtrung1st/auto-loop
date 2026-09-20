@@ -8,8 +8,14 @@ from typing import Annotated, Optional
 import typer
 
 from auto_loop import __version__
+from auto_loop.config import ConfigurationError, load_config_from_repo
 from auto_loop.exits import ExitCode
+from auto_loop.git import GitProtocolError
 from auto_loop.doctor import run_doctor
+from auto_loop.loop import run_lifecycle
+from auto_loop.providers.scripted import ScriptedProvider
+from auto_loop.run_options import build_run_options
+from auto_loop.run_prerequisites import RunPreconditionError
 from auto_loop.init_cmd import InitError, run_init
 from auto_loop.paths import resolve_repository_path
 
@@ -99,9 +105,29 @@ def run_cmd(
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
 ) -> None:
     """Start or continue the implementation/review lifecycle."""
-    _resolve_path(path)
-    typer.echo("run: not yet implemented", err=True)
-    raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR))
+    repo = _resolve_path(path)
+    try:
+        config = load_config_from_repo(repo)
+        options = build_run_options(
+            config,
+            model=model,
+            worker_model=worker_model,
+            reviewer_model=reviewer_model,
+            max_turns=max_turns,
+            max_runtime_minutes=max_runtime_minutes,
+            verbose=verbose,
+            quiet=quiet,
+        )
+        outcome = run_lifecycle(repo, options, ScriptedProvider())
+    except (RunPreconditionError, ConfigurationError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(exc.exit_code)) from exc
+    except GitProtocolError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(ExitCode.GIT_PROTOCOL_ERROR)) from exc
+    if not quiet:
+        typer.echo(f"Lifecycle finished with exit code {int(outcome.exit_code)}")
+    raise typer.Exit(code=int(outcome.exit_code))
 
 
 @app.command("status")
