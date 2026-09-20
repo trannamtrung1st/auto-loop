@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "auto-loop"
+version = "0.1.0"
+description = "Two-role autonomous implementation/review loop for Cursor"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0,<3",
+    "pyyaml>=6.0,<7",
+    "rich>=13.0,<14",
+    "typer>=0.12,<1",
+    "psutil>=6.0,<8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-cov>=5.0,<6",
+]
+
+[project.scripts]
+auto-loop = "auto_loop.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/auto_loop"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/auto_loop", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

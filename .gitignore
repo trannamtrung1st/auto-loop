@@ -1,2 +1,10 @@
 # Local-only: env, secrets, credentials, machine-specific data (never commit)
 local/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
