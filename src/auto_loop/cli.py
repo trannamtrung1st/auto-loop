@@ -18,6 +18,7 @@ from auto_loop.run_options import build_run_options
 from auto_loop.run_prerequisites import RunPreconditionError
 from auto_loop.init_cmd import InitError, run_init
 from auto_loop.paths import resolve_repository_path
+from auto_loop.resources_install import ResourcesInstallError, run_resources_install
 
 app = typer.Typer(
     name="auto-loop",
@@ -174,9 +175,19 @@ def resources_install_cmd(
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
     """Install optional AGENTS.md and .agents/skills resources."""
-    _resolve_path(path)
-    typer.echo("resources install: not yet implemented", err=True)
-    raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR))
+    repo = _resolve_path(path)
+    try:
+        result = run_resources_install(
+            repo,
+            profile=profile,
+            no_agents_md=no_agents_md,
+            dry_run=dry_run,
+        )
+    except ResourcesInstallError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(ExitCode.CONFIG_ERROR)) from exc
+    for line in result.lines():
+        typer.echo(line)
 
 
 def main() -> None:

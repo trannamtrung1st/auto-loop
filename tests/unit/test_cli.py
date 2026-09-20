@@ -49,7 +49,25 @@ def test_run_accepts_path_and_flags(tmp_path: Path):
 
 def test_resources_install_subgroup(tmp_path: Path):
     result = runner.invoke(app, ["resources", "install", str(tmp_path), "--dry-run"])
-    assert result.exit_code == 18
+    assert result.exit_code == 0
+    assert "CREATE AGENTS.md" in result.stdout
+    assert "CREATE .agents/skills/repo-discovery/SKILL.md" in result.stdout
+    assert "ui-validation" not in result.stdout
+
+
+def test_resources_install_honors_path_argument(tmp_path: Path, monkeypatch):
+    target = tmp_path / "repo"
+    target.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    result = runner.invoke(
+        app,
+        ["resources", "install", str(target), "--dry-run", "--no-agents-md"],
+    )
+    assert result.exit_code == 0
+    assert "SKIP AGENTS.md" in result.stdout
+    assert not (other / "AGENTS.md").exists()
 
 
 def test_invalid_repository_path_exits_config_error(tmp_path: Path):
