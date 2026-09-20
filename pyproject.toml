@@ -29,9 +29,6 @@ auto-loop = "auto_loop.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/auto_loop"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/auto_loop/templates" = "auto_loop/templates"
-
 [tool.hatch.build.targets.sdist]
 include = ["src/auto_loop", "README.md", "LICENSE"]
 
