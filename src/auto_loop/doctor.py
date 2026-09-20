@@ -12,7 +12,9 @@ from auto_loop.config import AutoLoopConfig, ConfigurationError, load_config
 from auto_loop.git import is_git_repository
 from auto_loop.paths import auto_loop_root
 from auto_loop.product_state import is_product_tree_clean
+from auto_loop.lifecycle import session_consistency_errors
 from auto_loop.providers.cursor import resolve_cursor_binary
+from auto_loop.runtime import RuntimeStateError, load_lifecycle_state
 
 DEFAULT_INSTRUCTION_PATHS = (
     ".auto-loop/instructions/shared.md",
@@ -211,6 +213,23 @@ def _check_cursor_cli(config: AutoLoopConfig, report: DoctorReport) -> None:
             )
 
 
+def _check_lifecycle_sessions(repo: Path, report: DoctorReport) -> None:
+    try:
+        state = load_lifecycle_state(repo)
+    except RuntimeStateError as exc:
+        report.add("lifecycle", Severity.ERROR, str(exc))
+        return
+    if state is None:
+        report.add("lifecycle", Severity.OK, "No active lifecycle state file")
+        return
+    errors = session_consistency_errors(state)
+    if errors:
+        for message in errors:
+            report.add("lifecycle", Severity.ERROR, message)
+    else:
+        report.add("lifecycle", Severity.OK, "Stored session metadata is consistent")
+
+
 def run_doctor(repo: Path, *, verbose: bool = False) -> DoctorReport:
     report = DoctorReport()
     config = _check_workspace_layout(repo, report)
@@ -220,5 +239,6 @@ def run_doctor(repo: Path, *, verbose: bool = False) -> DoctorReport:
     _check_instruction_templates(repo, config, report)
     _check_git(repo, config, report)
     _check_runtime_writable(repo, report)
+    _check_lifecycle_sessions(repo, report)
     _check_cursor_cli(config, report)
     return report
