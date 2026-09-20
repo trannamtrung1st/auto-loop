@@ -1,0 +1,13 @@
+version: 1
+
+shared:
+  resources: []
+  skills: []
+
+worker:
+  resources: []
+  skills: []
+
+reviewer:
+  resources: []
+  skills: []

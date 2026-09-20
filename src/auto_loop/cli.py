@@ -9,6 +9,7 @@ import typer
 
 from auto_loop import __version__
 from auto_loop.exits import ExitCode
+from auto_loop.init_cmd import InitError, run_init
 from auto_loop.paths import resolve_repository_path
 
 app = typer.Typer(
@@ -60,9 +61,15 @@ def init_cmd(
     minimal: Annotated[bool, typer.Option("--minimal", help="Create minimal control skeleton only.")] = False,
 ) -> None:
     """Create .auto-loop control workspace templates."""
-    _resolve_path(path)
-    typer.echo("init: not yet implemented", err=True)
-    raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR))
+    repo = _resolve_path(path)
+    try:
+        result = run_init(repo, force=force, minimal=minimal)
+    except InitError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(exc.exit_code)) from exc
+    for rel in result.created:
+        typer.echo(f"created {rel}")
+    raise typer.Exit(code=int(ExitCode.COMPLETE))
 
 
 @app.command("doctor")

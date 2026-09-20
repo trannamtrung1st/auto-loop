@@ -25,7 +25,7 @@ def test_version():
 
 def test_init_accepts_path_argument(tmp_path: Path):
     result = runner.invoke(app, ["init", str(tmp_path)])
-    assert result.exit_code == 18  # INTERNAL_ERROR stub
+    assert result.exit_code == 0
 
 
 def test_doctor_accepts_path_argument(tmp_path: Path):
