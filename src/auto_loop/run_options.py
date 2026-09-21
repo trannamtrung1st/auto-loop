@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from auto_loop.config import AutoLoopConfig
+from auto_loop.config import AutoLoopConfig, ConsoleLevel
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,7 @@ class RunOptions:
     max_runtime_minutes: int
     verbose: bool
     quiet: bool
+    console_level: ConsoleLevel = "normal"
 
 
 def build_run_options(
@@ -40,4 +41,9 @@ def build_run_options(
         ),
         verbose=verbose,
         quiet=quiet,
+        console_level=(
+            "quiet"
+            if quiet
+            else ("verbose" if verbose else config.logging.console)
+        ),
     )

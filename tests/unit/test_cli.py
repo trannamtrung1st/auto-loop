@@ -101,6 +101,34 @@ def test_resources_install_honors_path_argument(tmp_path: Path, monkeypatch):
     assert not (other / "AGENTS.md").exists()
 
 
+def test_status_reports_idle_workspace(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess = __import__("subprocess")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+    from auto_loop.init_cmd import run_init
+
+    run_init(repo, minimal=True)
+    result = runner.invoke(app, ["status", str(repo)])
+    assert result.exit_code == 0
+    assert "status: idle" in result.stdout or "status: running" in result.stdout
+
+
+def test_logs_cli_accepts_path_and_turn(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess = __import__("subprocess")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    from auto_loop.init_cmd import run_init
+
+    run_init(repo, minimal=True)
+    result = runner.invoke(app, ["logs", str(repo), "--turn", "1"])
+    assert result.exit_code == 0
+
+
 def test_invalid_repository_path_exits_config_error(tmp_path: Path):
     missing = tmp_path / "missing"
     result = runner.invoke(app, ["status", str(missing)])

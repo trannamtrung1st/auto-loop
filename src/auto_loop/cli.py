@@ -16,7 +16,9 @@ from auto_loop.locking import ConcurrentRunError
 from auto_loop.loop import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import build_run_options
+from auto_loop.logs_view import render_logs
 from auto_loop.run_prerequisites import RunPreconditionError
+from auto_loop.status_report import build_status_report
 from auto_loop.init_cmd import InitError, run_init
 from auto_loop.paths import resolve_repository_path
 from auto_loop.resources_install import ResourcesInstallError, run_resources_install
@@ -142,9 +144,13 @@ def status_cmd(
     path: PathArgument = None,
 ) -> None:
     """Show lifecycle health and progress."""
-    _resolve_path(path)
-    typer.echo("status: not yet implemented", err=True)
-    raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR))
+    repo = _resolve_path(path)
+    try:
+        typer.echo(build_status_report(repo))
+    except Exception as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR)) from exc
+    raise typer.Exit(code=int(ExitCode.COMPLETE))
 
 
 @app.command("logs")
@@ -155,9 +161,21 @@ def logs_cmd(
     raw: Annotated[bool, typer.Option("--raw")] = False,
 ) -> None:
     """View per-turn provider logs."""
-    _resolve_path(path)
-    typer.echo("logs: not yet implemented", err=True)
-    raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR))
+    repo = _resolve_path(path)
+    try:
+        output = render_logs(
+            repo,
+            turn=turn,
+            raw=raw,
+            follow=follow,
+            follow_seconds=0.25 if follow else 0.0,
+        )
+    except Exception as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR)) from exc
+    if output:
+        typer.echo(output)
+    raise typer.Exit(code=int(ExitCode.COMPLETE))
 
 
 @app.command("stop")

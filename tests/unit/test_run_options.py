@@ -27,3 +27,11 @@ def test_run_options_model_and_runtime_overrides():
     assert options.reviewer_model == "shared"
     assert options.max_runtime_minutes == 15
     assert options.verbose is True
+    assert options.console_level == "verbose"
+
+
+def test_run_options_quiet_overrides_config_console():
+    config = default_config()
+    config.logging.console = "verbose"
+    options = build_run_options(config, quiet=True)
+    assert options.console_level == "quiet"

@@ -45,7 +45,10 @@ from auto_loop.providers.base import AgentRequest
 from auto_loop.providers.cursor import build_cursor_command, parse_cursor_stream
 from auto_loop.review_store import next_review_sequence, review_artifact_path
 from auto_loop.reviews import render_review_markdown
+from auto_loop.console_output import RunConsole
+from auto_loop.events import append_event
 from auto_loop.run_options import RunOptions
+from auto_loop.turn_logs import TurnLogWriter, prune_run_history
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 from auto_loop.terminal_records import (
@@ -91,6 +94,12 @@ class LifecycleRunner:
         self._dirty_batch_attempts = 0
         self._terminal_exit: ExitCode | None = None
         self._terminal_message: str | None = None
+        console_level = (
+            "quiet"
+            if options.quiet
+            else ("verbose" if options.verbose else options.console_level)
+        )
+        self._console = RunConsole(console_level)
 
     def _load_or_create_state(self) -> LifecycleState:
         state = load_lifecycle_state(self.repo)
@@ -159,14 +168,37 @@ class LifecycleRunner:
         )
         os.environ["AUTO_LOOP_FAKE_ROLE"] = role
         self._persist_inflight(state, role)
+        if session.session_id:
+            self._console.session_resumed(role, session.session_id)
+        self._console.turn_started(state.turn, role)
+        turn_log = TurnLogWriter(
+            self.repo,
+            self.config,
+            state.lifecycle_id,
+            state.turn,
+            role,
+        )
         self.invoker.prepare(role)
         _code, lines = self.invoker.invoke(argv)
+        turn_log.write_stream_lines(lines)
+        turn_log.finalize()
         parsed = parse_cursor_stream(
             lines,
             expected_session_id=session.session_id,
         )
         if session.session_id is None:
             session.session_id = parsed.session_id
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "session_created",
+                    "actor": role,
+                    "session_id": parsed.session_id,
+                    "lifecycle_id": state.lifecycle_id,
+                },
+            )
+            self._console.session_created(role, parsed.session_id)
         return parsed.final_text
 
     def _assert_final_complete_valid(
@@ -204,6 +236,11 @@ class LifecycleRunner:
         result = parse_worker_result(final_text)
 
         if result.status == "blocked":
+            append_event(
+                self.repo,
+                self.config,
+                {"type": "worker_blocked", "turn": state.turn, "lifecycle_id": state.lifecycle_id},
+            )
             state.active_review = ActiveReview(
                 scope="batch",
                 target="blocked",
@@ -259,6 +296,18 @@ class LifecycleRunner:
             result.review.head_commit = normalized.range.head
 
         if result.review:
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "review_requested",
+                    "scope": result.review.scope,
+                    "target": result.review.target,
+                    "turn": state.turn,
+                    "lifecycle_id": state.lifecycle_id,
+                },
+            )
+            self._console.review_requested(result.review.scope, result.review.target)
             state.active_review = ActiveReview(
                 scope=result.review.scope,
                 target=result.review.target,
@@ -340,14 +389,45 @@ class LifecycleRunner:
             state.updated_at = utc_now()
             self._clear_inflight(state)
             save_lifecycle_state(self.repo, state)
+            append_event(
+                self.repo,
+                self.config,
+                {"type": "lifecycle_blocked", "lifecycle_id": state.lifecycle_id},
+            )
+            self._console.terminal("Lifecycle blocked by reviewer")
             self._terminal_exit = ExitCode.BLOCKED
             return
+
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "review_result",
+                "verdict": result.verdict,
+                "scope": result.scope,
+                "finding_count": len(result.findings),
+                "turn": state.turn,
+                "lifecycle_id": state.lifecycle_id,
+            },
+        )
+        self._console.review_result(result.verdict, result.scope, len(result.findings))
 
         if result.verdict == "pass" and result.scope == "plan":
             state.plan_approved = True
         if result.verdict == "pass" and result.scope == "batch":
-            state.last_approved_commit = head_commit(self.repo)
+            new_head = head_commit(self.repo)
+            state.last_approved_commit = new_head
             self._dirty_batch_attempts = 0
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "baseline_advanced",
+                    "head": new_head,
+                    "lifecycle_id": state.lifecycle_id,
+                },
+            )
+            self._console.baseline_advanced(new_head)
 
         if result.verdict == "complete" and result.scope == "final":
             self._assert_final_complete_valid(state, result)
@@ -374,6 +454,16 @@ class LifecycleRunner:
             state.updated_at = utc_now()
             self._clear_inflight(state)
             save_lifecycle_state(self.repo, state)
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "lifecycle_complete",
+                    "head": final_head,
+                    "lifecycle_id": state.lifecycle_id,
+                },
+            )
+            self._console.terminal("Lifecycle completed successfully")
             self._terminal_exit = ExitCode.COMPLETE
             return
 
@@ -386,8 +476,26 @@ class LifecycleRunner:
 
     def run(self) -> RunOutcome:
         state = self._load_or_create_state()
+        prune_run_history(self.repo, self.config, state.lifecycle_id)
+        append_event(
+            self.repo,
+            self.config,
+            {"type": "lifecycle_started", "lifecycle_id": state.lifecycle_id},
+        )
+        self._console.lifecycle_started(state.lifecycle_id)
         self._reconcile_stale_inflight(state)
         state = load_lifecycle_state(self.repo) or state
+        if state.inflight is not None:
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "inflight_resume",
+                    "actor": state.inflight.actor,
+                    "turn": state.inflight.turn,
+                    "lifecycle_id": state.lifecycle_id,
+                },
+            )
         turns = 0
         try:
             while turns < self.options.max_turns:
