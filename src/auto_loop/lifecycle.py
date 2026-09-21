@@ -418,16 +418,27 @@ def _configured_plan_file(repo: Path) -> str:
 
 
 def resolve_plan_review_path(repo: Path, stored_path: str) -> str:
-    """Map legacy migrated plan targets to the workspace's configured plan file."""
-    configured = _configured_plan_file(repo)
-    if stored_path in (LEGACY_V1_PLAN_TARGET_PATH, ".auto-loop/plan.md"):
-        return configured
+    """Map v1 migration sentinel plan targets to the workspace's configured plan file."""
+    if stored_path == LEGACY_V1_PLAN_TARGET_PATH:
+        return _configured_plan_file(repo)
     return stored_path
 
 
+def _legacy_plan_target_needs_enrichment(target: ActiveReviewTarget) -> bool:
+    return (
+        target.kind == "path"
+        and target.id == "plan"
+        and target.path == LEGACY_V1_PLAN_TARGET_PATH
+        and not target.fingerprint
+    )
+
+
 def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
-    """Repository-aware fixes after schema migration (e.g. plan path fingerprints)."""
-    from auto_loop.review_targets import fingerprint_path
+    """Repository-aware fixes for migration-incomplete active reviews only.
+
+    Ordinary v2 targets with a persisted fingerprint are never recomputed or retargeted.
+    """
+    from auto_loop.review_targets import fingerprint_path, resolve_review_path
 
     review = state.active_review
     if review is None:
@@ -435,28 +446,47 @@ def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
     updated_targets: list[ActiveReviewTarget] = []
     changed = False
     for target in review.targets:
-        if target.kind == "path" and target.id == "plan":
+        if target.kind == "path" and target.fingerprint:
+            updated_targets.append(target)
+            continue
+        if _legacy_plan_target_needs_enrichment(target):
             rel = resolve_plan_review_path(repo, target.path)
-            digest, exists = fingerprint_path(repo / rel)
-            if not exists:
+            try:
+                resolved = resolve_review_path(repo, rel)
+            except Exception:
                 updates: dict[str, Any] = {"active_review": None}
                 if state.next_session == "reviewer":
                     updates["next_session"] = "worker"
                 return state.model_copy(update=updates)
-            new_target = target.model_copy(
-                update={"path": rel, "fingerprint": digest, "exists": exists}
+            digest, exists = fingerprint_path(resolved)
+            if not exists:
+                updates = {"active_review": None}
+                if state.next_session == "reviewer":
+                    updates["next_session"] = "worker"
+                return state.model_copy(update=updates)
+            updated_targets.append(
+                target.model_copy(
+                    update={"path": rel, "fingerprint": digest, "exists": exists}
+                )
             )
-            if new_target != target:
-                changed = True
-            updated_targets.append(new_target)
+            changed = True
         elif target.kind == "path" and not target.fingerprint:
-            digest, exists = fingerprint_path(repo / target.path)
-            if not exists:
-                updates: dict[str, Any] = {"active_review": None}
+            try:
+                resolved = resolve_review_path(repo, target.path)
+            except Exception:
+                updates = {"active_review": None}
                 if state.next_session == "reviewer":
                     updates["next_session"] = "worker"
                 return state.model_copy(update=updates)
-            updated_targets.append(target.model_copy(update={"fingerprint": digest, "exists": exists}))
+            digest, exists = fingerprint_path(resolved)
+            if not exists:
+                updates = {"active_review": None}
+                if state.next_session == "reviewer":
+                    updates["next_session"] = "worker"
+                return state.model_copy(update=updates)
+            updated_targets.append(
+                target.model_copy(update={"fingerprint": digest, "exists": exists})
+            )
             changed = True
         else:
             updated_targets.append(target)
