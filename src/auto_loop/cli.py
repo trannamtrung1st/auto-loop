@@ -22,17 +22,13 @@ from auto_loop.status_report import build_status_report
 from auto_loop.stop_control import StopError, request_remote_stop
 from auto_loop.init_cmd import InitError, run_init
 from auto_loop.paths import resolve_repository_path
-from auto_loop.resources_install import ResourcesInstallError, run_resources_install
 
 app = typer.Typer(
     name="auto-loop",
-    help="Two-role autonomous implementation/review loop.",
+    help="Planner/worker/reviewer autonomous implementation/review loop.",
     no_args_is_help=True,
     add_completion=False,
 )
-
-resources_app = typer.Typer(help="Install optional shared AI-harness resources.")
-app.add_typer(resources_app, name="resources")
 
 PathArgument = Annotated[
     Optional[Path],
@@ -101,7 +97,8 @@ def doctor_cmd(
 @app.command("run")
 def run_cmd(
     path: PathArgument = None,
-    model: Annotated[Optional[str], typer.Option("--model", help="Override both role models.")] = None,
+    model: Annotated[Optional[str], typer.Option("--model", help="Override all role models.")] = None,
+    planner_model: Annotated[Optional[str], typer.Option("--planner-model")] = None,
     worker_model: Annotated[Optional[str], typer.Option("--worker-model")] = None,
     reviewer_model: Annotated[Optional[str], typer.Option("--reviewer-model")] = None,
     max_turns: Annotated[Optional[int], typer.Option("--max-turns", min=1)] = None,
@@ -116,6 +113,7 @@ def run_cmd(
         options = build_run_options(
             config,
             model=model,
+            planner_model=planner_model,
             worker_model=worker_model,
             reviewer_model=reviewer_model,
             max_turns=max_turns,
@@ -197,32 +195,6 @@ def stop_cmd(
         raise typer.Exit(code=int(exc.exit_code)) from exc
     typer.echo(message)
     raise typer.Exit(code=int(ExitCode.STOPPED))
-
-
-@resources_app.command("install")
-def resources_install_cmd(
-    path: PathArgument = None,
-    profile: Annotated[
-        str,
-        typer.Option("--profile", help="Resource profile: core or frontend."),
-    ] = "core",
-    no_agents_md: Annotated[bool, typer.Option("--no-agents-md")] = False,
-    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
-) -> None:
-    """Install optional AGENTS.md and .agents/skills resources."""
-    repo = _resolve_path(path)
-    try:
-        result = run_resources_install(
-            repo,
-            profile=profile,
-            no_agents_md=no_agents_md,
-            dry_run=dry_run,
-        )
-    except ResourcesInstallError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=int(ExitCode.CONFIG_ERROR)) from exc
-    for line in result.lines():
-        typer.echo(line)
 
 
 def main() -> None:

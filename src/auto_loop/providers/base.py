@@ -8,12 +8,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-Role = Literal["worker", "reviewer"]
+from auto_loop.models import Role, SessionSlot
+
 AgentMode = Literal["agent", "ask"]
 
 
 class AgentRequest(BaseModel):
     role: Role
+    session_purpose: SessionSlot
     workspace: Path
     prompt: str
     model: str

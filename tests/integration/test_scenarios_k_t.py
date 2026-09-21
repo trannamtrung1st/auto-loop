@@ -24,7 +24,6 @@ from tests.integration.scenario_harness import (
     reviewer_session_ids,
     run_opts,
     worker_invocation_count,
-    worker_session_ids,
 )
 
 
@@ -67,9 +66,7 @@ class ReviewerMutatesProductProvider(ScriptedProvider):
 
     def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
         if os.environ.get("AUTO_LOOP_FAKE_ROLE") == "reviewer":
-            self._reviewer_calls += 1
-            if self._reviewer_calls >= 2:
-                (self.repo / "reviewer_touch.txt").write_text("mutated\n", encoding="utf-8")
+            (self.repo / "reviewer_touch.txt").write_text("mutated\n", encoding="utf-8")
         return super().invoke(argv)
 
 
@@ -79,13 +76,13 @@ class WorkerMutatesTaskProvider(ScriptedProvider):
         self.repo = repo
 
     def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
-        if os.environ.get("AUTO_LOOP_FAKE_ROLE") == "worker":
+        if os.environ.get("AUTO_LOOP_FAKE_ROLE") in ("worker", "planner"):
             task = self.repo / ".auto-loop" / "task.md"
             task.write_text(task.read_text(encoding="utf-8") + "\nworker edit\n", encoding="utf-8")
         return super().invoke(argv)
 
 
-def test_scenario_K_persistent_worker_session(tmp_path: Path):
+def test_scenario_K_persistent_planner_session(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
@@ -93,16 +90,17 @@ def test_scenario_K_persistent_worker_session(tmp_path: Path):
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
     run_lifecycle(repo, run_opts(4), provider)
-    workers = [inv for inv in provider.engine.invocations if inv.role == "worker"]
-    assert len(workers) >= 2
-    session_id = provider.engine.sessions["worker"]
+    planners = [inv for inv in provider.engine.invocations if inv.role == "planner"]
+    assert len(planners) >= 2
+    session_id = provider.engine.sessions["planner"]
     assert session_id
-    assert all(inv.resume_session_id == session_id for inv in workers[1:])
+    assert all(inv.resume_session_id == session_id for inv in planners[1:])
     state = load_lifecycle_state(repo)
-    assert state.sessions["worker"].session_id == session_id
+    assert state.sessions["planner"].session_id == session_id
+    assert state.sessions["worker"].session_id is None
 
 
-def test_scenario_L_persistent_reviewer_session(tmp_path: Path):
+def test_scenario_L_persistent_plan_reviewer_session(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
@@ -110,25 +108,27 @@ def test_scenario_L_persistent_reviewer_session(tmp_path: Path):
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
     run_lifecycle(repo, run_opts(4), provider)
-    reviewers = [inv for inv in provider.engine.invocations if inv.role == "reviewer"]
+    reviewers = [inv for inv in provider.engine.invocations if inv.role == "plan_reviewer"]
     assert len(reviewers) >= 2
-    session_id = provider.engine.sessions["reviewer"]
+    session_id = provider.engine.sessions["plan_reviewer"]
     assert session_id
     assert all(inv.resume_session_id == session_id for inv in reviewers[1:])
     state = load_lifecycle_state(repo)
-    assert state.sessions["reviewer"].session_id == session_id
+    assert state.sessions["plan_reviewer"].session_id == session_id
+    assert state.sessions["reviewer"].session_id is None
 
 
 def test_scenario_M_session_mismatch_returns_session_error(tmp_path: Path):
     repo = make_repo(tmp_path)
+    approve_plan(repo, ScriptedProvider())
     provider = SessionMismatchOnSecondWorkerProvider()
-    provider.set_worker_plan_request()
-    provider.set_reviewer_pass("plan", "plan")
+    baseline = load_lifecycle_state(repo).last_approved_commit
+    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     expected_session = load_lifecycle_state(repo).sessions["worker"].session_id
     assert expected_session
-    baseline = load_lifecycle_state(repo).last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload(baseline, head))
     outcome = run_lifecycle(repo, run_opts(1), provider)
     assert outcome.exit_code == ExitCode.SESSION_ERROR
@@ -146,7 +146,8 @@ def test_scenario_N_controller_interruption_reconciles_existing_commit(tmp_path:
     worker_session = state.sessions["worker"].session_id or "worker-session-n"
     state.sessions["worker"].session_id = worker_session
     state.inflight = InflightMarker(
-        actor="worker",
+        session_slot="worker",
+        role="worker",
         turn=state.turn,
         session_id=worker_session,
         started_at=utc_now(),
@@ -181,30 +182,34 @@ def test_scenario_O_provider_crash_retries_same_session(tmp_path: Path):
     provider.set_reviewer_pass("plan", "plan")
     outcome = run_lifecycle(repo, run_opts(2), provider)
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
-    worker_invocations = [inv for inv in provider.engine.invocations if inv.role == "worker"]
-    assert len(worker_invocations) >= 2
-    session_id = provider.engine.sessions["worker"]
+    planner_invocations = [inv for inv in provider.engine.invocations if inv.role == "planner"]
+    assert len(planner_invocations) >= 2
+    session_id = provider.engine.sessions["planner"]
     assert session_id
     assert all(
-        inv.resume_session_id in (None, session_id) for inv in worker_invocations[:2]
+        inv.resume_session_id in (None, session_id) for inv in planner_invocations[:2]
     )
-    assert load_lifecycle_state(repo).sessions["worker"].session_id == session_id
+    assert load_lifecycle_state(repo).sessions["planner"].session_id == session_id
 
 
 def test_scenario_P_protocol_failure_repairs_same_session(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = PromptCapturingProvider()
-    provider.set_invalid_protocol_response("worker")
+    provider.set_invalid_protocol_response("planner")
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
     run_lifecycle(repo, run_opts(2), provider)
     assert provider.worker_prompts
     repair_prompt = provider.worker_prompts[-1]
     assert "AUTO_LOOP_RESULT" in repair_prompt or "valid AUTO_LOOP_RESULT" in repair_prompt
-    worker_session = load_lifecycle_state(repo).sessions["worker"].session_id
-    assert worker_session
-    resumes = worker_session_ids(provider)
-    assert resumes.count(worker_session) >= 1
+    planner_session = load_lifecycle_state(repo).sessions["planner"].session_id
+    assert planner_session
+    resumes = [
+        inv.resume_session_id or ""
+        for inv in provider.engine.invocations
+        if inv.role == "planner"
+    ]
+    assert resumes.count(planner_session) >= 1
 
 
 def test_scenario_Q_reviewer_product_mutation_invalidates_verdict(tmp_path: Path):

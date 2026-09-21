@@ -33,14 +33,20 @@ class CompletionRecord(BaseModel):
     completed_at: datetime
     lifecycle_id: str
     turn: int
+    planner_session_id: str | None = None
+    plan_reviewer_session_id: str | None = None
     worker_session_id: str | None
     reviewer_session_id: str | None
+    planner_model: str | None = None
+    worker_model: str | None = None
+    reviewer_model: str | None = None
     initial_base_commit: str
     final_commit: str
     last_approved_commit: str
     final_review_file: str
     task_sha256: str
     plan_sha256: str | None = None
+    initial_approved_plan_sha256: str | None = None
 
 
 class BlockedRecord(BaseModel):
@@ -49,6 +55,8 @@ class BlockedRecord(BaseModel):
     blocked_at: datetime
     lifecycle_id: str
     turn: int
+    planner_session_id: str | None = None
+    plan_reviewer_session_id: str | None = None
     worker_session_id: str | None
     reviewer_session_id: str | None
     summary: str

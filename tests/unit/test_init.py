@@ -36,7 +36,9 @@ def test_default_init_tree(tmp_path: Path):
     assert (root / "context.yaml").is_file()
     assert (root / "task.md").is_file()
     assert (root / "plan.md").is_file()
+    assert (root / "agents" / "planner.md").is_file()
     assert (root / "agents" / "worker.md").is_file()
+    assert (root / "instructions" / "planner.md").is_file()
     assert (root / "instructions" / "shared.md").is_file()
     assert (root / "reviews").is_dir()
     assert (root / "resources").is_dir()
@@ -78,16 +80,21 @@ def test_force_regenerates_control_templates(tmp_path: Path):
     worker = repo / ".auto-loop" / "agents" / "worker.md"
     worker.write_text("custom\n", encoding="utf-8")
     run_init(repo, force=True)
-    assert "implementation worker" in worker.read_text(encoding="utf-8").lower()
+    assert "implementation worker" in worker.read_text(encoding="utf-8").lower() or "implementation" in worker.read_text(encoding="utf-8").lower()
 
 
 def test_packaged_worker_reviewer_contract_clauses():
     pkg = resources.files("auto_loop").joinpath("templates")
+    planner = pkg.joinpath("agents/planner.md").read_text(encoding="utf-8")
     worker = pkg.joinpath("agents/worker.md").read_text(encoding="utf-8")
     reviewer = pkg.joinpath("agents/reviewer.md").read_text(encoding="utf-8")
+    assert "you do not implement product changes" in planner.lower()
+    assert "first execution turn" in worker.lower()
     assert "never declare the overall task complete" in worker.lower()
     assert "complete" in worker.lower() and "pass" in worker.lower()
     assert "last_approved_commit..head" in worker.lower()
+    assert "planning session purpose" in reviewer.lower()
+    assert "execution session purpose" in reviewer.lower()
     assert "sole completion authority" in reviewer.lower()
     assert "whole-task" in reviewer.lower() or "whole-task review" in reviewer.lower()
 

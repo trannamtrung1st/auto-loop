@@ -18,12 +18,15 @@ from auto_loop.providers.cursor import (
 
 
 def _request(role: str = "worker") -> AgentRequest:
+    session_purpose = role if role in ("planner", "plan_reviewer", "worker", "reviewer") else "worker"
+    logical = "reviewer" if role in ("reviewer", "plan_reviewer") else role
     return AgentRequest(
-        role=role,
+        role=logical,  # type: ignore[arg-type]
+        session_purpose=session_purpose,  # type: ignore[arg-type]
         workspace=Path("/tmp/workspace"),
         prompt="do work",
         model="auto",
-        mode="agent" if role == "worker" else "ask",
+        mode="agent" if logical != "reviewer" else "ask",
         timeout_seconds=60,
         idle_timeout_seconds=30,
     )

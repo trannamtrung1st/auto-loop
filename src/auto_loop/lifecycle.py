@@ -1,13 +1,25 @@
-"""Lifecycle state model and transitions (proposal sections 20-21)."""
+"""Lifecycle state model, session slots, and v1→v2 migration."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
+
+from auto_loop.models import (
+    ROLE_FOR_SLOT,
+    ActiveReviewTarget,
+    ReviewScope,
+    Role,
+    SessionSlot,
+)
+
+RUNTIME_SCHEMA_VERSION = 2
+LifecyclePhase = Literal["planning", "execution"]
+SessionStatus = Literal["pending", "active", "retired", "legacy_not_created"]
 
 
 class LifecycleStatus(StrEnum):
@@ -19,26 +31,65 @@ class LifecycleStatus(StrEnum):
     ERROR = "error"
 
 
-Actor = Literal["worker", "reviewer"]
-ReviewScope = Literal["plan", "batch", "final"]
-
-
-class RoleSession(BaseModel):
+class SessionRecord(BaseModel):
+    role: Role = "worker"
     session_id: str | None = None
     model: str = "auto"
+    status: SessionStatus = "pending"
 
 
 class ActiveReview(BaseModel):
+    cycle_id: str
+    round: int = 1
     scope: ReviewScope
     target: str
     summary: str
-    base_commit: str | None = None
-    head_commit: str | None = None
+    session_purpose: SessionSlot = "reviewer"
+    approved_base_commit: str | None = None
+    production_head_commit: str | None = None
+    current_candidate_head: str | None = None
     worker_summary: str | None = None
+    plan_summary: str | None = None
+    plan_sha256: str | None = None
+    targets: list[ActiveReviewTarget] = Field(default_factory=list)
+
+    @property
+    def has_git_target(self) -> bool:
+        return any(target.kind == "git_range" for target in self.targets)
+
+    @property
+    def git_head(self) -> str | None:
+        for target in self.targets:
+            if target.kind == "git_range":
+                return target.head_commit
+        return None
+
+    @property
+    def git_base(self) -> str | None:
+        for target in self.targets:
+            if target.kind == "git_range":
+                return target.base_commit
+        return None
+
+    @property
+    def target_ids(self) -> list[str]:
+        return [target.id for target in self.targets]
+
+
+class PendingRevision(BaseModel):
+    cycle_id: str
+    scope: ReviewScope
+    target: str
+    base_commit: str | None = None
+    production_head_commit: str | None = None
+    last_reviewed_head_commit: str | None = None
+    round: int
+    finding_review_file: str | None = None
 
 
 class InflightMarker(BaseModel):
-    actor: Actor
+    session_slot: SessionSlot
+    role: Role
     turn: int
     session_id: str
     started_at: datetime
@@ -46,30 +97,50 @@ class InflightMarker(BaseModel):
 
 
 class LifecycleState(BaseModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = RUNTIME_SCHEMA_VERSION
     lifecycle_id: str
     status: LifecycleStatus = LifecycleStatus.RUNNING
+    phase: LifecyclePhase = "planning"
     turn: int = 1
-    next_actor: Actor = "worker"
+    next_session: SessionSlot = "planner"
     plan_approved: bool = False
+    initial_approved_plan_sha256: str | None = None
+    current_plan_sha256: str | None = None
+    planning_completed_at: datetime | None = None
     initial_base_commit: str
     last_approved_commit: str
     active_review: ActiveReview | None = None
-    sessions: dict[str, RoleSession] = Field(default_factory=dict)
+    pending_revision: PendingRevision | None = None
+    review_cycle_seq: int = 0
+    sessions: dict[str, SessionRecord] = Field(default_factory=dict)
     inflight: InflightMarker | None = None
     consecutive_provider_failures: int = 0
     consecutive_protocol_failures: int = 0
     worker_no_progress_streak: int = 0
     last_worker_progress_key: str | None = None
+    legacy_v1_sessions: dict[str, Any] | None = None
     started_at: datetime
     updated_at: datetime
 
     @model_validator(mode="after")
     def sessions_present(self) -> LifecycleState:
-        for role in ("worker", "reviewer"):
-            if role not in self.sessions:
-                raise ValueError(f"Missing session record for {role}")
+        for slot in ("planner", "plan_reviewer", "worker", "reviewer"):
+            if slot not in self.sessions:
+                raise ValueError(f"Missing session record for {slot}")
         return self
+
+    @property
+    def next_actor(self) -> Role:
+        return ROLE_FOR_SLOT[self.next_session]
+
+    @next_actor.setter
+    def next_actor(self, value: str) -> None:
+        if value not in ("planner", "plan_reviewer", "worker", "reviewer"):
+            raise ValueError(f"Invalid next session: {value}")
+        self.next_session = value  # type: ignore[assignment]
+
+
+RoleSession = SessionRecord
 
 
 def utc_now() -> datetime:
@@ -80,31 +151,149 @@ def new_lifecycle_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{uuid4().hex[:6]}"
 
 
+def _empty_sessions() -> dict[str, SessionRecord]:
+    return {
+        "planner": SessionRecord(role="planner", status="pending"),
+        "plan_reviewer": SessionRecord(role="reviewer", status="pending"),
+        "worker": SessionRecord(role="worker", status="pending"),
+        "reviewer": SessionRecord(role="reviewer", status="pending"),
+    }
+
+
 def create_lifecycle(head_commit: str, *, lifecycle_id: str | None = None) -> LifecycleState:
     now = utc_now()
     lid = lifecycle_id or new_lifecycle_id()
     return LifecycleState(
         lifecycle_id=lid,
         turn=1,
-        next_actor="worker",
+        phase="planning",
+        next_session="planner",
         plan_approved=False,
         initial_base_commit=head_commit,
         last_approved_commit=head_commit,
-        sessions={"worker": RoleSession(), "reviewer": RoleSession()},
+        sessions=_empty_sessions(),
         started_at=now,
         updated_at=now,
     )
 
 
+def next_cycle_id(state: LifecycleState) -> str:
+    state.review_cycle_seq += 1
+    return f"review-{state.review_cycle_seq:04d}"
+
+
 def session_consistency_errors(state: LifecycleState) -> list[str]:
     errors: list[str] = []
-    worker_id = state.sessions["worker"].session_id
-    reviewer_id = state.sessions["reviewer"].session_id
-    if worker_id and reviewer_id and worker_id == reviewer_id:
-        errors.append("worker and reviewer session IDs must be distinct")
+    ids = [
+        (slot, rec.session_id)
+        for slot, rec in state.sessions.items()
+        if rec.session_id
+    ]
+    seen: dict[str, str] = {}
+    for slot, session_id in ids:
+        if session_id in seen:
+            errors.append(
+                f"duplicate session id between {seen[session_id]} and {slot}"
+            )
+        else:
+            seen[session_id] = slot
     if state.inflight:
-        actor = state.inflight.actor
-        expected = state.sessions[actor].session_id
+        slot = state.inflight.session_slot
+        expected = state.sessions[slot].session_id
         if expected and state.inflight.session_id != expected:
-            errors.append("inflight session_id does not match stored role session")
+            errors.append("inflight session_id does not match stored session slot")
+        if state.inflight.role != ROLE_FOR_SLOT[slot]:
+            errors.append("inflight role does not match session slot")
+    if state.phase == "planning" and state.next_session not in ("planner", "plan_reviewer"):
+        errors.append("planning phase next_session must be planner or plan_reviewer")
+    if state.phase == "execution" and state.next_session not in ("worker", "reviewer"):
+        errors.append("execution phase next_session must be worker or reviewer")
     return errors
+
+
+def _session_status_from_v1(record: dict[str, Any]) -> SessionStatus:
+    if record.get("session_id"):
+        return "active"
+    return "pending"
+
+
+def _migrate_inflight(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    if "session_slot" in raw and "role" in raw:
+        return raw
+    actor = raw.get("actor")
+    if actor not in ("worker", "reviewer"):
+        return None
+    migrated = dict(raw)
+    migrated["session_slot"] = actor
+    migrated["role"] = actor
+    migrated.pop("actor", None)
+    return migrated
+
+
+def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize persisted lifecycle JSON to runtime schema v2."""
+    version = data.get("schema_version", 1)
+    if version == RUNTIME_SCHEMA_VERSION:
+        if "next_session" not in data and "next_actor" in data:
+            data = dict(data)
+            actor = data.pop("next_actor")
+            data["next_session"] = actor if actor in ("planner", "plan_reviewer", "worker", "reviewer") else "planner"
+        return data
+    if version != 1:
+        raise ValueError(f"Unsupported lifecycle schema_version {version}")
+
+    plan_approved = bool(data.get("plan_approved"))
+    old_sessions = data.get("sessions") or {}
+    migrated = dict(data)
+    migrated["schema_version"] = RUNTIME_SCHEMA_VERSION
+    migrated.setdefault("pending_revision", None)
+    migrated.setdefault("review_cycle_seq", 0)
+    migrated.pop("next_actor", None)
+
+    if plan_approved:
+        next_actor = data.get("next_actor", "worker")
+        next_session = next_actor if next_actor in ("worker", "reviewer") else "worker"
+        worker = dict(old_sessions.get("worker") or {})
+        reviewer = dict(old_sessions.get("reviewer") or {})
+        migrated["phase"] = "execution"
+        migrated["next_session"] = next_session
+        migrated["sessions"] = {
+            "planner": {
+                "role": "planner",
+                "session_id": None,
+                "model": "auto",
+                "status": "legacy_not_created",
+            },
+            "plan_reviewer": {
+                "role": "reviewer",
+                "session_id": None,
+                "model": "auto",
+                "status": "legacy_not_created",
+            },
+            "worker": {
+                "role": "worker",
+                "session_id": worker.get("session_id"),
+                "model": worker.get("model", "auto"),
+                "status": _session_status_from_v1(worker),
+            },
+            "reviewer": {
+                "role": "reviewer",
+                "session_id": reviewer.get("session_id"),
+                "model": reviewer.get("model", "auto"),
+                "status": _session_status_from_v1(reviewer),
+            },
+        }
+        migrated["inflight"] = _migrate_inflight(data.get("inflight"))
+    else:
+        migrated["phase"] = "planning"
+        migrated["next_session"] = "planner"
+        migrated["sessions"] = {
+            slot: rec.model_dump(mode="json") for slot, rec in _empty_sessions().items()
+        }
+        migrated["inflight"] = None
+        migrated["legacy_v1_sessions"] = old_sessions
+        migrated["active_review"] = None
+
+    return migrated

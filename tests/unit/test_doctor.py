@@ -104,3 +104,17 @@ def test_doctor_cli_path_argument(tmp_path: Path, monkeypatch):
     )
     result = runner.invoke(app, ["doctor", str(repo)])
     assert result.exit_code == 0
+
+
+def test_doctor_reports_missing_planner_template(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    run_init(repo)
+    (repo / ".auto-loop" / "agents" / "planner.md").unlink()
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr(
+        "auto_loop.doctor.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="--resume stream-json ask", stderr=""),
+    )
+    report = run_doctor(repo)
+    assert not report.ok
+    assert any("planner templates" in check.message for check in report.checks)

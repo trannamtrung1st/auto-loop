@@ -112,6 +112,37 @@ def test_empty_range_rejected(tmp_path: Path):
         normalize_batch_range(repo, last_approved_commit=head)
 
 
+def test_empty_range_allowed_when_requested(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    head = head_commit(repo)
+    normalized = normalize_batch_range(repo, last_approved_commit=head, allow_empty=True)
+    assert normalized.range.base == head
+    assert normalized.range.head == head
+
+
+def test_amended_review_fix_head_still_normalizes(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    approved = head_commit(repo)
+    (repo / "b.txt").write_text("b\n", encoding="utf-8")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "production")
+    (repo / "c.txt").write_text("c1\n", encoding="utf-8")
+    _git(repo, "add", "c.txt")
+    _git(repo, "commit", "-m", "review-fix")
+    (repo / "c.txt").write_text("c2\n", encoding="utf-8")
+    _git(repo, "add", "c.txt")
+    _git(repo, "commit", "--amend", "-m", "review-fix amended")
+    amended = head_commit(repo)
+    normalized = normalize_batch_range(
+        repo,
+        last_approved_commit=approved,
+        worker_base_commit=approved,
+        worker_head_commit=amended,
+    )
+    assert normalized.range.head == amended
+    assert is_ancestor(repo, approved, amended)
+
+
 def test_ancestor_check(tmp_path: Path):
     repo = _init_repo(tmp_path)
     base = head_commit(repo)

@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from auto_loop.atomic_io import atomic_write_json
-from auto_loop.lifecycle import LifecycleState
+from auto_loop.lifecycle import LifecycleState, migrate_lifecycle_data
 from auto_loop.paths import auto_loop_root
 
 
@@ -26,7 +26,9 @@ def load_lifecycle_state(repo: Path) -> LifecycleState | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return LifecycleState.model_validate(data)
+        if not isinstance(data, dict):
+            raise RuntimeStateError(f"Lifecycle state root must be an object: {path}")
+        return LifecycleState.model_validate(migrate_lifecycle_data(data))
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise RuntimeStateError(f"Invalid lifecycle state at {path}: {exc}") from exc
 

@@ -21,6 +21,7 @@ from auto_loop.runtime import RuntimeStateError, load_lifecycle_state
 
 DEFAULT_INSTRUCTION_PATHS = (
     ".auto-loop/instructions/shared.md",
+    ".auto-loop/instructions/planner.md",
     ".auto-loop/instructions/worker.md",
     ".auto-loop/instructions/reviewer.md",
 )
@@ -93,11 +94,18 @@ def _check_role_and_task_files(repo: Path, config: AutoLoopConfig, report: Docto
         ("task", config.task_file),
         ("plan", config.plan_file),
         ("context", config.context_file),
+        ("planner agent", config.agents["planner"].role_file),
         ("worker agent", config.agents["worker"].role_file),
         ("reviewer agent", config.agents["reviewer"].role_file),
     ):
         if _path_readable(repo, rel):
             report.add(f"file:{label}", Severity.OK, f"{rel} is readable")
+        elif "planner" in label:
+            report.add(
+                f"file:{label}",
+                Severity.ERROR,
+                f"Missing or unreadable {rel}; run auto-loop init to create missing planner templates",
+            )
         else:
             report.add(f"file:{label}", Severity.ERROR, f"Missing or unreadable {rel}")
 
@@ -114,6 +122,7 @@ def _check_instruction_composition(repo: Path, config: AutoLoopConfig, report: D
 def _check_instruction_templates(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
     configured = (
         list(config.instructions.shared.files)
+        + list(config.instructions.planner.files)
         + list(config.instructions.worker.files)
         + list(config.instructions.reviewer.files)
     )

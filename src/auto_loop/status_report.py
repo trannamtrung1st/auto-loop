@@ -78,13 +78,20 @@ def build_status_report(repo: Path, *, now: datetime | None = None) -> str:
     lines = [
         f"status: {state.status.value}",
         f"lifecycle: {state.lifecycle_id}",
+        f"phase: {state.phase}",
         f"turn: {state.turn}",
-        f"next actor: {state.next_actor}",
+        f"next session: {state.next_session}",
         "",
         f"plan approved: {'yes' if state.plan_approved else 'no'}",
         "",
-        f"worker session: {_redact_session_id(state.sessions['worker'].session_id)}",
-        f"reviewer session: {_redact_session_id(state.sessions['reviewer'].session_id)}",
+        f"planner session: {_redact_session_id(state.sessions['planner'].session_id)} "
+        f"({state.sessions['planner'].status}, model={state.sessions['planner'].model})",
+        f"plan-reviewer session: {_redact_session_id(state.sessions['plan_reviewer'].session_id)} "
+        f"({state.sessions['plan_reviewer'].status}, model={state.sessions['plan_reviewer'].model})",
+        f"worker session: {_redact_session_id(state.sessions['worker'].session_id)} "
+        f"({state.sessions['worker'].status}, model={state.sessions['worker'].model})",
+        f"reviewer session: {_redact_session_id(state.sessions['reviewer'].session_id)} "
+        f"({state.sessions['reviewer'].status}, model={state.sessions['reviewer'].model})",
         "",
         f"initial base: {state.initial_base_commit[:7]}",
         f"last approved: {state.last_approved_commit[:7]}",
@@ -95,9 +102,19 @@ def build_status_report(repo: Path, *, now: datetime | None = None) -> str:
         f"elapsed: {_format_duration(state.started_at, now)}",
         f"last activity: {_format_ago(state.updated_at, now)}",
     ]
+    if state.active_review is not None:
+        review = state.active_review
+        lines.append(
+            f"active review: {review.scope}/{review.target} cycle {review.cycle_id} round {review.round}"
+        )
+    if state.pending_revision is not None:
+        pending = state.pending_revision
+        lines.append(
+            f"pending revision: {pending.scope}/{pending.target} cycle {pending.cycle_id} round {pending.round}"
+        )
     if state.inflight is not None:
         lines.append(
-            f"inflight: {state.inflight.actor} turn {state.inflight.turn} "
+            f"inflight: {state.inflight.session_slot} turn {state.inflight.turn} "
             f"since {state.inflight.started_at.isoformat()}"
         )
     return "\n".join(lines)

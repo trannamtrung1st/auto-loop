@@ -8,14 +8,26 @@ from dataclasses import dataclass, field
 
 from auto_loop.providers.fake_cursor import FakeCursorEngine
 
+_EMPTY_QUEUES = {
+    "planner": deque(),
+    "plan_reviewer": deque(),
+    "worker": deque(),
+    "reviewer": deque(),
+}
+
 
 @dataclass
 class ScriptedProvider:
-    """Return queued terminal responses per role invocation."""
+    """Return queued terminal responses per session slot."""
 
     engine: FakeCursorEngine = field(default_factory=FakeCursorEngine)
     queues: dict[str, deque[str]] = field(
-        default_factory=lambda: {"worker": deque(), "reviewer": deque()}
+        default_factory=lambda: {
+            "planner": deque(),
+            "plan_reviewer": deque(),
+            "worker": deque(),
+            "reviewer": deque(),
+        }
     )
 
     def queue(self, role: str, final_text: str) -> None:
@@ -28,45 +40,55 @@ class ScriptedProvider:
     def set_response(self, role: str, payload: dict) -> None:
         text = json.dumps(payload)
         block = f"<AUTO_LOOP_RESULT>\n{text}\n</AUTO_LOOP_RESULT>"
-        self.queues[role].append(block)
+        self.queues.setdefault(role, deque()).append(block)
         self.engine.response_text = block
 
     def prepare(self, role: str) -> None:
-        if not self.queues[role]:
+        if role not in self.queues or not self.queues[role]:
             raise RuntimeError(f"No scripted provider response queued for role={role!r}")
         self.engine.response_text = self.queues[role].popleft()
 
     def set_invalid_protocol_response(self, role: str) -> None:
-        self.queues[role].append("Thanks for waiting, but I forgot the JSON block.")
+        self.queues.setdefault(role, deque()).append("Thanks for waiting, but I forgot the JSON block.")
 
-    def set_worker_plan_request(self) -> None:
+    def set_planner_review_request(self, target: str = "plan") -> None:
         self.set_response(
-            "worker",
+            "planner",
             {
-                "schema_version": 1,
-                "actor": "worker",
+                "schema_version": 2,
+                "actor": "planner",
                 "status": "review_requested",
-                "review": {"scope": "plan", "target": "plan", "summary": "initial plan"},
-                "work_summary": "planned",
-                "verification": [],
+                "review": {"scope": "plan", "target": target, "summary": "initial plan"},
+                "plan_summary": "planned",
                 "notes": [],
             },
         )
 
-    def set_reviewer_pass(self, scope: str, target: str) -> None:
+    def set_worker_plan_request(self) -> None:
+        """Compatibility helper: planning now uses the planner slot."""
+        self.set_planner_review_request()
+
+    def set_reviewer_pass(self, scope: str, target: str, *, slot: str | None = None) -> None:
+        if slot is None:
+            slot = "plan_reviewer" if scope == "plan" else "reviewer"
+        ids = ["plan"] if scope == "plan" else (["git"] if scope != "final" else [])
         self.set_response(
-            "reviewer",
+            slot,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "actor": "reviewer",
                 "verdict": "pass",
                 "scope": scope,
                 "target": target,
+                "reviewed_target_ids": ids,
                 "summary": "ok",
                 "findings": [],
                 "verification": [],
             },
         )
+
+    def set_plan_reviewer_pass(self, target: str = "plan") -> None:
+        self.set_reviewer_pass("plan", target, slot="plan_reviewer")
 
     def set_worker_final_request(self, head: str | None = None) -> None:
         review: dict = {
@@ -79,7 +101,7 @@ class ScriptedProvider:
         self.set_response(
             "worker",
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "actor": "worker",
                 "status": "review_requested",
                 "review": review,
@@ -93,7 +115,7 @@ class ScriptedProvider:
         self.set_response(
             "worker",
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "actor": "worker",
                 "status": "blocked",
                 "review": None,
@@ -107,7 +129,7 @@ class ScriptedProvider:
         self.set_response(
             "reviewer",
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "actor": "reviewer",
                 "verdict": "complete",
                 "scope": "final",
@@ -124,7 +146,7 @@ class ScriptedProvider:
         self.set_response(
             "reviewer",
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "actor": "reviewer",
                 "verdict": "blocked",
                 "scope": "batch",
@@ -135,11 +157,20 @@ class ScriptedProvider:
             },
         )
 
-    def set_reviewer_revise(self, scope: str, target: str, finding_id: str = "f-1") -> None:
+    def set_reviewer_revise(
+        self,
+        scope: str,
+        target: str,
+        finding_id: str = "f-1",
+        *,
+        slot: str | None = None,
+    ) -> None:
+        if slot is None:
+            slot = "plan_reviewer" if scope == "plan" else "reviewer"
         self.set_response(
-            "reviewer",
+            slot,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "actor": "reviewer",
                 "verdict": "revise",
                 "scope": scope,

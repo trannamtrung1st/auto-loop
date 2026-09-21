@@ -33,6 +33,7 @@ def _default_config_yaml(minimal: bool) -> str:
         cfg = default_config()
         cfg.instructions = InstructionSettings(
             shared=InstructionRoleSettings(files=[]),
+            planner=InstructionRoleSettings(files=[]),
             worker=InstructionRoleSettings(files=[]),
             reviewer=InstructionRoleSettings(files=[]),
         )
@@ -128,8 +129,16 @@ def run_init(repo: Path, *, force: bool = False, minimal: bool = False) -> InitR
         rel=".auto-loop/plan.md",
     )
 
+    planner_tpl = "agents/planner.minimal.md" if minimal else "agents/planner.md"
     worker_tpl = "agents/worker.minimal.md" if minimal else "agents/worker.md"
     reviewer_tpl = "agents/reviewer.minimal.md" if minimal else "agents/reviewer.md"
+    _write_text(
+        root / "agents" / "planner.md",
+        _read_template(planner_tpl),
+        force=force,
+        result=result,
+        rel=".auto-loop/agents/planner.md",
+    )
     _write_text(
         root / "agents" / "worker.md",
         _read_template(worker_tpl),
@@ -146,7 +155,7 @@ def run_init(repo: Path, *, force: bool = False, minimal: bool = False) -> InitR
     )
 
     if not minimal:
-        for name in ("shared.md", "worker.md", "reviewer.md"):
+        for name in ("shared.md", "planner.md", "worker.md", "reviewer.md"):
             _write_text(
                 root / "instructions" / name,
                 _read_template(f"instructions/{name}"),

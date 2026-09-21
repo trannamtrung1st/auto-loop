@@ -14,7 +14,7 @@ def test_help_exposes_all_commands():
     assert result.exit_code == 0
     for name in ("init", "doctor", "run", "status", "logs", "stop"):
         assert name in result.stdout
-    assert "resources" in result.stdout
+    assert "resources" not in result.stdout
 
 
 def test_version():
@@ -52,6 +52,7 @@ def test_run_help_lists_model_and_limit_flags():
     assert result.exit_code == 0
     for flag in (
         "--model",
+        "--planner-model",
         "--worker-model",
         "--reviewer-model",
         "--max-turns",
@@ -78,27 +79,9 @@ def test_run_minimal_init_fails_closed_before_provider(tmp_path: Path):
     assert "Missing instruction templates" in result.stderr or "Missing instruction templates" in result.stdout
 
 
-def test_resources_install_subgroup(tmp_path: Path):
-    result = runner.invoke(app, ["resources", "install", str(tmp_path), "--dry-run"])
-    assert result.exit_code == 0
-    assert "CREATE AGENTS.md" in result.stdout
-    assert "CREATE .agents/skills/repo-discovery/SKILL.md" in result.stdout
-    assert "ui-validation" not in result.stdout
-
-
-def test_resources_install_honors_path_argument(tmp_path: Path, monkeypatch):
-    target = tmp_path / "repo"
-    target.mkdir()
-    other = tmp_path / "other"
-    other.mkdir()
-    monkeypatch.chdir(other)
-    result = runner.invoke(
-        app,
-        ["resources", "install", str(target), "--dry-run", "--no-agents-md"],
-    )
-    assert result.exit_code == 0
-    assert "SKIP AGENTS.md" in result.stdout
-    assert not (other / "AGENTS.md").exists()
+def test_resources_command_removed():
+    result = runner.invoke(app, ["resources", "install"])
+    assert result.exit_code != 0
 
 
 def test_status_reports_idle_workspace(tmp_path: Path):

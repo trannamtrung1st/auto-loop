@@ -7,13 +7,17 @@ import pytest
 
 from auto_loop.config import load_config
 from auto_loop.init_cmd import run_init
+from auto_loop.models import ActivePathTarget
+from auto_loop.review_targets import sha256_file
 from auto_loop.protection import (
     ProtectionViolationError,
     ReviewMutationError,
     assert_protected_unchanged,
+    assert_review_snapshot_unchanged,
     assert_reviewer_product_unchanged,
     capture_product_fingerprint,
     capture_protected_baseline,
+    capture_review_snapshot,
 )
 from auto_loop.product_state import is_product_tree_clean
 
@@ -75,3 +79,35 @@ def test_ignored_build_artifact_can_be_simulated_as_untracked_outside_auto_loop(
     (cache / "x.pyc").write_bytes(b"123")
     after = capture_product_fingerprint(repo)
     assert before.head == after.head
+
+
+def test_review_snapshot_detects_plan_mutation(tmp_path: Path):
+    repo = _repo(tmp_path)
+    plan = repo / ".auto-loop" / "plan.md"
+    before = capture_review_snapshot(repo, plan_path=plan)
+    plan.write_text(plan.read_text(encoding="utf-8") + "\nreviewer edit\n", encoding="utf-8")
+    with pytest.raises(ReviewMutationError, match="plan.md"):
+        assert_review_snapshot_unchanged(repo, plan_path=plan, before=before)
+
+
+def test_review_snapshot_detects_path_target_mutation(tmp_path: Path):
+    repo = _repo(tmp_path)
+    (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-m", "ignore")
+    build = repo / "build"
+    build.mkdir()
+    report = build / "report.html"
+    report.write_text("ok\n", encoding="utf-8")
+    target = ActivePathTarget(
+        id="generated",
+        path="build/report.html",
+        fingerprint=sha256_file(report),
+        exists=True,
+        git_classification="ignored",
+    )
+    plan = repo / ".auto-loop" / "plan.md"
+    before = capture_review_snapshot(repo, plan_path=plan, targets=[target])
+    report.write_text("mutated\n", encoding="utf-8")
+    with pytest.raises(ReviewMutationError, match="path target"):
+        assert_review_snapshot_unchanged(repo, plan_path=plan, before=before, targets=[target])

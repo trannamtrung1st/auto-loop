@@ -28,6 +28,7 @@ class ConfigurationError(Exception):
 
 class CursorProviderSettings(BaseModel):
     command: CursorCommand = "agent"
+    planner_extra_args: list[str] = Field(default_factory=lambda: ["--force"])
     worker_extra_args: list[str] = Field(default_factory=lambda: ["--force"])
     reviewer_extra_args: list[str] = Field(default_factory=list)
 
@@ -51,6 +52,11 @@ class InstructionRoleSettings(BaseModel):
 class InstructionSettings(BaseModel):
     shared: InstructionRoleSettings = Field(
         default_factory=lambda: InstructionRoleSettings(files=[".auto-loop/instructions/shared.md"])
+    )
+    planner: InstructionRoleSettings = Field(
+        default_factory=lambda: InstructionRoleSettings(
+            files=[".auto-loop/instructions/planner.md"]
+        )
     )
     worker: InstructionRoleSettings = Field(
         default_factory=lambda: InstructionRoleSettings(
@@ -119,23 +125,26 @@ class AutoLoopConfig(BaseModel):
 
     @model_validator(mode="after")
     def default_agents(self) -> AutoLoopConfig:
-        if not self.agents:
-            object.__setattr__(
-                self,
-                "agents",
-                {
-                    "worker": RoleAgentSettings(
-                        role_file=".auto-loop/agents/worker.md",
-                        model="auto",
-                        mode="agent",
-                    ),
-                    "reviewer": RoleAgentSettings(
-                        role_file=".auto-loop/agents/reviewer.md",
-                        model="auto",
-                        mode="ask",
-                    ),
-                },
+        agents = dict(self.agents)
+        if "planner" not in agents:
+            agents["planner"] = RoleAgentSettings(
+                role_file=".auto-loop/agents/planner.md",
+                model="auto",
+                mode="agent",
             )
+        if "worker" not in agents:
+            agents["worker"] = RoleAgentSettings(
+                role_file=".auto-loop/agents/worker.md",
+                model="auto",
+                mode="agent",
+            )
+        if "reviewer" not in agents:
+            agents["reviewer"] = RoleAgentSettings(
+                role_file=".auto-loop/agents/reviewer.md",
+                model="auto",
+                mode="ask",
+            )
+        object.__setattr__(self, "agents", agents)
         if not self.protection.protected_files:
             object.__setattr__(
                 self,
@@ -146,9 +155,11 @@ class AutoLoopConfig(BaseModel):
                             ".auto-loop/task.md",
                             ".auto-loop/config.yaml",
                             ".auto-loop/context.yaml",
+                            ".auto-loop/agents/planner.md",
                             ".auto-loop/agents/worker.md",
                             ".auto-loop/agents/reviewer.md",
                             ".auto-loop/instructions/shared.md",
+                            ".auto-loop/instructions/planner.md",
                             ".auto-loop/instructions/worker.md",
                             ".auto-loop/instructions/reviewer.md",
                         ]
@@ -159,7 +170,7 @@ class AutoLoopConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_agents(self) -> AutoLoopConfig:
-        for role in ("worker", "reviewer"):
+        for role in ("planner", "worker", "reviewer"):
             if role not in self.agents:
                 raise ValueError(f"Missing required agent role: {role}")
             agent = self.agents[role]

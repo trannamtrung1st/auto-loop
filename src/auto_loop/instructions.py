@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 
-from auto_loop.config import AutoLoopConfig, InstructionMode
+from auto_loop.config import AutoLoopConfig, InstructionMode, InstructionRoleSettings
 
 REPOSITORY_GUIDANCE_REMINDER = (
     "Follow applicable repository-level agent instructions and skills in addition to "
@@ -35,13 +35,20 @@ def _read_repo_file(repo: Path, rel: str) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def _role_instruction_settings(config: AutoLoopConfig, role: str) -> InstructionRoleSettings:
+    if role == "planner":
+        return config.instructions.planner
+    if role == "worker":
+        return config.instructions.worker
+    if role == "reviewer":
+        return config.instructions.reviewer
+    raise ValueError(f"Unknown instruction role: {role}")
+
+
 def collect_custom_instruction_paths(config: AutoLoopConfig, role: str) -> list[str]:
     paths: list[str] = []
     paths.extend(config.instructions.shared.files)
-    if role == "worker":
-        paths.extend(config.instructions.worker.files)
-    elif role == "reviewer":
-        paths.extend(config.instructions.reviewer.files)
+    paths.extend(_role_instruction_settings(config, role).files)
     return paths
 
 
@@ -49,19 +56,18 @@ def validate_custom_instruction_files(repo: Path, config: AutoLoopConfig) -> lis
     """Return actionable errors for configured custom instruction paths."""
     errors: list[str] = []
     seen: set[str] = set()
-    for role in ("worker", "reviewer"):
-        mode = config.instructions.worker.mode if role == "worker" else config.instructions.reviewer.mode
+    for role in ("planner", "worker", "reviewer"):
+        mode = _role_instruction_settings(config, role).mode
         if mode not in ("extend", "replace_role"):
             errors.append(f"Invalid instruction mode for {role}: {mode}")
-    for rel in collect_custom_instruction_paths(config, "worker") + collect_custom_instruction_paths(
-        config, "reviewer"
-    ):
-        if rel in seen:
-            continue
-        seen.add(rel)
-        path = repo / rel
-        if not path.is_file():
-            errors.append(f"Configured instruction file missing or not readable: {rel}")
+    for role in ("planner", "worker", "reviewer"):
+        for rel in collect_custom_instruction_paths(config, role):
+            if rel in seen:
+                continue
+            seen.add(rel)
+            path = repo / rel
+            if not path.is_file():
+                errors.append(f"Configured instruction file missing or not readable: {rel}")
     return errors
 
 
@@ -80,19 +86,15 @@ def compose_role_instructions(
     protocol = load_protocol_contract(role)
     sections.append(_section("AUTO_LOOP_PROTOCOL", protocol))
 
-    mode: InstructionMode = (
-        config.instructions.worker.mode if role == "worker" else config.instructions.reviewer.mode
-    )
+    settings = _role_instruction_settings(config, role)
+    mode: InstructionMode = settings.mode
     if mode == "extend":
         playbook_path = config.agents[role].role_file
         sections.append(_section("AUTO_LOOP_ROLE_PLAYBOOK", _read_repo_file(repo, playbook_path)))
 
     for rel in config.instructions.shared.files:
         sections.append(_section(f"ADVISORY_SHARED:{rel}", _read_repo_file(repo, rel)))
-    role_files = (
-        config.instructions.worker.files if role == "worker" else config.instructions.reviewer.files
-    )
-    for rel in role_files:
+    for rel in settings.files:
         sections.append(_section(f"ADVISORY_{role.upper()}:{rel}", _read_repo_file(repo, rel)))
 
     sections.append(_section("REPOSITORY_GUIDANCE", REPOSITORY_GUIDANCE_REMINDER))

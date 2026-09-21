@@ -52,7 +52,7 @@ class DirtyAwareProvider:
     def prepare(self, role: str) -> None:
         if role == "worker":
             self._worker_invocations += 1
-            if self._worker_invocations >= 3:
+            if self._worker_invocations >= 2:
                 dirty = self.repo / self.dirty_rel
                 if dirty.is_file():
                     dirty.unlink()
@@ -76,7 +76,7 @@ class DirtyAwareProvider:
 
 def _batch_worker_payload(base: str, head: str) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "actor": "worker",
         "status": "review_requested",
         "review": {
@@ -92,7 +92,7 @@ def _batch_worker_payload(base: str, head: str) -> dict:
     }
 
 
-def test_plan_revise_keeps_worker_session_and_unlocks_after_pass(tmp_path: Path):
+def test_plan_revise_keeps_planner_session_and_unlocks_after_pass(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
@@ -107,7 +107,8 @@ def test_plan_revise_keeps_worker_session_and_unlocks_after_pass(tmp_path: Path)
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.plan_approved is True
-    assert state.sessions["worker"].session_id is not None
+    assert state.sessions["planner"].session_id is not None
+    assert state.sessions["worker"].session_id is None
     reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
     assert len(reviews) == 2
 
@@ -296,7 +297,7 @@ def test_batch_reviewer_prompt_allows_widened_inspection(tmp_path: Path):
     )
     assert provider.reviewer_prompts
     batch_prompt = provider.reviewer_prompts[-1]
-    assert "outside the diff" in batch_prompt
+    assert "outside the targets" in batch_prompt
     assert f"{baseline}..{head}" in batch_prompt
 
 

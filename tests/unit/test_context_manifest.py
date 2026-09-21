@@ -32,6 +32,18 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
+def test_planner_role_includes_planner_context_section(tmp_path: Path):
+    doc = ContextDocument(
+        planner=RoleManifestSection(
+            resources=[ManifestEntry(path="docs/planning.md", purpose="planner only")],
+        ),
+    )
+    planner = render_resource_manifest(doc, "planner")
+    worker = render_resource_manifest(doc, "worker")
+    assert "docs/planning.md" in planner
+    assert "docs/planning.md" not in worker
+
+
 def test_role_filtered_manifest_and_dedupe(tmp_path: Path):
     doc = ContextDocument(
         shared=RoleManifestSection(

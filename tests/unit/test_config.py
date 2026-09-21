@@ -20,6 +20,8 @@ def test_default_config_round_trip():
     assert cfg.version == 1
     assert cfg.provider.type == "cursor"
     assert cfg.provider.cursor.worker_extra_args == ["--force"]
+    assert cfg.agents["planner"].mode == "agent"
+    assert cfg.agents["planner"].role_file.endswith("planner.md")
     assert cfg.agents["worker"].mode == "agent"
     assert cfg.agents["reviewer"].mode == "ask"
     assert cfg.limits.max_turns == 100
@@ -51,6 +53,15 @@ def test_reviewer_must_use_ask_mode():
     data["agents"]["reviewer"]["mode"] = "agent"
     with pytest.raises(ConfigurationError, match="ask mode"):
         parse_config_dict(data)
+
+
+def test_config_fills_missing_planner_agent():
+    data = default_config().model_dump(mode="json")
+    data["agents"].pop("planner")
+    cfg = parse_config_dict(data)
+    assert "planner" in cfg.agents
+    assert cfg.agents["planner"].mode == "agent"
+    assert cfg.agents["planner"].model == "auto"
 
 
 def test_load_config_from_file(tmp_path: Path):

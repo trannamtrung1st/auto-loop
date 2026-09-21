@@ -97,6 +97,7 @@ def normalize_batch_range(
     last_approved_commit: str,
     worker_base_commit: str | None = None,
     worker_head_commit: str | None = None,
+    allow_empty: bool = False,
 ) -> NormalizedBatchRange:
     """Normalize worker batch review to authoritative last_approved..HEAD."""
     from auto_loop.product_state import assert_clean_product_tree
@@ -124,7 +125,7 @@ def normalize_batch_range(
                 "commit or reconcile before requesting review"
             )
 
-    if authoritative_base == authoritative_head:
+    if authoritative_base == authoritative_head and not allow_empty:
         raise GitProtocolError("Batch review range is empty (base equals HEAD)")
 
     if not is_ancestor(repo, authoritative_base, authoritative_head):

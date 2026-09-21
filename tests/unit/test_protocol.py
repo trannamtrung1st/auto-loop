@@ -4,13 +4,14 @@ import json
 
 import pytest
 
-from auto_loop.models import ReviewerResult, WorkerResult
+from auto_loop.models import PlannerResult, ReviewerResult, WorkerResult
 from auto_loop.protocol import (
     ProtocolDiagnosticCode,
     ProtocolParseError,
     RESULT_BLOCK_END,
     RESULT_BLOCK_START,
     extract_result_json,
+    parse_planner_result,
     parse_reviewer_result,
     parse_role_result,
     parse_worker_result,
@@ -22,9 +23,26 @@ def _wrap(payload: dict) -> str:
     return f"noise before\n{RESULT_BLOCK_START}\n{json.dumps(payload)}\n{RESULT_BLOCK_END}\ntrailing"
 
 
+def _planner_payload(**overrides) -> dict:
+    base = {
+        "schema_version": 2,
+        "actor": "planner",
+        "status": "review_requested",
+        "review": {
+            "scope": "plan",
+            "target": "plan",
+            "summary": "plan ready",
+        },
+        "plan_summary": "planned",
+        "notes": [],
+    }
+    base.update(overrides)
+    return base
+
+
 def _worker_payload(**overrides) -> dict:
     base = {
-        "schema_version": 1,
+        "schema_version": 2,
         "actor": "worker",
         "status": "review_requested",
         "review": {
@@ -42,7 +60,7 @@ def _worker_payload(**overrides) -> dict:
 
 def _reviewer_payload(**overrides) -> dict:
     base = {
-        "schema_version": 1,
+        "schema_version": 2,
         "actor": "reviewer",
         "verdict": "pass",
         "scope": "plan",
@@ -134,7 +152,31 @@ def test_complete_requires_final_scope():
         parse_reviewer_result(_wrap(bad))
 
 
+def test_parse_planner_result():
+    result = parse_planner_result(_wrap(_planner_payload()))
+    assert isinstance(result, PlannerResult)
+    assert result.review is not None
+    assert result.review.scope == "plan"
+
+
+def test_planner_forbidden_batch_request():
+    bad = _planner_payload()
+    bad["review"]["scope"] = "batch"
+    with pytest.raises(ProtocolParseError) as exc:
+        parse_planner_result(_wrap(bad))
+    assert exc.value.diagnostic.code == ProtocolDiagnosticCode.SCHEMA_VIOLATION
+
+
+def test_planner_forbidden_complete_verdict():
+    bad = _planner_payload(status="complete")
+    with pytest.raises(ProtocolParseError) as exc:
+        parse_planner_result(_wrap(bad))
+    assert exc.value.diagnostic.code == ProtocolDiagnosticCode.WORKER_FORBIDDEN_VERDICT
+
+
 def test_parse_role_result_dispatch():
+    planner = parse_role_result(_wrap(_planner_payload()), "planner")
+    assert isinstance(planner, PlannerResult)
     worker = parse_role_result(_wrap(_worker_payload()), "worker")
     assert isinstance(worker, WorkerResult)
     reviewer = parse_role_result(_wrap(_reviewer_payload()), "reviewer")

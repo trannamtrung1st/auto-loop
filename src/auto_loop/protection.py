@@ -9,7 +9,9 @@ from pathlib import Path
 from auto_loop.config import AutoLoopConfig
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
+from auto_loop.models import ActiveReviewTarget
 from auto_loop.product_state import ProductChange, list_product_changes
+from auto_loop.review_targets import verify_path_targets_unchanged, sha256_file
 
 
 class ProtectionViolationError(Exception):
@@ -50,6 +52,13 @@ class ProtectedBaseline:
 class ProductFingerprint:
     head: str
     changes: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class ReviewSnapshot:
+    product: ProductFingerprint
+    plan_sha256: str | None
+    path_target_ids: tuple[str, ...]
 
 
 def _sha256_file(path: Path) -> str:
@@ -142,6 +151,38 @@ def diff_product_fingerprints(before: ProductFingerprint, after: ProductFingerpr
 
 def assert_reviewer_product_unchanged(before: ProductFingerprint, after: ProductFingerprint) -> None:
     details = diff_product_fingerprints(before, after)
+    if details:
+        raise ReviewMutationError(details)
+
+
+def capture_review_snapshot(
+    repo: Path,
+    *,
+    plan_path: Path,
+    targets: list[ActiveReviewTarget] | None = None,
+) -> ReviewSnapshot:
+    plan_hash = sha256_file(plan_path) if plan_path.is_file() else None
+    return ReviewSnapshot(
+        product=capture_product_fingerprint(repo),
+        plan_sha256=plan_hash,
+        path_target_ids=tuple(t.id for t in (targets or []) if t.kind == "path"),
+    )
+
+
+def assert_review_snapshot_unchanged(
+    repo: Path,
+    *,
+    plan_path: Path,
+    before: ReviewSnapshot,
+    targets: list[ActiveReviewTarget] | None = None,
+) -> None:
+    after_product = capture_product_fingerprint(repo)
+    details = diff_product_fingerprints(before.product, after_product)
+    after_plan = sha256_file(plan_path) if plan_path.is_file() else None
+    if before.plan_sha256 != after_plan:
+        details.append("plan.md changed during review")
+    if targets:
+        details.extend(verify_path_targets_unchanged(repo, targets))
     if details:
         raise ReviewMutationError(details)
 

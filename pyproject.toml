@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "auto-loop"
 version = "0.1.0"
-description = "Two-role autonomous implementation/review loop for Cursor"
+description = "Planner/worker/reviewer autonomous implementation/review loop for Cursor"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

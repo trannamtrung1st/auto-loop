@@ -1,4 +1,4 @@
-"""Mechanical worker/reviewer lifecycle loop."""
+"""Mechanical planner/worker/reviewer lifecycle loop."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from auto_loop.git import (
     GitProtocolError,
     assert_approved_baseline_ancestry,
     head_commit,
-    normalize_batch_range,
     resolve_commit,
 )
 from auto_loop.instructions import compose_role_instructions
@@ -26,28 +25,47 @@ from auto_loop.lifecycle import (
     InflightMarker,
     LifecycleState,
     LifecycleStatus,
+    PendingRevision,
+    SessionSlot,
     create_lifecycle,
+    next_cycle_id,
     new_lifecycle_id,
     utc_now,
 )
-from auto_loop.models import ReviewerResult
+from auto_loop.models import (
+    ROLE_FOR_SLOT,
+    ReviewerResult,
+    Role,
+    WorkerResult,
+)
 from auto_loop.product_state import assert_clean_product_tree, is_product_tree_clean
-from auto_loop.prompts import TurnContext, build_reviewer_prompt, build_worker_prompt
-from auto_loop.protocol import ProtocolParseError, parse_reviewer_result, parse_worker_result
+from auto_loop.prompts import TurnContext, build_planner_prompt, build_reviewer_prompt, build_worker_prompt
+from auto_loop.protocol import (
+    ProtocolParseError,
+    missing_pass_targets,
+    parse_planner_result,
+    parse_reviewer_result,
+    parse_worker_result,
+)
 from auto_loop.stop_control import RunStopController, clear_active_run, persist_stopped_state, register_active_run
 from auto_loop.protection import (
     ProtectionViolationError,
     ReviewMutationError,
     assert_protected_unchanged,
-    assert_reviewer_product_unchanged,
-    capture_product_fingerprint,
+    assert_review_snapshot_unchanged,
     capture_protected_baseline,
+    capture_review_snapshot,
 )
 from auto_loop.providers.base import AgentRequest
 from auto_loop.providers.cursor import SessionError, build_cursor_command, parse_cursor_stream
 from auto_loop.providers.fake_cursor import FakeCursorError
 from auto_loop.providers.supervision import ProviderError
 from auto_loop.review_store import next_review_sequence, review_artifact_path
+from auto_loop.review_targets import (
+    normalize_work_targets,
+    plan_path_target,
+    sha256_file,
+)
 from auto_loop.reviews import render_review_markdown
 from auto_loop.console_output import RunConsole
 from auto_loop.events import append_event
@@ -120,16 +138,18 @@ class LifecycleRunner:
     def _reconcile_stale_inflight(self, state: LifecycleState) -> None:
         if state.inflight is None:
             return
-        state.next_actor = state.inflight.actor
+        state.next_session = state.inflight.session_slot
         save_lifecycle_state(self.repo, state)
 
-    def _turn_interrupted(self, state: LifecycleState, role: str) -> bool:
-        return state.inflight is not None and state.inflight.actor == role
+    def _turn_interrupted(self, state: LifecycleState, slot: SessionSlot) -> bool:
+        return state.inflight is not None and state.inflight.session_slot == slot
 
-    def _persist_inflight(self, state: LifecycleState, role: str) -> None:
-        session_id = state.sessions[role].session_id or "pending"
+    def _persist_inflight(self, state: LifecycleState, slot: SessionSlot) -> None:
+        session = state.sessions[slot]
+        session_id = session.session_id or "pending"
         state.inflight = InflightMarker(
-            actor=role,
+            session_slot=slot,
+            role=ROLE_FOR_SLOT[slot],
             turn=state.turn,
             session_id=session_id,
             started_at=utc_now(),
@@ -176,8 +196,8 @@ class LifecycleRunner:
         self._terminal_message = "Lifecycle stopped"
         return True
 
-    def _protocol_repair_or_fail(self, state: LifecycleState, role: str) -> bool:
-        """Return True to retry the same role turn with a repair prompt."""
+    def _protocol_repair_or_fail(self, state: LifecycleState, slot: str) -> bool:
+        """Return True to retry the same slot turn with a repair prompt."""
         state.consecutive_protocol_failures += 1
         if state.consecutive_protocol_failures > self.config.limits.protocol_retries:
             return False
@@ -186,7 +206,8 @@ class LifecycleRunner:
             self.config,
             {
                 "type": "protocol_repair",
-                "actor": role,
+                "actor": ROLE_FOR_SLOT[slot],  # type: ignore[index]
+                "session_purpose": slot,
                 "attempt": state.consecutive_protocol_failures,
                 "lifecycle_id": state.lifecycle_id,
             },
@@ -195,12 +216,12 @@ class LifecycleRunner:
         save_lifecycle_state(self.repo, state)
         return True
 
-    def _context_manifest(self, role: str) -> str:
+    def _context_manifest(self, role: Role) -> str:
         document = load_context_file(self.repo / self.config.context_file)
         validation = validate_context(self.repo, document)
         if not validation.ok_for_run:
             raise RunPreconditionError("context.yaml failed validation")
-        return render_resource_manifest(document, "worker" if role == "worker" else "reviewer")
+        return render_resource_manifest(document, role)
 
     def _latest_review_path(self) -> str | None:
         reviews = sorted((self.repo / self.config.reviews_dir).glob("*.md"))
@@ -209,12 +230,67 @@ class LifecycleRunner:
         rel = reviews[-1].relative_to(self.repo)
         return str(rel)
 
-    def _invoke_role(self, role: str, prompt: str, state: LifecycleState) -> str:
-        session = state.sessions[role]
-        model = self.options.worker_model if role == "worker" else self.options.reviewer_model
+    def _plan_hash(self) -> str | None:
+        path = self.repo / self.config.plan_file
+        if not path.is_file():
+            return None
+        return sha256_file(path)
+
+    def _resolved_model(self, slot: SessionSlot, state: LifecycleState) -> str:
+        session = state.sessions[slot]
+        if session.session_id:
+            return session.model
+        role = ROLE_FOR_SLOT[slot]
+        if role == "planner":
+            return self.options.planner_model
+        if role == "worker":
+            return self.options.worker_model
+        return self.options.reviewer_model
+
+    def _turn_context(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        *,
+        protocol_repair: bool,
+    ) -> TurnContext:
+        role = ROLE_FOR_SLOT[slot]
+        current = self._plan_hash()
+        initial = state.initial_approved_plan_sha256
+        changed = None
+        if initial and current:
+            changed = current != initial
+        first_execution = (
+            state.phase == "execution"
+            and state.sessions[slot].session_id is None
+            and slot in ("worker", "reviewer")
+        )
+        return TurnContext(
+            task_path=self.config.task_file,
+            plan_path=self.config.plan_file,
+            latest_review_path=self._latest_review_path(),
+            head_commit=head_commit(self.repo),
+            product_clean=is_product_tree_clean(self.repo),
+            interrupted=self._turn_interrupted(state, slot),
+            protocol_repair=protocol_repair,
+            resource_manifest=self._context_manifest(role),
+            session_purpose=slot,
+            phase=state.phase,
+            initial_plan_sha256=initial,
+            current_plan_sha256=current,
+            plan_changed_since_approval=changed,
+            first_execution_turn=first_execution,
+            pending_revision=state.pending_revision,
+        )
+
+    def _invoke_slot(self, slot: SessionSlot, prompt: str, state: LifecycleState) -> str:
+        session = state.sessions[slot]
+        role = ROLE_FOR_SLOT[slot]
+        model = self._resolved_model(slot, state)
         mode = self.config.agents[role].mode
         request = AgentRequest(
             role=role,
+            session_purpose=slot,
             workspace=self.repo,
             prompt=prompt,
             model=model,
@@ -230,19 +306,20 @@ class LifecycleRunner:
             binary=None if use_live_cursor else "fake-agent",
             resume_session_id=session.session_id,
         )
-        os.environ["AUTO_LOOP_FAKE_ROLE"] = role
-        self._persist_inflight(state, role)
+        os.environ["AUTO_LOOP_FAKE_ROLE"] = slot
+        os.environ["AUTO_LOOP_FAKE_SLOT"] = slot
+        self._persist_inflight(state, slot)
         if session.session_id:
-            self._console.session_resumed(role, session.session_id)
-        self._console.turn_started(state.turn, role)
+            self._console.session_resumed(slot, session.session_id)
+        self._console.turn_started(state.turn, slot)
         turn_log = TurnLogWriter(
             self.repo,
             self.config,
             state.lifecycle_id,
             state.turn,
-            role,
+            slot,
         )
-        self.invoker.prepare(role)
+        self.invoker.prepare(slot)
         if hasattr(self.invoker, "stop_check"):
             self.invoker.stop_check = lambda: self._stop.requested
         if hasattr(self.invoker, "on_provider_pid"):
@@ -289,6 +366,7 @@ class LifecycleRunner:
                         {
                             "type": "provider_retry",
                             "actor": role,
+                            "session_purpose": slot,
                             "attempt": attempt,
                             "lifecycle_id": state.lifecycle_id,
                         },
@@ -299,22 +377,31 @@ class LifecycleRunner:
             self._stop.set_active_provider(None)
         if parsed is None:
             turn_log.finalize()
-            raise ProviderError(f"Provider failed for role {role}")
+            raise ProviderError(f"Provider failed for session {slot}")
         turn_log.finalize()
         if session.session_id is None:
             session.session_id = parsed.session_id
+            session.model = model
+            session.status = "active"
             append_event(
                 self.repo,
                 self.config,
                 {
                     "type": "session_created",
                     "actor": role,
+                    "session_purpose": slot,
                     "session_id": parsed.session_id,
+                    "model": model,
                     "lifecycle_id": state.lifecycle_id,
                 },
             )
-            self._console.session_created(role, parsed.session_id)
+            self._console.session_created(slot, parsed.session_id)
         return parsed.final_text
+
+    def _assert_planning_clean(self, state: LifecycleState) -> None:
+        if head_commit(self.repo) != state.initial_base_commit:
+            raise GitProtocolError("Product HEAD must remain at initial baseline before plan PASS")
+        assert_clean_product_tree(self.repo)
 
     def _assert_final_complete_valid(
         self,
@@ -330,6 +417,122 @@ class LifecycleRunner:
             raise GitProtocolError("COMPLETE reviewed_head_commit does not match current HEAD")
         assert_clean_product_tree(self.repo)
 
+    def _assert_pass_targets(self, review: ActiveReview, result: ReviewerResult) -> None:
+        if result.verdict != "pass":
+            return
+        required = review.target_ids
+        if required and not set(required) <= set(result.reviewed_target_ids):
+            raise missing_pass_targets(required, result.reviewed_target_ids)
+
+    def _persist_after_turn(self, state: LifecycleState) -> None:
+        state.turn += 1
+        state.updated_at = utc_now()
+        self._clear_inflight(state)
+        save_lifecycle_state(self.repo, state)
+
+    def _assert_planning_slot_active(self, state: LifecycleState, slot: SessionSlot) -> None:
+        if slot not in ("planner", "plan_reviewer"):
+            return
+        if state.phase != "planning":
+            raise GitProtocolError(f"Cannot invoke {slot} during execution phase")
+        if state.sessions[slot].status == "retired":
+            raise GitProtocolError(f"Planning session {slot} is retired and cannot be resumed")
+
+    def _planner_turn(self, state: LifecycleState) -> None:
+        self._assert_planning_slot_active(state, "planner")
+        protocol_repair = False
+        while True:
+            first = state.sessions["planner"].session_id is None
+            instruction_stack = compose_role_instructions(
+                self.repo, self.config, "planner", first_invocation=first
+            )
+            ctx = self._turn_context(state, "planner", protocol_repair=protocol_repair)
+            body = build_planner_prompt(state, ctx)
+            prompt = instruction_stack + "\n\n" + body if instruction_stack else body
+            protected = capture_protected_baseline(self.repo, self.config)
+            final_text = self._invoke_slot("planner", prompt, state)
+            assert_protected_unchanged(self.repo, self.config, protected)
+            try:
+                result = parse_planner_result(final_text)
+            except ProtocolParseError:
+                if self._protocol_repair_or_fail(state, "planner"):
+                    protocol_repair = True
+                    continue
+                raise
+            break
+        state.consecutive_protocol_failures = 0
+        self._assert_planning_clean(state)
+
+        if result.status == "blocked":
+            append_event(
+                self.repo,
+                self.config,
+                {"type": "planner_blocked", "turn": state.turn, "lifecycle_id": state.lifecycle_id},
+            )
+            state.active_review = ActiveReview(
+                cycle_id=next_cycle_id(state),
+                scope="plan",
+                target="blocked",
+                summary=result.plan_summary,
+                session_purpose="plan_reviewer",
+                plan_summary=result.plan_summary,
+                plan_sha256=self._plan_hash(),
+                targets=[plan_path_target(self.repo, self.config.plan_file)],
+            )
+            state.next_session = "plan_reviewer"
+            self._persist_after_turn(state)
+            return
+
+        if result.review is None or result.review.scope != "plan":
+            raise GitProtocolError("Planner must request plan review")
+        self._assert_planning_clean(state)
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "review_requested",
+                "scope": "plan",
+                "target": result.review.target,
+                "session_purpose": "plan_reviewer",
+                "turn": state.turn,
+                "lifecycle_id": state.lifecycle_id,
+            },
+        )
+        self._console.review_requested(result.review.scope, result.review.target)
+        state.active_review = ActiveReview(
+            cycle_id=next_cycle_id(state),
+            scope="plan",
+            target=result.review.target,
+            summary=result.review.summary,
+            session_purpose="plan_reviewer",
+            plan_summary=result.plan_summary,
+            plan_sha256=self._plan_hash(),
+            targets=[plan_path_target(self.repo, self.config.plan_file)],
+        )
+        state.next_session = "plan_reviewer"
+        self._persist_after_turn(state)
+
+    def _make_plan_update_review(self, state: LifecycleState, result: WorkerResult) -> ActiveReview:
+        assert result.review is not None
+        pending = state.pending_revision
+        if pending and pending.scope == "plan" and pending.target == result.review.target:
+            cycle_id = pending.cycle_id
+            round_no = pending.round
+        else:
+            cycle_id = next_cycle_id(state)
+            round_no = 1
+        return ActiveReview(
+            cycle_id=cycle_id,
+            round=round_no,
+            scope="plan",
+            target=result.review.target,
+            summary=result.review.summary,
+            session_purpose="reviewer",
+            worker_summary=result.work_summary,
+            plan_sha256=self._plan_hash(),
+            targets=[plan_path_target(self.repo, self.config.plan_file)],
+        )
+
     def _worker_turn(self, state: LifecycleState) -> None:
         protocol_repair = False
         while True:
@@ -337,23 +540,14 @@ class LifecycleRunner:
             instruction_stack = compose_role_instructions(
                 self.repo, self.config, "worker", first_invocation=first
             )
-            ctx = TurnContext(
-                task_path=self.config.task_file,
-                plan_path=self.config.plan_file,
-                latest_review_path=self._latest_review_path(),
-                head_commit=head_commit(self.repo),
-                product_clean=is_product_tree_clean(self.repo),
-                interrupted=self._turn_interrupted(state, "worker"),
-                protocol_repair=protocol_repair,
-                resource_manifest=self._context_manifest("worker"),
-            )
+            ctx = self._turn_context(state, "worker", protocol_repair=protocol_repair)
             prompt = (
                 instruction_stack + "\n\n" + build_worker_prompt(state, ctx)
                 if instruction_stack
                 else build_worker_prompt(state, ctx)
             )
             protected = capture_protected_baseline(self.repo, self.config)
-            final_text = self._invoke_role("worker", prompt, state)
+            final_text = self._invoke_slot("worker", prompt, state)
             assert_protected_unchanged(self.repo, self.config, protected)
             try:
                 result = parse_worker_result(final_text)
@@ -372,38 +566,44 @@ class LifecycleRunner:
                 {"type": "worker_blocked", "turn": state.turn, "lifecycle_id": state.lifecycle_id},
             )
             state.active_review = ActiveReview(
+                cycle_id=next_cycle_id(state),
                 scope="batch",
                 target="blocked",
                 summary=result.work_summary,
+                session_purpose="reviewer",
+                worker_summary=result.work_summary,
             )
-            state.next_actor = "reviewer"
-            state.turn += 1
-            state.updated_at = utc_now()
-            self._clear_inflight(state)
-            save_lifecycle_state(self.repo, state)
+            state.next_session = "reviewer"
+            self._persist_after_turn(state)
             return
 
         if not state.plan_approved:
-            if result.review is None or result.review.scope != "plan":
-                raise GitProtocolError("Worker must request plan review before implementation")
-            if head_commit(self.repo) != state.initial_base_commit:
-                raise GitProtocolError("Product HEAD must remain at initial baseline before plan PASS")
-            assert_clean_product_tree(self.repo)
+            raise GitProtocolError("Worker cannot run before initial plan PASS")
 
-        elif result.review and result.review.scope == "final":
-            if not state.plan_approved:
-                raise GitProtocolError("Final review requires an approved plan")
+        if result.review is None:
+            raise GitProtocolError("Worker review_requested requires a review request")
+
+        if result.review.scope == "final":
             assert_clean_product_tree(self.repo)
             current_head = head_commit(self.repo)
             if current_head != state.last_approved_commit:
-                state.next_actor = "worker"
-                state.turn += 1
-                state.updated_at = utc_now()
-                self._clear_inflight(state)
-                save_lifecycle_state(self.repo, state)
+                state.next_session = "worker"
+                self._persist_after_turn(state)
                 return
-
-        elif result.review and result.review.scope == "batch":
+            state.active_review = ActiveReview(
+                cycle_id=next_cycle_id(state),
+                scope="final",
+                target=result.review.target,
+                summary=result.review.summary,
+                session_purpose="reviewer",
+                approved_base_commit=state.last_approved_commit,
+                current_candidate_head=current_head,
+                worker_summary=result.work_summary,
+                plan_sha256=self._plan_hash(),
+            )
+        elif result.review.scope == "plan":
+            state.active_review = self._make_plan_update_review(state, result)
+        elif result.review.scope == "batch":
             try:
                 assert_clean_product_tree(self.repo)
             except GitProtocolError:
@@ -412,43 +612,62 @@ class LifecycleRunner:
                     raise
                 state.worker_no_progress_streak = 0
                 state.last_worker_progress_key = None
-                state.next_actor = "worker"
-                state.turn += 1
-                state.updated_at = utc_now()
-                self._clear_inflight(state)
-                save_lifecycle_state(self.repo, state)
+                state.next_session = "worker"
+                self._persist_after_turn(state)
                 return
-            normalized = normalize_batch_range(
+            targets, _warnings = normalize_work_targets(
                 self.repo,
                 last_approved_commit=state.last_approved_commit,
-                worker_base_commit=result.review.base_commit,
-                worker_head_commit=result.review.head_commit,
+                request=result.review,
             )
-            result.review.base_commit = normalized.range.base
-            result.review.head_commit = normalized.range.head
-
-        if result.review:
-            append_event(
-                self.repo,
-                self.config,
-                {
-                    "type": "review_requested",
-                    "scope": result.review.scope,
-                    "target": result.review.target,
-                    "turn": state.turn,
-                    "lifecycle_id": state.lifecycle_id,
-                },
-            )
-            self._console.review_requested(result.review.scope, result.review.target)
+            pending = state.pending_revision
+            if (
+                pending
+                and pending.scope == "batch"
+                and pending.target == result.review.target
+            ):
+                cycle_id = pending.cycle_id
+                round_no = pending.round
+                production_head = pending.production_head_commit
+            else:
+                cycle_id = next_cycle_id(state)
+                round_no = 1
+                production_head = head_commit(self.repo)
+            git_target = next((t for t in targets if t.kind == "git_range"), None)
             state.active_review = ActiveReview(
-                scope=result.review.scope,
+                cycle_id=cycle_id,
+                round=round_no,
+                scope="batch",
                 target=result.review.target,
                 summary=result.review.summary,
-                base_commit=result.review.base_commit,
-                head_commit=result.review.head_commit,
+                session_purpose="reviewer",
+                approved_base_commit=state.last_approved_commit,
+                production_head_commit=production_head,
+                current_candidate_head=head_commit(self.repo),
                 worker_summary=result.work_summary,
+                plan_sha256=self._plan_hash(),
+                targets=targets,
             )
-            state.next_actor = "reviewer"
+            if git_target is not None:
+                result.review.base_commit = git_target.base_commit
+                result.review.head_commit = git_target.head_commit
+        else:
+            raise GitProtocolError(f"Unsupported worker review scope: {result.review.scope}")
+
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "review_requested",
+                "scope": result.review.scope,
+                "target": result.review.target,
+                "session_purpose": "reviewer",
+                "turn": state.turn,
+                "lifecycle_id": state.lifecycle_id,
+            },
+        )
+        self._console.review_requested(result.review.scope, result.review.target)
+        state.next_session = "reviewer"
         current_head = head_commit(self.repo)
         progress_key = worker_progress_key(
             self.repo, self.config, state, result, current_head
@@ -456,96 +675,127 @@ class LifecycleRunner:
         if update_worker_no_progress(state, self.config, progress_key):
             self._mark_limit_reached(state, "worker_no_progress")
             return
-        state.turn += 1
-        state.updated_at = utc_now()
-        self._clear_inflight(state)
-        save_lifecycle_state(self.repo, state)
+        self._persist_after_turn(state)
 
     def _review_kind(self, review: ActiveReview, result: ReviewerResult) -> str:
         if result.scope == "final" or review.scope == "final":
             return "final"
         if review.target == "blocked":
             return "batch"
+        if review.round > 1:
+            return "revision"
         return "plan" if result.scope == "plan" else "batch"
 
-    def _reviewer_turn(self, state: LifecycleState) -> None:
+    def _write_review_artifact(
+        self,
+        state: LifecycleState,
+        result: ReviewerResult,
+        *,
+        implementer_slot: SessionSlot,
+        reviewer_slot: SessionSlot,
+    ) -> str:
+        sequence = next_review_sequence(self.repo, self.config)
+        slug = f"{result.scope}-{result.target}"
+        path = review_artifact_path(self.repo, self.config, sequence=sequence, slug=slug)
+        kind = self._review_kind(state.active_review, result) if state.active_review else "batch"
+        markdown = render_review_markdown(
+            sequence=sequence,
+            title=slug,
+            kind=kind,  # type: ignore[arg-type]
+            worker=None,
+            reviewer=result,
+            worker_session_id=state.sessions[implementer_slot].session_id,
+            reviewer_session_id=state.sessions[reviewer_slot].session_id,
+            session_purpose=reviewer_slot,
+            active_review=state.active_review,
+        )
+        atomic_write_text(path, markdown)
+        return str(path.relative_to(self.repo))
+
+    def _handle_reviewer_blocked(
+        self,
+        state: LifecycleState,
+        result: ReviewerResult,
+        review_rel: str,
+        implementer_slot: SessionSlot,
+        reviewer_slot: SessionSlot,
+    ) -> None:
+        save_blocked_record(
+            self.repo,
+            BlockedRecord(
+                blocked_at=datetime.now(timezone.utc),
+                lifecycle_id=state.lifecycle_id,
+                turn=state.turn,
+                worker_session_id=state.sessions[implementer_slot].session_id,
+                reviewer_session_id=state.sessions[reviewer_slot].session_id,
+                planner_session_id=state.sessions["planner"].session_id,
+                plan_reviewer_session_id=state.sessions["plan_reviewer"].session_id,
+                summary=result.summary,
+                review_file=review_rel,
+            ),
+        )
+        state.status = LifecycleStatus.BLOCKED
+        state.active_review = None
+        state.updated_at = utc_now()
+        self._clear_inflight(state)
+        save_lifecycle_state(self.repo, state)
+        append_event(
+            self.repo,
+            self.config,
+            {"type": "lifecycle_blocked", "lifecycle_id": state.lifecycle_id},
+        )
+        self._console.terminal("Lifecycle blocked by reviewer")
+        self._terminal_exit = ExitCode.BLOCKED
+
+    def _reviewer_slot_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
         if state.active_review is None:
             raise GitProtocolError("Reviewer invoked without active review")
+        if slot == "plan_reviewer":
+            self._assert_planning_slot_active(state, "plan_reviewer")
+        role = ROLE_FOR_SLOT[slot]
         protocol_repair = False
         while True:
-            first = state.sessions["reviewer"].session_id is None
+            first = state.sessions[slot].session_id is None
             instruction_stack = compose_role_instructions(
-                self.repo, self.config, "reviewer", first_invocation=first
+                self.repo, self.config, role, first_invocation=first
             )
-            ctx = TurnContext(
-                task_path=self.config.task_file,
-                plan_path=self.config.plan_file,
-                latest_review_path=self._latest_review_path(),
-                head_commit=head_commit(self.repo),
-                product_clean=is_product_tree_clean(self.repo),
-                interrupted=self._turn_interrupted(state, "reviewer"),
-                protocol_repair=protocol_repair,
-                resource_manifest=self._context_manifest("reviewer"),
-            )
+            ctx = self._turn_context(state, slot, protocol_repair=protocol_repair)
             body = build_reviewer_prompt(state, ctx, state.active_review)
             prompt = instruction_stack + "\n\n" + body if instruction_stack else body
             protected = capture_protected_baseline(self.repo, self.config)
-            product_before = capture_product_fingerprint(self.repo)
-            final_text = self._invoke_role("reviewer", prompt, state)
+            snapshot = capture_review_snapshot(
+                self.repo,
+                plan_path=self.repo / self.config.plan_file,
+                targets=state.active_review.targets,
+            )
+            final_text = self._invoke_slot(slot, prompt, state)
             assert_protected_unchanged(self.repo, self.config, protected)
-            product_after = capture_product_fingerprint(self.repo)
-            assert_reviewer_product_unchanged(product_before, product_after)
+            assert_review_snapshot_unchanged(
+                self.repo,
+                plan_path=self.repo / self.config.plan_file,
+                before=snapshot,
+                targets=state.active_review.targets,
+            )
             try:
                 result = parse_reviewer_result(final_text)
             except ProtocolParseError:
-                if self._protocol_repair_or_fail(state, "reviewer"):
+                if self._protocol_repair_or_fail(state, slot):
                     protocol_repair = True
                     continue
                 raise
             break
         state.consecutive_protocol_failures = 0
+        self._assert_pass_targets(state.active_review, result)
+        if slot == "plan_reviewer" and result.verdict == "complete":
+            raise GitProtocolError("Plan reviewer cannot declare task completion")
 
-        sequence = next_review_sequence(self.repo, self.config)
-        slug = f"{result.scope}-{result.target}"
-        path = review_artifact_path(self.repo, self.config, sequence=sequence, slug=slug)
-        kind = self._review_kind(state.active_review, result)
-        markdown = render_review_markdown(
-            sequence=sequence,
-            title=slug,
-            kind=kind,
-            worker=None,
-            reviewer=result,
-            worker_session_id=state.sessions["worker"].session_id,
-            reviewer_session_id=state.sessions["reviewer"].session_id,
+        implementer_slot: SessionSlot = "planner" if slot == "plan_reviewer" else "worker"
+        review_rel = self._write_review_artifact(
+            state, result, implementer_slot=implementer_slot, reviewer_slot=slot
         )
-        atomic_write_text(path, markdown)
-        review_rel = str(path.relative_to(self.repo))
 
         if result.verdict == "blocked":
-            save_blocked_record(
-                self.repo,
-                BlockedRecord(
-                    blocked_at=datetime.now(timezone.utc),
-                    lifecycle_id=state.lifecycle_id,
-                    turn=state.turn,
-                    worker_session_id=state.sessions["worker"].session_id,
-                    reviewer_session_id=state.sessions["reviewer"].session_id,
-                    summary=result.summary,
-                    review_file=review_rel,
-                ),
-            )
-            state.status = LifecycleStatus.BLOCKED
-            state.active_review = None
-            state.updated_at = utc_now()
-            self._clear_inflight(state)
-            save_lifecycle_state(self.repo, state)
-            append_event(
-                self.repo,
-                self.config,
-                {"type": "lifecycle_blocked", "lifecycle_id": state.lifecycle_id},
-            )
-            self._console.terminal("Lifecycle blocked by reviewer")
-            self._terminal_exit = ExitCode.BLOCKED
+            self._handle_reviewer_blocked(state, result, review_rel, implementer_slot, slot)
             return
 
         append_event(
@@ -555,6 +805,7 @@ class LifecycleRunner:
                 "type": "review_result",
                 "verdict": result.verdict,
                 "scope": result.scope,
+                "session_purpose": slot,
                 "finding_count": len(result.findings),
                 "turn": state.turn,
                 "lifecycle_id": state.lifecycle_id,
@@ -562,22 +813,32 @@ class LifecycleRunner:
         )
         self._console.review_result(result.verdict, result.scope, len(result.findings))
 
-        if result.verdict == "pass" and result.scope == "plan":
-            state.plan_approved = True
-        if result.verdict == "pass" and result.scope == "batch":
-            new_head = head_commit(self.repo)
-            state.last_approved_commit = new_head
-            self._dirty_batch_attempts = 0
-            append_event(
-                self.repo,
-                self.config,
-                {
-                    "type": "baseline_advanced",
-                    "head": new_head,
-                    "lifecycle_id": state.lifecycle_id,
-                },
-            )
-            self._console.baseline_advanced(new_head)
+        active = state.active_review
+        if slot == "plan_reviewer":
+            if result.verdict == "pass":
+                plan_hash = self._plan_hash()
+                state.plan_approved = True
+                state.initial_approved_plan_sha256 = plan_hash
+                state.current_plan_sha256 = plan_hash
+                state.planning_completed_at = utc_now()
+                state.phase = "execution"
+                state.sessions["planner"].status = "retired"
+                state.sessions["plan_reviewer"].status = "retired"
+                state.active_review = None
+                state.pending_revision = None
+                state.next_session = "worker"
+            else:
+                state.pending_revision = PendingRevision(
+                    cycle_id=active.cycle_id,
+                    scope=active.scope,
+                    target=active.target,
+                    round=active.round + 1,
+                    finding_review_file=review_rel,
+                )
+                state.active_review = None
+                state.next_session = "planner"
+            self._persist_after_turn(state)
+            return
 
         if result.verdict == "complete" and result.scope == "final":
             self._assert_final_complete_valid(state, result)
@@ -589,14 +850,20 @@ class LifecycleRunner:
                     completed_at=datetime.now(timezone.utc),
                     lifecycle_id=state.lifecycle_id,
                     turn=state.turn,
+                    planner_session_id=state.sessions["planner"].session_id,
+                    plan_reviewer_session_id=state.sessions["plan_reviewer"].session_id,
                     worker_session_id=state.sessions["worker"].session_id,
                     reviewer_session_id=state.sessions["reviewer"].session_id,
+                    planner_model=state.sessions["planner"].model,
+                    worker_model=state.sessions["worker"].model,
+                    reviewer_model=state.sessions["reviewer"].model,
                     initial_base_commit=state.initial_base_commit,
                     final_commit=final_head,
                     last_approved_commit=state.last_approved_commit,
                     final_review_file=review_rel,
                     task_sha256=task_hash,
                     plan_sha256=plan_hash,
+                    initial_approved_plan_sha256=state.initial_approved_plan_sha256,
                 ),
             )
             state.status = LifecycleStatus.COMPLETED
@@ -617,12 +884,40 @@ class LifecycleRunner:
             self._terminal_exit = ExitCode.COMPLETE
             return
 
+        if active.scope == "batch" and result.verdict == "pass":
+            if active.has_git_target:
+                new_head = active.git_head or head_commit(self.repo)
+                state.last_approved_commit = new_head
+                self._dirty_batch_attempts = 0
+                append_event(
+                    self.repo,
+                    self.config,
+                    {
+                        "type": "baseline_advanced",
+                        "head": new_head,
+                        "lifecycle_id": state.lifecycle_id,
+                    },
+                )
+                self._console.baseline_advanced(new_head)
+            state.pending_revision = None
+        elif result.verdict == "revise":
+            state.pending_revision = PendingRevision(
+                cycle_id=active.cycle_id,
+                scope=active.scope,
+                target=active.target,
+                base_commit=active.approved_base_commit,
+                production_head_commit=active.production_head_commit,
+                last_reviewed_head_commit=active.current_candidate_head,
+                round=active.round + 1,
+                finding_review_file=review_rel,
+            )
+        else:
+            state.pending_revision = None
+
+        state.current_plan_sha256 = self._plan_hash()
         state.active_review = None
-        state.next_actor = "worker"
-        state.turn += 1
-        state.updated_at = utc_now()
-        self._clear_inflight(state)
-        save_lifecycle_state(self.repo, state)
+        state.next_session = "worker"
+        self._persist_after_turn(state)
 
     def run(self) -> RunOutcome:
         self._stop.install()
@@ -650,7 +945,8 @@ class LifecycleRunner:
                 self.config,
                 {
                     "type": "inflight_resume",
-                    "actor": state.inflight.actor,
+                    "actor": state.inflight.role,
+                    "session_purpose": state.inflight.session_slot,
                     "turn": state.inflight.turn,
                     "lifecycle_id": state.lifecycle_id,
                 },
@@ -668,10 +964,15 @@ class LifecycleRunner:
                     break
                 turns += 1
                 assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
-                if state.next_actor == "worker":
+                slot = state.next_session
+                if slot == "planner":
+                    self._planner_turn(state)
+                elif slot == "plan_reviewer":
+                    self._reviewer_slot_turn(state, "plan_reviewer")
+                elif slot == "worker":
                     self._worker_turn(state)
                 else:
-                    self._reviewer_turn(state)
+                    self._reviewer_slot_turn(state, "reviewer")
                 state = load_lifecycle_state(self.repo) or state
                 if self._terminal_exit is not None:
                     break

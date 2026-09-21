@@ -18,7 +18,7 @@ python -m pytest -q
 Result (representative run on Python 3.14):
 
 ```text
-209 passed, 1 skipped in ~57s
+237 passed, 1 skipped in ~65s
 ```
 
 The single skip is the opt-in live Cursor smoke test when `AUTO_LOOP_LIVE_CURSOR` is unset (see below).
@@ -41,7 +41,7 @@ Command:
 python -m pip wheel . --no-deps -w /tmp/wheels
 ```
 
-Result: succeeds; harness resources and templates present in wheel (`test_wheel_contains_harness_resources`, `test_packaging.py`).
+Result: succeeds; templates present in wheel and packaged harness absent (`test_packaging.py`, `test_development_harness.py`).
 
 ## Static analysis
 
@@ -67,7 +67,7 @@ Do **not** treat the skipped default pytest run as a passing live check.
 
 ## Scenario coverage sign-off
 
-All scenarios **A–T** have named tests listed in [v1-traceability.md](v1-traceability.md). No scenario is intentionally weakened relative to §44.
+All scenarios **A–T** and enhancement scenarios **U–AK** have named tests listed in [v1-traceability.md](v1-traceability.md). No scenario is intentionally weakened relative to §44 / §32.
 
 ## Documentation sign-off
 
@@ -80,4 +80,4 @@ All scenarios **A–T** have named tests listed in [v1-traceability.md](v1-trace
 
 ## Release readiness statement
 
-Offline implementation, deterministic integration scenarios A–T, packaging smoke tests, and operator documentation are **verified** as above. **Live Cursor end-to-end success** was **recorded as pass** in this environment on 2026-09-21 (opt-in pytest marker; see table above). Re-run the runbook command after material CLI or auth changes.
+Offline implementation, deterministic integration scenarios A–T and U–AK, packaging smoke tests, and operator documentation are **verified** as above. **Live Cursor end-to-end success** was **recorded as pass** in this environment on 2026-09-21 (opt-in pytest marker; see table above). Re-run the runbook command after material CLI or auth changes.

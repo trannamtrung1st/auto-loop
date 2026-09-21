@@ -29,7 +29,10 @@ def test_status_reports_core_fields(tmp_path: Path):
     save_lifecycle_state(repo, state)
     report = build_status_report(repo)
     assert "status: running" in report
-    assert "next actor: worker" in report
+    assert "next session: planner" in report
+    assert "planner session:" in report
+    assert "plan-reviewer session:" in report
     assert "worker session:" in report
+    assert "phase: planning" in report
     assert "HEAD:" in report
     assert "product tree:" in report

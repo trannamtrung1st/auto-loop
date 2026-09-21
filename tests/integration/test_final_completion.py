@@ -48,7 +48,7 @@ def _approve_plan_and_batch(repo: Path, provider: ScriptedProvider) -> str:
     provider.set_response(
         "worker",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "actor": "worker",
             "status": "review_requested",
             "review": {
@@ -88,6 +88,16 @@ def test_final_complete_writes_completion_and_exits_zero(tmp_path: Path):
     assert record is not None
     assert record.final_commit == head
     assert completion_path(repo).is_file()
+    assert record.planner_session_id and record.plan_reviewer_session_id
+    assert record.worker_session_id and record.reviewer_session_id
+    session_ids = {
+        record.planner_session_id,
+        record.plan_reviewer_session_id,
+        record.worker_session_id,
+        record.reviewer_session_id,
+    }
+    assert len(session_ids) == 4
+    assert record.initial_approved_plan_sha256
 
 
 def test_final_request_with_unreviewed_head_stays_on_worker(tmp_path: Path):
@@ -127,7 +137,7 @@ def test_final_revise_requires_batch_before_repeat(tmp_path: Path):
     provider.set_response(
         "worker",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "actor": "worker",
             "status": "review_requested",
             "review": {

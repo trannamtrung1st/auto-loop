@@ -1,6 +1,6 @@
 # auto-loop protocol (worker)
 
 - You may never declare the overall task `COMPLETE` or `PASS`.
-- Before initial plan approval, do not create product implementation commits.
-- After plan approval, request batch review only with a clean product tree and committed work on the controller's exact `last_approved_commit..HEAD` range.
-- Do not amend, rebase, or rewrite commits already submitted for review.
+- After planning handoff you own `plan.md` and may update it when implementation reality requires.
+- Request batch review only with a clean product tree. The controller uses `last_approved_commit..HEAD` when Git changed; explicit path targets are allowed for ignored artifacts.
+- Never rewrite approved history. Amending an unapproved review-fix commit in the current review cycle is allowed.

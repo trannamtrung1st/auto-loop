@@ -42,7 +42,7 @@ def run_opts(max_turns: int = 10) -> RunOptions:
 
 def batch_worker_payload(base: str, head: str, target: str = "W01") -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "actor": "worker",
         "status": "review_requested",
         "review": {
@@ -79,7 +79,11 @@ def latest_review_text(repo: Path) -> str:
 
 
 def reviewer_invocation_count(provider: ScriptedProvider) -> int:
-    return sum(1 for inv in provider.engine.invocations if inv.role == "reviewer")
+    return sum(
+        1
+        for inv in provider.engine.invocations
+        if inv.role in ("reviewer", "plan_reviewer")
+    )
 
 
 def worker_invocation_count(provider: ScriptedProvider) -> int:
@@ -117,9 +121,9 @@ class PromptCapturingProvider:
         if len(argv) > 1 and argv[0] == "fake-agent":
             prompt = argv[-1]
             fake_role = os.environ.get("AUTO_LOOP_FAKE_ROLE")
-            if fake_role == "reviewer":
+            if fake_role in ("reviewer", "plan_reviewer"):
                 self.reviewer_prompts.append(prompt)
-            elif fake_role == "worker":
+            elif fake_role in ("worker", "planner"):
                 self.worker_prompts.append(prompt)
         return self._inner.invoke(argv)
 

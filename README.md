@@ -1,8 +1,8 @@
 # auto-loop
 
-**auto-loop** is a Python controller for a two-role implementation/review lifecycle: a **worker** agent implements scoped batches and a **reviewer** agent approves plan, batch, and final acceptance. Git commits are the source of truth for product progress; durable state under `.auto-loop/` records sessions, reviews, and recovery metadata.
+**auto-loop** is a Python controller for a planner / worker / reviewer lifecycle. A **planner** writes the initial plan, a **plan reviewer** approves it, a **worker** implements scoped batches (and may update the plan), and an **execution reviewer** is the sole completion authority. Git commits are the source of truth for product progress; durable state under `.auto-loop/` records sessions, reviews, and recovery metadata.
 
-This document describes the **v1 operator experience** (proposal sections 1–48). Section 49 ideas (parallel workers, PR bots, dashboards, and similar) are **not** part of v1.
+This document describes the current operator experience. Parallel workers, PR bots, dashboards, and similar ideas remain out of scope.
 
 ## Requirements
 
@@ -43,7 +43,7 @@ auto-loop run --max-turns 20
 auto-loop status
 ```
 
-`init` creates `.auto-loop/` with `config.yaml`, `context.yaml`, role agents, instructions, review directory, and optional resource stubs. Re-running `init` is non-destructive unless you pass `--force`. Use `--minimal` for a skeleton without instructions/resources.
+`init` creates `.auto-loop/` with `config.yaml`, `context.yaml`, planner/worker/reviewer role files, instructions, review directory, and optional resource stubs. Re-running `init` is non-destructive unless you pass `--force`. Use `--minimal` for a skeleton without instructions/resources.
 
 ## Commands
 
@@ -51,11 +51,10 @@ auto-loop status
 |--------|---------|
 | `auto-loop init [path]` | Create control workspace templates (`--force`, `--minimal`). |
 | `auto-loop doctor [path]` | Check workspace layout, config, Git, Cursor CLI, sessions, lock. |
-| `auto-loop run [path]` | Start or continue the worker/reviewer loop (`--max-turns`, `--max-runtime-minutes`, model overrides, `--verbose` / `--quiet`). |
-| `auto-loop status [path]` | Summarize lifecycle id, turn, baseline, HEAD, plan approval, active review. |
+| `auto-loop run [path]` | Start or continue the lifecycle (`--max-turns`, `--max-runtime-minutes`, `--planner-model` / `--worker-model` / `--reviewer-model` / `--model`, `--verbose` / `--quiet`). |
+| `auto-loop status [path]` | Summarize lifecycle id, phase, turn, baseline, HEAD, sessions, plan approval. |
 | `auto-loop logs [path]` | Show per-turn provider logs (`--turn`, `--raw`, `--follow`). |
 | `auto-loop stop [path]` | Request graceful stop of the active run (also respects SIGINT/SIGTERM during `run`). |
-| `auto-loop resources install [path]` | Install bundled AGENTS.md and Agent Skills (`--profile core\|frontend`, `--dry-run`, `--no-agents-md`). |
 
 All commands accept an optional repository path; default is the current working directory.
 
@@ -79,27 +78,29 @@ All commands accept an optional repository path; default is the current working 
 
 ## Lifecycle and Git invariants
 
-1. **Plan first** — No product commits before plan review `PASS`; HEAD stays at the initial baseline until then.
-2. **Batch reviews** — Worker requests review for a commit range; the controller normalizes to `last_approved_commit..HEAD`. Cumulative revision batches review from the approved baseline through the current HEAD, not only the latest fix commit.
-3. **Baseline** — Batch `PASS` advances `last_approved_commit` to current HEAD.
-4. **Final** — Worker requests `scope: final` only when HEAD equals `last_approved_commit` and the tree is clean; only the reviewer may return `COMPLETE`.
-5. **Reviews** — Markdown artifacts under `.auto-loop/reviews/` are append-only evidence.
+1. **Plan first** — Planner and plan-reviewer sessions run before implementation. Product HEAD stays at the initial baseline until initial plan `PASS`. Those planning sessions then retire.
+2. **Execution sessions** — Worker and execution reviewer start fresh after plan PASS. The worker owns `plan.md` and may update it. Task.md stays authoritative.
+3. **Batch reviews** — The controller normalizes Git review to `last_approved_commit..HEAD`. Explicit ignored path targets can be reviewed with or without a Git range. Cumulative revision reviews use the full current candidate, so amending an unapproved review-fix commit is allowed.
+4. **Baseline** — Batch `PASS` advances `last_approved_commit` only when a non-empty Git candidate was reviewed. Path-only PASS does not move the baseline.
+5. **Final** — Worker requests `scope: final` only when HEAD equals `last_approved_commit` and the tree is clean; only the execution reviewer may return `COMPLETE`.
+6. **Reviews** — Markdown artifacts under `.auto-loop/reviews/` are append-only evidence, including review cycle/round and target fingerprints.
 
 ## Persistent sessions and recovery
 
-- Worker and reviewer each keep a **stable Cursor session id** across turns until the lifecycle ends.
+- Four session slots exist: `planner`, `plan_reviewer`, `worker`, `reviewer`. Planning slots retire after initial plan PASS and are not resumed.
 - Session mismatch on resume exits with **`SESSION_ERROR`**; the controller does not silently replace ids.
-- **Inflight** markers detect interrupted turns; the next `run` resumes the same role with a reconciliation prompt (inspect Git/state before duplicating work).
+- Resolved model is stored per session. CLI model overrides apply when creating a session, not to an existing one.
+- **Inflight** markers detect interrupted turns; the next `run` resumes the same session slot with a reconciliation prompt.
 - **Protocol repair** re-prompts the same session when work succeeded but `AUTO_LOOP_RESULT` was missing/invalid, within `limits.protocol_retries`.
 - **Provider retries** (`limits.provider_retries`) retry infrastructure failures without rotating session ids.
 
 ## Instruction layering
 
-Generated defaults live under `.auto-loop/instructions/` and `.auto-loop/agents/`. Config key `instructions.*.mode` is `extend` (default) or `replace_role`. Shared protocol text is composed with role-specific instructions each turn. Customize worker/reviewer behavior by editing those files or pointing `instructions.*.files` at your own markdown.
+Generated defaults live under `.auto-loop/instructions/` and `.auto-loop/agents/`. Config key `instructions.*.mode` is `extend` (default) or `replace_role`. Shared protocol text is composed with role-specific instructions each first session turn. Customize planner/worker/reviewer behavior by editing those files or pointing `instructions.*.files` at your own markdown.
 
 ## Context and task resources
 
-`context.yaml` lists optional resources (paths, skills) included in prompts per role. Validate with `doctor`. Task-specific material belongs in `.auto-loop/task.md` and `.auto-loop/plan.md`; treat `task.md` as authoritative for scope.
+`context.yaml` lists optional resources (paths, skills) included in prompts per role (`shared`, `planner`, `worker`, `reviewer`). Plan-reviewer receives shared + reviewer resources. Validate with `doctor`. Task-specific material belongs in `.auto-loop/task.md` and `.auto-loop/plan.md`; treat `task.md` as authoritative for scope.
 
 Recommended protected control inputs (configure in `protection.protected_files`):
 
@@ -111,23 +112,15 @@ protection:
 
 Mutations during a turn stop the run with **`PROTECTION_VIOLATION`**; auto-loop does not revert files for you.
 
-## Optional harness resources (Cursor / Codex)
+## Developing auto-loop
 
-Bundled cross-agent files ship inside the wheel under `auto_loop.harness_resources`:
-
-```bash
-auto-loop resources install --profile core      # repo-discovery, implementation-batch, test-and-verify, …
-auto-loop resources install --profile frontend  # core skills + ui-validation
-auto-loop resources install --dry-run           # preview CREATE/SKIP actions
-```
-
-This installs repository-root `AGENTS.md` and `.agents/skills/*/SKILL.md` when missing. Existing files are skipped unless you manage them manually—use `--dry-run` to preview conflicts.
+Contributors working on this repository should read root [`AGENTS.md`](AGENTS.md) and the skills under [`.agents/skills/`](.agents/skills/). Cursor discovers them by opening the repo; there is no CLI install step. Those files are development guidance for auto-loop itself, not runtime resources copied into target task repositories.
 
 ## Observability
 
 - **Events** — `.auto-loop/runtime/events.jsonl` (lifecycle started, reviews, baseline advanced, stops, limits).
-- **State** — `.auto-loop/runtime/state.json` (turn, next actor, sessions, active review, inflight).
-- **Turn logs** — `.auto-loop/runtime/runs/<lifecycle_id>/` per-turn `.jsonl` / `.log` streams.
+- **State** — `.auto-loop/runtime/state.json` (phase, turn, next session, four session slots, active review, pending revision, inflight).
+- **Turn logs** — `.auto-loop/runtime/runs/<lifecycle_id>/` per-turn `.jsonl` / `.log` streams, named by session purpose.
 - **Completion / blocked** — `.auto-loop/runtime/completion.json` or `blocked.json` when terminal.
 
 Use `auto-loop status` and `auto-loop logs` for operator-friendly views.
@@ -145,12 +138,14 @@ Key sections in `.auto-loop/config.yaml`:
 | Section | Role |
 |---------|------|
 | `provider.cursor` | CLI command (`agent` / `cursor-agent`), extra args per role. |
-| `agents.worker` / `agents.reviewer` | Role files, model, `agent` vs `ask` mode. |
-| `instructions` | Shared/worker/reviewer markdown stacks. |
+| `agents.planner` / `agents.worker` / `agents.reviewer` | Role files, model, `agent` vs `ask` mode. Plan-reviewer uses the reviewer model. |
+| `instructions` | Shared/planner/worker/reviewer markdown stacks. |
 | `git` | Clean-tree requirements, worker commits, history protection. |
 | `limits` | Turns, runtime, timeouts, retries, no-progress streak. |
 | `protection` | Product exclude globs, protected control files. |
 | `logging` | Console verbosity, event log path, run history retention. |
+
+Model precedence for each role: role-specific CLI override, then `--model`, then `config.agents.<role>.model`, then `auto`.
 
 See the generated file after `init` for defaults.
 
@@ -158,8 +153,8 @@ See the generated file after `init` for defaults.
 
 | Symptom | Things to check |
 |---------|------------------|
-| `CONFIG_ERROR` on `run` | Run `auto-loop init` and `doctor`; fix `context.yaml` / missing paths. |
-| `GIT_PROTOCOL_ERROR` | Dirty product tree before batch review, wrong `base_commit`/`head_commit`, or history rewrite. |
+| `CONFIG_ERROR` on `run` | Run `auto-loop init` and `doctor`; fix `context.yaml` / missing paths. Missing planner templates: rerun `auto-loop init`. |
+| `GIT_PROTOCOL_ERROR` | Dirty product tree before batch review, empty Git range without path targets, or history rewrite. |
 | `SESSION_ERROR` | Cursor resume id drift; inspect turn logs; do not hand-edit session ids in `state.json`. |
 | `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `protocol_retries` only after fixing prompts. |
 | `LIMIT_REACHED` | Raise `max_turns` / runtime or reduce revise loops; check `worker_no_progress_streak`. |
@@ -182,11 +177,11 @@ python -m pytest -q
 
 Integration tests use a deterministic in-process provider and real temporary Git repositories. The CLI `run` command invokes the **real Cursor agent subprocess** when prerequisites are met.
 
-Optional live Cursor smoke test (proposal §45): see [docs/live-cursor-smoke.md](docs/live-cursor-smoke.md). Set `AUTO_LOOP_LIVE_CURSOR=1` and run `pytest tests/integration/test_live_cursor_smoke.py -m live_cursor`. Skipped by default with an explicit reason.
+Optional live Cursor smoke test: see [docs/live-cursor-smoke.md](docs/live-cursor-smoke.md). Set `AUTO_LOOP_LIVE_CURSOR=1` and run `pytest tests/integration/test_live_cursor_smoke.py -m live_cursor`. Skipped by default with an explicit reason.
 
-## v1 traceability and release verification
+## Traceability and release verification
 
-- [docs/v1-traceability.md](docs/v1-traceability.md) — §47/§48/§44 mapping to code and tests.
+- [docs/v1-traceability.md](docs/v1-traceability.md) — requirement mapping to code and tests.
 - [docs/v1-verification.md](docs/v1-verification.md) — recorded commands, results, and live-smoke status.
 
 ## License

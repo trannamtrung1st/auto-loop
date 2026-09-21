@@ -10,12 +10,18 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from auto_loop.models import ReviewerResult, WorkerResult
+from auto_loop.models import (
+    PROTOCOL_SCHEMA_VERSION,
+    PlannerResult,
+    ReviewerResult,
+    WorkerResult,
+)
 
 RESULT_BLOCK_START = "<AUTO_LOOP_RESULT>"
 RESULT_BLOCK_END = "</AUTO_LOOP_RESULT>"
 
-Actor = Literal["worker", "reviewer"]
+Actor = Literal["planner", "worker", "reviewer"]
+RoleResult = PlannerResult | WorkerResult | ReviewerResult
 
 
 class ProtocolDiagnosticCode(StrEnum):
@@ -119,13 +125,13 @@ def _load_json(payload: str) -> dict[str, Any]:
     return data
 
 
-def _reject_worker_forbidden_fields(data: dict[str, Any]) -> None:
+def _reject_implementer_forbidden_fields(data: dict[str, Any], actor: str) -> None:
     verdict = data.get("verdict")
     if verdict in ("complete", "pass"):
         raise ProtocolParseError(
             ProtocolDiagnostic(
                 code=ProtocolDiagnosticCode.WORKER_FORBIDDEN_VERDICT,
-                message="Worker cannot emit reviewer verdict values",
+                message=f"{actor.capitalize()} cannot emit reviewer verdict values",
                 detail=f"verdict={verdict!r}",
             )
         )
@@ -133,32 +139,59 @@ def _reject_worker_forbidden_fields(data: dict[str, Any]) -> None:
         raise ProtocolParseError(
             ProtocolDiagnostic(
                 code=ProtocolDiagnosticCode.WORKER_FORBIDDEN_VERDICT,
-                message="Worker status must be review_requested or blocked",
+                message=f"{actor.capitalize()} status must be review_requested or blocked",
                 detail=f"status={data.get('status')!r}",
             )
         )
+
+
+def _require_schema_version(data: dict[str, Any], actor: str) -> None:
+    if data.get("schema_version") != PROTOCOL_SCHEMA_VERSION:
+        raise ProtocolParseError(
+            ProtocolDiagnostic(
+                code=ProtocolDiagnosticCode.UNSUPPORTED_SCHEMA_VERSION,
+                message=f"Unsupported {actor} schema_version",
+                detail=str(data.get("schema_version")),
+            )
+        )
+
+
+def _wrong_actor(expected: str, actual: Any) -> ProtocolParseError:
+    return ProtocolParseError(
+        ProtocolDiagnostic(
+            code=ProtocolDiagnosticCode.WRONG_ACTOR,
+            message=f"Expected {expected} AUTO_LOOP_RESULT",
+            detail=f"actor={actual!r}",
+        )
+    )
+
+
+def parse_planner_result(text: str) -> PlannerResult:
+    data = _load_json(extract_result_json(text))
+    actor = data.get("actor")
+    if actor != "planner":
+        raise _wrong_actor("planner", actor)
+    _reject_implementer_forbidden_fields(data, "planner")
+    _require_schema_version(data, "planner")
+    try:
+        return PlannerResult.model_validate(data)
+    except ValidationError as exc:
+        raise ProtocolParseError(
+            ProtocolDiagnostic(
+                code=ProtocolDiagnosticCode.SCHEMA_VIOLATION,
+                message="Planner result failed schema validation",
+                detail=str(exc),
+            )
+        ) from exc
 
 
 def parse_worker_result(text: str) -> WorkerResult:
     data = _load_json(extract_result_json(text))
     actor = data.get("actor")
     if actor != "worker":
-        raise ProtocolParseError(
-            ProtocolDiagnostic(
-                code=ProtocolDiagnosticCode.WRONG_ACTOR,
-                message="Expected worker AUTO_LOOP_RESULT",
-                detail=f"actor={actor!r}",
-            )
-        )
-    _reject_worker_forbidden_fields(data)
-    if data.get("schema_version") != 1:
-        raise ProtocolParseError(
-            ProtocolDiagnostic(
-                code=ProtocolDiagnosticCode.UNSUPPORTED_SCHEMA_VERSION,
-                message="Unsupported worker schema_version",
-                detail=str(data.get("schema_version")),
-            )
-        )
+        raise _wrong_actor("worker", actor)
+    _reject_implementer_forbidden_fields(data, "worker")
+    _require_schema_version(data, "worker")
     try:
         return WorkerResult.model_validate(data)
     except ValidationError as exc:
@@ -175,21 +208,8 @@ def parse_reviewer_result(text: str) -> ReviewerResult:
     data = _load_json(extract_result_json(text))
     actor = data.get("actor")
     if actor != "reviewer":
-        raise ProtocolParseError(
-            ProtocolDiagnostic(
-                code=ProtocolDiagnosticCode.WRONG_ACTOR,
-                message="Expected reviewer AUTO_LOOP_RESULT",
-                detail=f"actor={actor!r}",
-            )
-        )
-    if data.get("schema_version") != 1:
-        raise ProtocolParseError(
-            ProtocolDiagnostic(
-                code=ProtocolDiagnosticCode.UNSUPPORTED_SCHEMA_VERSION,
-                message="Unsupported reviewer schema_version",
-                detail=str(data.get("schema_version")),
-            )
-        )
+        raise _wrong_actor("reviewer", actor)
+    _require_schema_version(data, "reviewer")
     try:
         return ReviewerResult.model_validate(data)
     except ValidationError as exc:
@@ -202,10 +222,23 @@ def parse_reviewer_result(text: str) -> ReviewerResult:
         ) from exc
 
 
-def parse_role_result(text: str, expected: Actor) -> WorkerResult | ReviewerResult:
+def parse_role_result(text: str, expected: Actor) -> RoleResult:
+    if expected == "planner":
+        return parse_planner_result(text)
     if expected == "worker":
         return parse_worker_result(text)
     return parse_reviewer_result(text)
+
+
+def missing_pass_targets(required_ids: list[str], reviewed_ids: list[str]) -> ProtocolParseError:
+    missing = sorted(set(required_ids) - set(reviewed_ids))
+    return ProtocolParseError(
+        ProtocolDiagnostic(
+            code=ProtocolDiagnosticCode.SCHEMA_VIOLATION,
+            message="PASS requires reviewed_target_ids to include every active review target",
+            detail=f"missing={missing}",
+        )
+    )
 
 
 def normalize_commit(sha: str | None) -> str | None:

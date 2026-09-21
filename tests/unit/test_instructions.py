@@ -26,8 +26,11 @@ def test_protocol_present_on_first_invocation(tmp_path: Path):
     repo = _repo(tmp_path)
     run_init(repo)
     config = load_config(repo / ".auto-loop" / "config.yaml")
+    planner = compose_role_instructions(repo, config, "planner", first_invocation=True)
     worker = compose_role_instructions(repo, config, "worker", first_invocation=True)
     reviewer = compose_role_instructions(repo, config, "reviewer", first_invocation=True)
+    assert "AUTO_LOOP_PROTOCOL" in planner
+    assert load_protocol_contract("planner")[:40] in planner
     assert "AUTO_LOOP_PROTOCOL" in worker
     assert load_protocol_contract("worker")[:40] in worker
     assert "never declare the overall task" in worker.lower()

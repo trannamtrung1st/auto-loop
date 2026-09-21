@@ -37,7 +37,7 @@ class PromptCapturingProvider:
         self._inner.prepare(role)
 
     def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
-        if os.environ.get("AUTO_LOOP_FAKE_ROLE") == "worker":
+        if os.environ.get("AUTO_LOOP_FAKE_ROLE") in ("worker", "planner"):
             self.worker_prompts.append(argv[-1])
         return self._inner.invoke(argv)
 
@@ -56,18 +56,19 @@ def test_stale_inflight_resumes_worker_with_reconciliation_prompt(tmp_path: Path
 
         state = create_lifecycle(head_commit(repo))
     state.inflight = InflightMarker(
-        actor="worker",
+        session_slot="planner",
+        role="planner",
         turn=state.turn,
-        session_id="worker-session-1",
+        session_id="planner-session-1",
         started_at=utc_now(),
         head_before=head_commit(repo),
     )
-    state.sessions["worker"].session_id = "worker-session-1"
-    state.next_actor = "reviewer"
+    state.sessions["planner"].session_id = "planner-session-1"
+    state.next_session = "plan_reviewer"
     save_lifecycle_state(repo, state)
 
     provider = PromptCapturingProvider()
-    provider._inner.engine.sessions["worker"] = "worker-session-1"
+    provider._inner.engine.sessions["planner"] = "planner-session-1"
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
     run_lifecycle(
@@ -93,19 +94,20 @@ def test_inflight_before_provider_launch_invokes_once_without_extra_commits(tmp_
         state = create_lifecycle(initial_head)
         save_lifecycle_state(repo, state)
     state.inflight = InflightMarker(
-        actor="worker",
+        session_slot="planner",
+        role="planner",
         turn=state.turn,
-        session_id="worker-session-1",
+        session_id="planner-session-1",
         started_at=utc_now(),
         head_before=initial_head,
     )
-    state.sessions["worker"].session_id = "worker-session-1"
-    state.next_actor = "reviewer"
+    state.sessions["planner"].session_id = "planner-session-1"
+    state.next_session = "plan_reviewer"
     save_lifecycle_state(repo, state)
 
     invoke_count = 0
     provider = PromptCapturingProvider()
-    provider._inner.engine.sessions["worker"] = "worker-session-1"
+    provider._inner.engine.sessions["planner"] = "planner-session-1"
 
     def counting_invoke(argv):
         nonlocal invoke_count
@@ -138,17 +140,18 @@ def test_inflight_resume_with_uncommitted_product_file_keeps_single_head(tmp_pat
         state = create_lifecycle(initial_head)
         save_lifecycle_state(repo, state)
     state.inflight = InflightMarker(
-        actor="worker",
+        session_slot="planner",
+        role="planner",
         turn=state.turn,
-        session_id="worker-session-1",
+        session_id="planner-session-1",
         started_at=utc_now(),
         head_before=initial_head,
     )
-    state.sessions["worker"].session_id = "worker-session-1"
+    state.sessions["planner"].session_id = "planner-session-1"
     save_lifecycle_state(repo, state)
 
     provider = PromptCapturingProvider()
-    provider._inner.engine.sessions["worker"] = "worker-session-1"
+    provider._inner.engine.sessions["planner"] = "planner-session-1"
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
     run_lifecycle(

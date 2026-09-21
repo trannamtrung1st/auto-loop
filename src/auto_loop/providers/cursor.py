@@ -76,9 +76,11 @@ def resolve_cursor_binary(settings: CursorProviderSettings) -> str:
 
 def role_extra_args(config: AutoLoopConfig, role: str) -> list[str]:
     cursor = config.provider.cursor
+    if role in ("planner",):
+        return list(cursor.planner_extra_args)
     if role == "worker":
         return list(cursor.worker_extra_args)
-    if role == "reviewer":
+    if role in ("reviewer", "plan_reviewer"):
         return list(cursor.reviewer_extra_args)
     raise ValueError(f"Unknown role: {role}")
 
@@ -107,7 +109,7 @@ def build_cursor_command(
     )
     if request.mode == "ask":
         argv.append("--mode=ask")
-    argv.extend(role_extra_args(config, request.role))
+    argv.extend(role_extra_args(config, request.session_purpose))
     argv.extend(request.extra_args)
     argv.append(request.prompt)
     return argv

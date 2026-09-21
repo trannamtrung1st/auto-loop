@@ -16,12 +16,29 @@ class RunOptions:
     verbose: bool
     quiet: bool
     console_level: ConsoleLevel = "normal"
+    planner_model: str = "auto"
+
+
+def _role_model(
+    *,
+    role_cli: str | None,
+    global_cli: str | None,
+    config_model: str | None,
+) -> str:
+    if role_cli:
+        return role_cli
+    if global_cli:
+        return global_cli
+    if config_model:
+        return config_model
+    return "auto"
 
 
 def build_run_options(
     config: AutoLoopConfig,
     *,
     model: str | None = None,
+    planner_model: str | None = None,
     worker_model: str | None = None,
     reviewer_model: str | None = None,
     max_turns: int | None = None,
@@ -29,10 +46,25 @@ def build_run_options(
     verbose: bool = False,
     quiet: bool = False,
 ) -> RunOptions:
-    default_model = model or "auto"
+    planner_cfg = config.agents.get("planner")
+    worker_cfg = config.agents["worker"]
+    reviewer_cfg = config.agents["reviewer"]
     return RunOptions(
-        worker_model=worker_model or default_model,
-        reviewer_model=reviewer_model or default_model,
+        planner_model=_role_model(
+            role_cli=planner_model,
+            global_cli=model,
+            config_model=planner_cfg.model if planner_cfg else None,
+        ),
+        worker_model=_role_model(
+            role_cli=worker_model,
+            global_cli=model,
+            config_model=worker_cfg.model,
+        ),
+        reviewer_model=_role_model(
+            role_cli=reviewer_model,
+            global_cli=model,
+            config_model=reviewer_cfg.model,
+        ),
         max_turns=max_turns if max_turns is not None else config.limits.max_turns,
         max_runtime_minutes=(
             max_runtime_minutes

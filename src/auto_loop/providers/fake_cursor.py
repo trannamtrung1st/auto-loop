@@ -92,7 +92,7 @@ class FakeCursorEngine:
                 resume = arg.split("=", 1)[1]
             idx += 1
         prompt = argv[-1]
-        role = os.environ.get("AUTO_LOOP_FAKE_ROLE")
+        role = os.environ.get("AUTO_LOOP_FAKE_ROLE") or os.environ.get("AUTO_LOOP_FAKE_SLOT")
         record = FakeInvocation(
             argv=list(argv),
             workspace=workspace,

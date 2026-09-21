@@ -26,7 +26,7 @@ Add a minimal Python package under `src/`:
 - Add `tests/test_greet.py` with one pytest that asserts `greet("world") == "Hello, world!"`.
 - Commit product changes on the worker branch before each batch review request.
 
-Follow the auto-loop worker protocol: plan review first, then batch review for implementation, then final whole-task review.
+Follow the auto-loop protocol: the planner requests plan review first, then the worker implements a batch, then the execution reviewer performs final whole-task review.
 """
 
 SMOKE_PLAN = """# Plan
@@ -133,7 +133,19 @@ def section_45_check_notes(repo: Path) -> list[str]:
 
     events = load_events(repo, config)
     reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
-    worker_ids, reviewer_ids = _session_ids_from_reviews(reviews)
+    worker_ids: set[str] = set()
+    reviewer_ids: set[str] = set()
+    for path in reviews:
+        text = path.read_text(encoding="utf-8")
+        purpose = _review_field(text, "Reviewer session purpose")
+        worker = _review_field(text, "Worker session")
+        reviewer = _review_field(text, "Reviewer session")
+        if purpose == "plan_reviewer":
+            continue
+        if worker:
+            worker_ids.add(worker)
+        if reviewer:
+            reviewer_ids.add(reviewer)
 
     if len(worker_ids) > 1:
         notes.append("worker session id changed across review artifacts")
@@ -148,7 +160,7 @@ def section_45_check_notes(repo: Path) -> list[str]:
     if len(created) < 2:
         notes.append("expected session_created events for worker and reviewer")
     actors = {e.get("actor") for e in created}
-    if actors != {"worker", "reviewer"}:
+    if not {"worker", "reviewer"} <= actors:
         notes.append("session_created events must cover worker and reviewer roles")
 
     plan_pass_idx = None

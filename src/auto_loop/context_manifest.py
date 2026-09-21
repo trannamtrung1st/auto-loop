@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from auto_loop.exits import ExitCode
 
 CONTEXT_VERSION = 1
-RoleName = Literal["worker", "reviewer"]
+RoleName = Literal["planner", "worker", "reviewer"]
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
@@ -35,6 +35,7 @@ class RoleManifestSection(BaseModel):
 class ContextDocument(BaseModel):
     version: Literal[1] = CONTEXT_VERSION
     shared: RoleManifestSection = Field(default_factory=RoleManifestSection)
+    planner: RoleManifestSection = Field(default_factory=RoleManifestSection)
     worker: RoleManifestSection = Field(default_factory=RoleManifestSection)
     reviewer: RoleManifestSection = Field(default_factory=RoleManifestSection)
 
@@ -140,6 +141,7 @@ def validate_context(repo: Path, document: ContextDocument) -> ContextValidation
     result = ContextValidationResult(document=document)
     sections = [
         ("shared", document.shared),
+        ("planner", document.planner),
         ("worker", document.worker),
         ("reviewer", document.reviewer),
     ]
@@ -164,8 +166,15 @@ def _entries_for_role(document: ContextDocument, role: RoleName) -> list[tuple[s
 
     for entry in document.shared.resources + document.shared.skills:
         add("Shared", entry)
-    role_section = document.worker if role == "worker" else document.reviewer
-    label = "Worker" if role == "worker" else "Reviewer"
+    if role == "planner":
+        role_section = document.planner
+        label = "Planner"
+    elif role == "worker":
+        role_section = document.worker
+        label = "Worker"
+    else:
+        role_section = document.reviewer
+        label = "Reviewer"
     for entry in role_section.resources + role_section.skills:
         add(label, entry)
     return ordered

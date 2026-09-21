@@ -32,7 +32,8 @@ def test_wheel_contains_templates_and_license(tmp_path: Path):
     with zipfile.ZipFile(wheel) as zf:
         names = zf.namelist()
     assert any(n.endswith("auto_loop/templates/task.md") for n in names)
-    assert any(n.endswith("auto_loop/templates/agents/worker.md") for n in names)
+    assert any(n.endswith("auto_loop/templates/agents/planner.md") for n in names)
+    assert not any("harness_resources" in n for n in names)
     assert any(n.endswith("LICENSE") or n.endswith("auto_loop-0.1.0.dist-info/LICENSE") for n in names)
 
 
@@ -61,7 +62,7 @@ def test_clean_venv_install_help_init_and_import(tmp_path: Path):
     )
     assert "init" in help_result.stdout
     assert "doctor" in help_result.stdout
-    assert "resources" in help_result.stdout
+    assert "resources" not in help_result.stdout
 
     import_check = subprocess.run(
         [

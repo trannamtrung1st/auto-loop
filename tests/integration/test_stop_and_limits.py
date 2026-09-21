@@ -29,7 +29,7 @@ def _repo(tmp_path: Path) -> Path:
 def test_protocol_repair_succeeds_then_plan_passes(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()
-    provider.set_invalid_protocol_response("worker")
+    provider.set_invalid_protocol_response("planner")
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
     outcome = run_lifecycle(
@@ -53,7 +53,7 @@ def test_protocol_repair_exhaustion_returns_protocol_error(tmp_path: Path, monke
         lambda _repo: cfg,
     )
     provider = ScriptedProvider()
-    provider.set_invalid_protocol_response("worker")
+    provider.set_invalid_protocol_response("planner")
     outcome = run_lifecycle(
         repo,
         RunOptions("auto", "auto", max_turns=1, max_runtime_minutes=60, verbose=False, quiet=True),

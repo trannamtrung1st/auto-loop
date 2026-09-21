@@ -4,6 +4,10 @@ shared:
   resources: []
   skills: []
 
+planner:
+  resources: []
+  skills: []
+
 worker:
   resources: []
   skills: []
