@@ -63,3 +63,26 @@ class ScriptedProvider:
                 "verification": [],
             },
         )
+
+    def set_reviewer_revise(self, scope: str, target: str, finding_id: str = "f-1") -> None:
+        self.set_response(
+            "reviewer",
+            {
+                "schema_version": 1,
+                "actor": "reviewer",
+                "verdict": "revise",
+                "scope": scope,
+                "target": target,
+                "summary": "needs changes",
+                "findings": [
+                    {
+                        "id": finding_id,
+                        "title": "Fix required",
+                        "detail": "Address the gap before approval.",
+                        "evidence": "tests/integration/example",
+                        "required_change": "Update implementation and re-request review.",
+                    }
+                ],
+                "verification": [],
+            },
+        )

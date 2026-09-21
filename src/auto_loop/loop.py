@@ -212,14 +212,20 @@ class LifecycleRunner:
     def run(self) -> RunOutcome:
         state = self._load_or_create_state()
         turns = 0
-        while turns < self.options.max_turns:
-            turns += 1
-            assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
-            if state.next_actor == "worker":
-                self._worker_turn(state)
-            else:
-                self._reviewer_turn(state)
-            state = load_lifecycle_state(self.repo) or state
+        try:
+            while turns < self.options.max_turns:
+                turns += 1
+                assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
+                if state.next_actor == "worker":
+                    self._worker_turn(state)
+                else:
+                    self._reviewer_turn(state)
+                state = load_lifecycle_state(self.repo) or state
+        except GitProtocolError:
+            return RunOutcome(
+                exit_code=ExitCode.GIT_PROTOCOL_ERROR,
+                state=load_lifecycle_state(self.repo),
+            )
         return RunOutcome(exit_code=ExitCode.LIMIT_REACHED, state=state)
 
 

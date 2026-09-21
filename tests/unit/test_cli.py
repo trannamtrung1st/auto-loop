@@ -47,6 +47,37 @@ def test_run_accepts_path_and_flags(tmp_path: Path):
     assert result.exit_code == 10
 
 
+def test_run_help_lists_model_and_limit_flags():
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    for flag in (
+        "--model",
+        "--worker-model",
+        "--reviewer-model",
+        "--max-turns",
+        "--max-runtime-minutes",
+        "--verbose",
+        "--quiet",
+    ):
+        assert flag in result.stdout
+
+
+def test_run_minimal_init_fails_closed_before_provider(tmp_path: Path):
+    repo = tmp_path / "minimal"
+    repo.mkdir()
+    subprocess = __import__("subprocess")
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+    from auto_loop.init_cmd import run_init
+
+    run_init(repo, minimal=True)
+    result = runner.invoke(app, ["run", str(repo)])
+    assert result.exit_code == 10
+    assert "Missing instruction templates" in result.stderr or "Missing instruction templates" in result.stdout
+
+
 def test_resources_install_subgroup(tmp_path: Path):
     result = runner.invoke(app, ["resources", "install", str(tmp_path), "--dry-run"])
     assert result.exit_code == 0
