@@ -436,3 +436,125 @@ def test_blocked_terminal_run_without_new_goal_returns_blocked(tmp_path: Path):
     outcome = run_lifecycle(repo, run_opts(2), provider, inputs=RunInputs())
     assert outcome.exit_code == ExitCode.BLOCKED
     assert outcome.message == "still blocked"
+
+
+def _repo_file_snapshot(repo: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(repo): path.read_bytes()
+        for path in sorted(repo.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _seed_completed_terminal_run(repo: Path) -> None:
+    from datetime import datetime, timezone
+
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import CompletionRecord, completion_path, load_completion_record
+
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    completion_path(repo).parent.mkdir(parents=True, exist_ok=True)
+    completion_path(repo).write_text(
+        CompletionRecord(
+            completed_at=datetime.now(timezone.utc),
+            lifecycle_id="lc-terminal",
+            turn=1,
+            worker_session_id="w1",
+            reviewer_session_id="r1",
+            initial_base_commit=head_commit(repo),
+            final_commit=head_commit(repo),
+            last_approved_commit=head_commit(repo),
+            final_review_file=".auto-loop/reviews/done.md",
+            task_sha256="abc",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    assert load_completion_record(repo) is not None
+
+
+def test_empty_goal_file_preserves_terminal_run(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Done goal"))
+    _seed_completed_terminal_run(repo)
+    (repo / "empty-goal.md").write_text("\n\n", encoding="utf-8")
+    before = _repo_file_snapshot(repo)
+    with pytest.raises(RunInputError, match="empty"):
+        prepare_repo_for_run(repo, RunInputs(goal_file=Path("empty-goal.md")))
+    assert _repo_file_snapshot(repo) == before
+
+
+def test_invalid_context_preserves_terminal_run(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Done goal"))
+    _seed_completed_terminal_run(repo)
+    (repo / "bad-context.yaml").write_text("version: 99\n", encoding="utf-8")
+    before = _repo_file_snapshot(repo)
+    with pytest.raises(RunInputError):
+        prepare_repo_for_run(
+            repo,
+            RunInputs(goal_text="Next goal", context_file=Path("bad-context.yaml")),
+        )
+    assert _repo_file_snapshot(repo) == before
+
+
+def test_archive_uses_frozen_config_not_current_user_yaml(tmp_path: Path):
+    from auto_loop.config import load_config_from_repo, write_resolved_config
+
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="First goal"))
+    frozen = load_config_from_repo(repo)
+    frozen.plan_file = ".auto-loop/design.md"
+    frozen.reviews_dir = ".auto-loop/run-reviews"
+    frozen.logging.event_log = ".auto-loop/runtime/custom-events.jsonl"
+    write_resolved_config(repo, frozen)
+    design = repo / ".auto-loop" / "design.md"
+    design.write_text("# frozen plan marker\n", encoding="utf-8")
+    review_dir = repo / ".auto-loop" / "run-reviews"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    (review_dir / "0001-old.md").write_text("# old review\n", encoding="utf-8")
+    events = repo / ".auto-loop" / "runtime" / "custom-events.jsonl"
+    events.parent.mkdir(parents=True, exist_ok=True)
+    events.write_text("event line\n", encoding="utf-8")
+    _seed_completed_terminal_run(repo)
+
+    prepare_repo_for_run(repo, RunInputs(goal_text="Second goal"))
+    assert not design.is_file()
+    archive_root = repo / ".auto-loop" / "runtime" / "archives"
+    archived_plan = list(archive_root.rglob("design.md"))
+    assert archived_plan
+    assert "frozen plan marker" in archived_plan[0].read_text(encoding="utf-8")
+    assert list(archive_root.rglob("0001-old.md"))
+    assert list(archive_root.rglob("custom-events.jsonl"))
+    assert (repo / ".auto-loop" / "plan.md").is_file()
+
+
+def test_blocked_resume_before_invalid_context_prerequisites(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Blocked goal"))
+    from datetime import datetime, timezone
+
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import BlockedRecord, blocked_path
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    blocked_path(repo).write_text(
+        BlockedRecord(
+            blocked_at=datetime.now(timezone.utc),
+            lifecycle_id=state.lifecycle_id,
+            turn=1,
+            worker_session_id="w1",
+            reviewer_session_id="r1",
+            summary="blocked despite bad context",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    (repo / ".auto-loop" / "context.yaml").write_text("version: 99\n", encoding="utf-8")
+    provider = ScriptedProvider()
+    outcome = run_lifecycle(repo, run_opts(2), provider, inputs=RunInputs(resume_only=True))
+    assert outcome.exit_code == ExitCode.BLOCKED
+    assert outcome.message == "blocked despite bad context"

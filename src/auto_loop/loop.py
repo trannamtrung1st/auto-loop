@@ -1157,7 +1157,7 @@ class LifecycleRunner:
         )
 
 
-def _check_idempotent_blocked(repo: Path, config: AutoLoopConfig) -> RunOutcome | None:
+def _check_idempotent_blocked(repo: Path) -> RunOutcome | None:
     record = load_blocked_record(repo)
     if record is None:
         return None
@@ -1193,10 +1193,10 @@ def run_lifecycle(
 ) -> RunOutcome:
     from auto_loop.locking import acquire_workspace_lock
 
-    config = ensure_run_prerequisites(repo, inputs)
-    idempotent_blocked = _check_idempotent_blocked(repo, config)
+    idempotent_blocked = _check_idempotent_blocked(repo)
     if idempotent_blocked is not None:
         return idempotent_blocked
+    config = ensure_run_prerequisites(repo, inputs)
     idempotent = _check_idempotent_completion(repo, config)
     if idempotent is not None:
         return idempotent
