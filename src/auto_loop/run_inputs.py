@@ -109,7 +109,7 @@ def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
             for path in review_files:
                 shutil.move(str(path), str(archived_reviews / path.name))
 
-    for rel in (config.plan_file, config.context_file):
+    for rel in (config.plan_file, config.context_file, config.task_file):
         path = repo / rel
         if path.is_file():
             shutil.copy2(path, archive_dir / Path(rel).name)

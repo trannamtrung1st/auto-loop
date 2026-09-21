@@ -558,3 +558,55 @@ def test_blocked_resume_before_invalid_context_prerequisites(tmp_path: Path):
     outcome = run_lifecycle(repo, run_opts(2), provider, inputs=RunInputs(resume_only=True))
     assert outcome.exit_code == ExitCode.BLOCKED
     assert outcome.message == "blocked despite bad context"
+
+
+def test_run_lifecycle_new_goal_replaces_blocked_without_prepare_first(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Blocked goal"))
+    from datetime import datetime, timezone
+
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import BlockedRecord, blocked_path, load_blocked_record
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    blocked_path(repo).write_text(
+        BlockedRecord(
+            blocked_at=datetime.now(timezone.utc),
+            lifecycle_id=state.lifecycle_id,
+            turn=1,
+            worker_session_id="w1",
+            reviewer_session_id="r1",
+            summary="external blocker",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    assert load_blocked_record(repo) is not None
+    provider = ScriptedProvider()
+    provider.set_worker_plan_request()
+    provider.set_reviewer_pass("plan", "plan")
+    outcome = run_lifecycle(
+        repo,
+        run_opts(2),
+        provider,
+        inputs=RunInputs(goal_text="Replacement goal"),
+    )
+    assert load_blocked_record(repo) is None
+    assert "Replacement goal" in (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")
+    assert not (outcome.exit_code == ExitCode.BLOCKED and outcome.message == "external blocker")
+
+
+def test_archive_includes_prior_task_snapshot(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="First archived goal"))
+    _seed_completed_terminal_run(repo)
+    before_task = (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")
+    assert "First archived goal" in before_task
+
+    prepare_repo_for_run(repo, RunInputs(goal_text="Second goal"))
+    archived_task = list((repo / ".auto-loop" / "runtime" / "archives").rglob("task.md"))
+    assert archived_task
+    assert "First archived goal" in archived_task[0].read_text(encoding="utf-8")
+    assert "Second goal" in (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")

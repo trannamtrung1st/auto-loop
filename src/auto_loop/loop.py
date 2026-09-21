@@ -1192,10 +1192,13 @@ def run_lifecycle(
     inputs: RunInputs | None = None,
 ) -> RunOutcome:
     from auto_loop.locking import acquire_workspace_lock
+    from auto_loop.run_inputs import _user_supplied_new_goal
 
-    idempotent_blocked = _check_idempotent_blocked(repo)
-    if idempotent_blocked is not None:
-        return idempotent_blocked
+    resolved_inputs = inputs or RunInputs()
+    if not (_user_supplied_new_goal(resolved_inputs) and not resolved_inputs.resume_only):
+        idempotent_blocked = _check_idempotent_blocked(repo)
+        if idempotent_blocked is not None:
+            return idempotent_blocked
     config = ensure_run_prerequisites(repo, inputs)
     idempotent = _check_idempotent_completion(repo, config)
     if idempotent is not None:
