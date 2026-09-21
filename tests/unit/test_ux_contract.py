@@ -664,3 +664,28 @@ def test_archive_rejects_paths_escaping_workspace(tmp_path: Path):
         prepare_repo_for_run(repo, RunInputs(goal_text="Next goal"))
     assert _repo_file_snapshot(repo) == before
     assert load_completion_record(repo) is not None
+
+
+def test_archive_rejects_symlink_archives_dir_outside_workspace(tmp_path: Path):
+    from auto_loop.terminal_records import load_completion_record
+
+    external = tmp_path / "external_archives"
+    external.mkdir()
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Prior goal"))
+    _seed_completed_terminal_run(repo)
+    archives = repo / ".auto-loop" / "runtime" / "archives"
+    archives.parent.mkdir(parents=True, exist_ok=True)
+    if archives.is_symlink() or archives.is_dir():
+        if archives.is_symlink():
+            archives.unlink()
+        else:
+            shutil.rmtree(archives)
+    archives.symlink_to(external, target_is_directory=True)
+    before = _repo_file_snapshot(repo)
+    with pytest.raises(RunInputError, match="Run archive path escapes workspace"):
+        prepare_repo_for_run(repo, RunInputs(goal_text="Next goal"))
+    assert _repo_file_snapshot(repo) == before
+    assert load_completion_record(repo) is not None
+    assert not any(external.iterdir())

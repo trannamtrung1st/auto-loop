@@ -147,6 +147,15 @@ def _assert_archive_paths_contained(repo: Path, config: AutoLoopConfig) -> None:
             raise RunInputError(f"Configured run path escapes workspace: {source}") from exc
 
 
+def _assert_archive_dir_contained(repo: Path, archive_dir: Path) -> None:
+    repo_root = repo.resolve()
+    resolved_archive = archive_dir.resolve(strict=False)
+    try:
+        resolved_archive.relative_to(repo_root)
+    except ValueError as exc:
+        raise RunInputError("Run archive path escapes workspace") from exc
+
+
 def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
     """Archive run-scoped artifacts and remove terminal/lifecycle state for a fresh goal."""
     from auto_loop.config import resolved_config_snapshot_path
@@ -158,6 +167,7 @@ def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
     archive_dir = root / "runtime" / "archives" / label
 
     _assert_archive_paths_contained(repo, config)
+    _assert_archive_dir_contained(repo, archive_dir)
 
     archive_dir.mkdir(parents=True, exist_ok=True)
 
