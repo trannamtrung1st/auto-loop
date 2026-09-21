@@ -89,6 +89,25 @@ def _user_supplied_new_goal(inputs: RunInputs) -> bool:
     return inputs.goal_file is not None
 
 
+def _archive_repo_file(
+    repo: Path,
+    archive_dir: Path,
+    source: Path,
+    *,
+    move: bool = False,
+) -> None:
+    if not source.is_file():
+        return
+    rel = source.relative_to(repo.resolve())
+    dest = archive_dir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if move:
+        shutil.move(str(source), str(dest))
+    else:
+        shutil.copy2(source, dest)
+        source.unlink()
+
+
 def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
     """Archive run-scoped artifacts and remove terminal/lifecycle state for a fresh goal."""
     from auto_loop.config import resolved_config_snapshot_path
@@ -102,38 +121,23 @@ def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
 
     reviews = repo / config.reviews_dir
     if reviews.is_dir():
-        review_files = [path for path in reviews.iterdir() if path.is_file()]
-        if review_files:
-            archived_reviews = archive_dir / "reviews"
-            archived_reviews.mkdir(parents=True, exist_ok=True)
-            for path in review_files:
-                shutil.move(str(path), str(archived_reviews / path.name))
+        for path in reviews.iterdir():
+            if path.is_file():
+                _archive_repo_file(repo, archive_dir, path, move=True)
 
     for rel in (config.plan_file, config.context_file, config.task_file):
-        path = repo / rel
-        if path.is_file():
-            shutil.copy2(path, archive_dir / Path(rel).name)
-            path.unlink()
+        _archive_repo_file(repo, archive_dir, repo / rel)
 
-    events = repo / config.logging.event_log
-    if events.is_file():
-        archived_name = Path(config.logging.event_log).name
-        shutil.copy2(events, archive_dir / archived_name)
-        events.unlink()
+    _archive_repo_file(repo, archive_dir, repo / config.logging.event_log)
 
-    state_file = state_path(repo)
-    if state_file.is_file():
-        shutil.copy2(state_file, archive_dir / "state.json")
-        state_file.unlink()
+    _archive_repo_file(repo, archive_dir, state_path(repo))
 
     for path in (
         completion_path(repo),
         blocked_path(repo),
         resolved_config_snapshot_path(repo),
     ):
-        if path.is_file():
-            shutil.copy2(path, archive_dir / path.name)
-            path.unlink()
+        _archive_repo_file(repo, archive_dir, path)
 
 
 def _prior_run_archive_label(repo: Path) -> str:

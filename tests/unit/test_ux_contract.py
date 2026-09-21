@@ -523,11 +523,13 @@ def test_archive_uses_frozen_config_not_current_user_yaml(tmp_path: Path):
     prepare_repo_for_run(repo, RunInputs(goal_text="Second goal"))
     assert not design.is_file()
     archive_root = repo / ".auto-loop" / "runtime" / "archives"
-    archived_plan = list(archive_root.rglob("design.md"))
-    assert archived_plan
-    assert "frozen plan marker" in archived_plan[0].read_text(encoding="utf-8")
-    assert list(archive_root.rglob("0001-old.md"))
-    assert list(archive_root.rglob("custom-events.jsonl"))
+    run_archive = next(archive_root.iterdir())
+    archived_plan = run_archive / ".auto-loop" / "design.md"
+    assert archived_plan.is_file()
+    assert "frozen plan marker" in archived_plan.read_text(encoding="utf-8")
+    old_review = run_archive / ".auto-loop" / "run-reviews" / "0001-old.md"
+    assert old_review.is_file()
+    assert (run_archive / ".auto-loop" / "runtime" / "custom-events.jsonl").is_file()
     assert (repo / ".auto-loop" / "plan.md").is_file()
 
 
@@ -606,7 +608,38 @@ def test_archive_includes_prior_task_snapshot(tmp_path: Path):
     assert "First archived goal" in before_task
 
     prepare_repo_for_run(repo, RunInputs(goal_text="Second goal"))
-    archived_task = list((repo / ".auto-loop" / "runtime" / "archives").rglob("task.md"))
-    assert archived_task
-    assert "First archived goal" in archived_task[0].read_text(encoding="utf-8")
+    archive_root = repo / ".auto-loop" / "runtime" / "archives"
+    run_archive = next(archive_root.iterdir())
+    archived_task = run_archive / ".auto-loop" / "task.md"
+    assert archived_task.is_file()
+    assert "First archived goal" in archived_task.read_text(encoding="utf-8")
     assert "Second goal" in (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")
+
+
+def test_archive_preserves_relative_paths_for_same_basename(tmp_path: Path):
+    from auto_loop.config import load_config_from_repo, write_resolved_config
+
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Goal with split paths"))
+    frozen = load_config_from_repo(repo)
+    frozen.task_file = ".auto-loop/store/a/task.md"
+    frozen.context_file = ".auto-loop/store/b/task.md"
+    write_resolved_config(repo, frozen)
+    task_a = repo / frozen.task_file
+    task_b = repo / frozen.context_file
+    task_a.parent.mkdir(parents=True, exist_ok=True)
+    task_b.parent.mkdir(parents=True, exist_ok=True)
+    task_a.write_text("actual goal body\n", encoding="utf-8")
+    task_b.write_text("context body\n", encoding="utf-8")
+    _seed_completed_terminal_run(repo)
+
+    prepare_repo_for_run(repo, RunInputs(goal_text="Next"))
+    archive_root = repo / ".auto-loop" / "runtime" / "archives"
+    run_archive = next(archive_root.iterdir())
+    archived_goal = run_archive / ".auto-loop" / "store" / "a" / "task.md"
+    archived_context = run_archive / ".auto-loop" / "store" / "b" / "task.md"
+    assert archived_goal.is_file()
+    assert archived_context.is_file()
+    assert "actual goal body" in archived_goal.read_text(encoding="utf-8")
+    assert "context body" in archived_context.read_text(encoding="utf-8")
