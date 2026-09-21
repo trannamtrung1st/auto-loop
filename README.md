@@ -184,6 +184,11 @@ Integration tests use a deterministic in-process provider and real temporary Git
 
 Optional live Cursor smoke test (proposal §45): see [docs/live-cursor-smoke.md](docs/live-cursor-smoke.md). Set `AUTO_LOOP_LIVE_CURSOR=1` and run `pytest tests/integration/test_live_cursor_smoke.py -m live_cursor`. Skipped by default with an explicit reason.
 
+## v1 traceability and release verification
+
+- [docs/v1-traceability.md](docs/v1-traceability.md) — §47/§48/§44 mapping to code and tests.
+- [docs/v1-verification.md](docs/v1-verification.md) — recorded commands, results, and live-smoke status.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
