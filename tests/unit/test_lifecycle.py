@@ -4,17 +4,21 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import run_init
 from auto_loop.lifecycle import (
     ActiveReview,
     LifecycleState,
     SessionRecord,
+    adopt_session_identity,
     create_lifecycle,
     migrate_lifecycle_data,
     next_cycle_id,
     session_consistency_errors,
 )
+from auto_loop.providers.cursor import SessionError
 from auto_loop.models import ActiveGitTarget
 from auto_loop.prompts import TurnContext, build_reviewer_prompt, build_worker_prompt
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
@@ -224,3 +228,78 @@ def test_migrate_v1_approved_keeps_execution_sessions():
     assert state.next_session == "worker"
     assert state.sessions["worker"].session_id == "w1"
     assert state.sessions["planner"].status == "legacy_not_created"
+
+
+def test_adopt_session_identity_first_assign_and_mismatch():
+    state = create_lifecycle("abc")
+    assert adopt_session_identity(state, "planner", "sess-a", "auto") is True
+    assert state.sessions["planner"].session_id == "sess-a"
+    assert adopt_session_identity(state, "planner", "sess-a", "auto") is False
+    with pytest.raises(SessionError, match="observed new id"):
+        adopt_session_identity(state, "planner", "sess-b", "auto")
+
+
+def test_adopt_session_identity_rejects_duplicate_across_slots():
+    state = create_lifecycle("abc")
+    adopt_session_identity(state, "worker", "shared", "auto")
+    with pytest.raises(SessionError, match="duplicate session id"):
+        adopt_session_identity(state, "reviewer", "shared", "auto")
+
+
+def test_migrate_v1_active_batch_review_while_waiting_on_reviewer():
+    data = {
+        "schema_version": 1,
+        "lifecycle_id": "old",
+        "status": "running",
+        "turn": 5,
+        "next_actor": "reviewer",
+        "plan_approved": True,
+        "initial_base_commit": "aaa",
+        "last_approved_commit": "aaa",
+        "sessions": {
+            "worker": {"session_id": "w1", "model": "auto"},
+            "reviewer": {"session_id": "r1", "model": "auto"},
+        },
+        "active_review": {
+            "scope": "batch",
+            "target": "W01",
+            "summary": "batch",
+            "approved_base_commit": "aaa",
+            "current_candidate_head": "bbb",
+        },
+        "started_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    migrated = migrate_lifecycle_data(data)
+    state = LifecycleState.model_validate(migrated)
+    assert state.next_session == "reviewer"
+    assert state.active_review is not None
+    assert state.active_review.cycle_id.startswith("review-")
+    assert state.active_review.scope == "batch"
+    assert state.active_review.has_git_target
+    assert state.active_review.git_base == "aaa"
+    assert state.active_review.git_head == "bbb"
+
+
+def test_migrate_v1_unmigratable_active_review_routes_to_worker():
+    data = {
+        "schema_version": 1,
+        "lifecycle_id": "old",
+        "status": "running",
+        "turn": 5,
+        "next_actor": "reviewer",
+        "plan_approved": True,
+        "initial_base_commit": "aaa",
+        "last_approved_commit": "aaa",
+        "sessions": {
+            "worker": {"session_id": "w1", "model": "auto"},
+            "reviewer": {"session_id": "r1", "model": "auto"},
+        },
+        "active_review": {"scope": "batch", "target": ""},
+        "started_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    migrated = migrate_lifecycle_data(data)
+    state = LifecycleState.model_validate(migrated)
+    assert state.active_review is None
+    assert state.next_session == "worker"

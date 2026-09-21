@@ -27,6 +27,7 @@ from auto_loop.lifecycle import (
     LifecycleStatus,
     PendingRevision,
     SessionSlot,
+    adopt_session_identity,
     create_lifecycle,
     next_cycle_id,
     new_lifecycle_id,
@@ -300,12 +301,6 @@ class LifecycleRunner:
             extra_args=[],
         )
         use_live_cursor = getattr(self.invoker, "uses_live_cursor", False)
-        argv = build_cursor_command(
-            self.config,
-            request,
-            binary=None if use_live_cursor else "fake-agent",
-            resume_session_id=session.session_id,
-        )
         os.environ["AUTO_LOOP_FAKE_ROLE"] = slot
         os.environ["AUTO_LOOP_FAKE_SLOT"] = slot
         self._persist_inflight(state, slot)
@@ -330,9 +325,15 @@ class LifecycleRunner:
 
             self.invoker.on_provider_pid = _provider_pid
         max_attempts = 1 + max(self.config.limits.provider_retries, 0)
-        parsed = None
+        final_text: str | None = None
         try:
             for attempt in range(1, max_attempts + 1):
+                argv = build_cursor_command(
+                    self.config,
+                    request,
+                    binary=None if use_live_cursor else "fake-agent",
+                    resume_session_id=session.session_id,
+                )
                 try:
                     _code, lines = self.invoker.invoke(argv)
                     turn_log.write_stream_lines(lines)
@@ -340,7 +341,36 @@ class LifecycleRunner:
                         lines,
                         expected_session_id=session.session_id,
                     )
-                    break
+                    if parsed.session_id:
+                        created = adopt_session_identity(
+                            state,
+                            slot,
+                            parsed.session_id,
+                            model,
+                        )
+                        save_lifecycle_state(self.repo, state)
+                        if created:
+                            append_event(
+                                self.repo,
+                                self.config,
+                                {
+                                    "type": "session_created",
+                                    "actor": role,
+                                    "session_purpose": slot,
+                                    "session_id": parsed.session_id,
+                                    "model": model,
+                                    "lifecycle_id": state.lifecycle_id,
+                                },
+                            )
+                            self._console.session_created(slot, parsed.session_id)
+                    if parsed.final_text:
+                        final_text = parsed.final_text
+                        break
+                    if attempt >= max_attempts:
+                        turn_log.finalize()
+                        raise ProviderError(
+                            f"Provider stream for session {slot} missing terminal result"
+                        )
                 except SessionError:
                     turn_log.finalize()
                     raise
@@ -360,43 +390,26 @@ class LifecycleRunner:
                     if attempt >= max_attempts:
                         turn_log.finalize()
                         raise ProviderError(str(exc)) from exc
-                    append_event(
-                        self.repo,
-                        self.config,
-                        {
-                            "type": "provider_retry",
-                            "actor": role,
-                            "session_purpose": slot,
-                            "attempt": attempt,
-                            "lifecycle_id": state.lifecycle_id,
-                        },
-                    )
+                append_event(
+                    self.repo,
+                    self.config,
+                    {
+                        "type": "provider_retry",
+                        "actor": role,
+                        "session_purpose": slot,
+                        "attempt": attempt,
+                        "lifecycle_id": state.lifecycle_id,
+                    },
+                )
         finally:
             if hasattr(self.invoker, "on_provider_pid"):
                 self.invoker.on_provider_pid(None)
             self._stop.set_active_provider(None)
-        if parsed is None:
+        if final_text is None:
             turn_log.finalize()
             raise ProviderError(f"Provider failed for session {slot}")
         turn_log.finalize()
-        if session.session_id is None:
-            session.session_id = parsed.session_id
-            session.model = model
-            session.status = "active"
-            append_event(
-                self.repo,
-                self.config,
-                {
-                    "type": "session_created",
-                    "actor": role,
-                    "session_purpose": slot,
-                    "session_id": parsed.session_id,
-                    "model": model,
-                    "lifecycle_id": state.lifecycle_id,
-                },
-            )
-            self._console.session_created(slot, parsed.session_id)
-        return parsed.final_text
+        return final_text
 
     def _assert_planning_clean(self, state: LifecycleState) -> None:
         if head_commit(self.repo) != state.initial_base_commit:
@@ -423,6 +436,44 @@ class LifecycleRunner:
         required = review.target_ids
         if required and not set(required) <= set(result.reviewed_target_ids):
             raise missing_pass_targets(required, result.reviewed_target_ids)
+
+    def _planning_review_cycle(self, state: LifecycleState, target: str) -> tuple[str, int]:
+        pending = state.pending_revision
+        if pending and pending.scope == "plan" and pending.target == target:
+            return pending.cycle_id, pending.round
+        return next_cycle_id(state), 1
+
+    def _assert_reviewer_matches_active(
+        self,
+        active: ActiveReview,
+        result: ReviewerResult,
+    ) -> None:
+        if result.scope != active.scope:
+            raise GitProtocolError(
+                f"Reviewer scope {result.scope!r} does not match active review {active.scope!r}"
+            )
+        if result.target != active.target:
+            raise GitProtocolError(
+                f"Reviewer target {result.target!r} does not match active review {active.target!r}"
+            )
+        if not active.has_git_target:
+            return
+        expected_base = active.git_base
+        expected_head = active.git_head or active.current_candidate_head
+        if result.reviewed_base_commit is not None and expected_base is not None:
+            if resolve_commit(self.repo, result.reviewed_base_commit) != resolve_commit(
+                self.repo, expected_base
+            ):
+                raise GitProtocolError(
+                    "Reviewer reviewed_base_commit does not match active Git review"
+                )
+        if result.reviewed_head_commit is not None and expected_head is not None:
+            if resolve_commit(self.repo, result.reviewed_head_commit) != resolve_commit(
+                self.repo, expected_head
+            ):
+                raise GitProtocolError(
+                    "Reviewer reviewed_head_commit does not match active Git review"
+                )
 
     def _persist_after_turn(self, state: LifecycleState) -> None:
         state.turn += 1
@@ -469,8 +520,10 @@ class LifecycleRunner:
                 self.config,
                 {"type": "planner_blocked", "turn": state.turn, "lifecycle_id": state.lifecycle_id},
             )
+            cycle_id, round_no = self._planning_review_cycle(state, "blocked")
             state.active_review = ActiveReview(
-                cycle_id=next_cycle_id(state),
+                cycle_id=cycle_id,
+                round=round_no,
                 scope="plan",
                 target="blocked",
                 summary=result.plan_summary,
@@ -499,8 +552,10 @@ class LifecycleRunner:
             },
         )
         self._console.review_requested(result.review.scope, result.review.target)
+        cycle_id, round_no = self._planning_review_cycle(state, result.review.target)
         state.active_review = ActiveReview(
-            cycle_id=next_cycle_id(state),
+            cycle_id=cycle_id,
+            round=round_no,
             scope="plan",
             target=result.review.target,
             summary=result.review.summary,
@@ -785,6 +840,7 @@ class LifecycleRunner:
                 raise
             break
         state.consecutive_protocol_failures = 0
+        self._assert_reviewer_matches_active(state.active_review, result)
         self._assert_pass_targets(state.active_review, result)
         if slot == "plan_reviewer" and result.verdict == "complete":
             raise GitProtocolError("Plan reviewer cannot declare task completion")

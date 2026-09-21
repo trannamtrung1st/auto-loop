@@ -34,6 +34,7 @@ def test_wheel_contains_templates_and_license(tmp_path: Path):
     assert any(n.endswith("auto_loop/templates/task.md") for n in names)
     assert any(n.endswith("auto_loop/templates/agents/planner.md") for n in names)
     assert not any("harness_resources" in n for n in names)
+    assert not any(".agents/" in n or n.endswith("AGENTS.md") for n in names)
     assert any(n.endswith("LICENSE") or n.endswith("auto_loop-0.1.0.dist-info/LICENSE") for n in names)
 
 

@@ -13,6 +13,19 @@ from auto_loop.exits import ExitCode
 CONFIG_VERSION = 1
 CONTEXT_VERSION = 1
 
+DEFAULT_PROTECTED_FILES: tuple[str, ...] = (
+    ".auto-loop/task.md",
+    ".auto-loop/config.yaml",
+    ".auto-loop/context.yaml",
+    ".auto-loop/agents/planner.md",
+    ".auto-loop/agents/worker.md",
+    ".auto-loop/agents/reviewer.md",
+    ".auto-loop/instructions/shared.md",
+    ".auto-loop/instructions/planner.md",
+    ".auto-loop/instructions/worker.md",
+    ".auto-loop/instructions/reviewer.md",
+)
+
 ConsoleLevel = Literal["quiet", "normal", "verbose"]
 InstructionMode = Literal["extend", "replace_role"]
 ProviderType = Literal["cursor"]
@@ -145,26 +158,15 @@ class AutoLoopConfig(BaseModel):
                 mode="ask",
             )
         object.__setattr__(self, "agents", agents)
-        if not self.protection.protected_files:
+        merged_protected = list(self.protection.protected_files)
+        for path in DEFAULT_PROTECTED_FILES:
+            if path not in merged_protected:
+                merged_protected.append(path)
+        if merged_protected != self.protection.protected_files:
             object.__setattr__(
                 self,
                 "protection",
-                self.protection.model_copy(
-                    update={
-                        "protected_files": [
-                            ".auto-loop/task.md",
-                            ".auto-loop/config.yaml",
-                            ".auto-loop/context.yaml",
-                            ".auto-loop/agents/planner.md",
-                            ".auto-loop/agents/worker.md",
-                            ".auto-loop/agents/reviewer.md",
-                            ".auto-loop/instructions/shared.md",
-                            ".auto-loop/instructions/planner.md",
-                            ".auto-loop/instructions/worker.md",
-                            ".auto-loop/instructions/reviewer.md",
-                        ]
-                    }
-                ),
+                self.protection.model_copy(update={"protected_files": merged_protected}),
             )
         return self
 

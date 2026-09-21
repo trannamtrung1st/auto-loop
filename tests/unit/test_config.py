@@ -72,6 +72,14 @@ def test_load_config_from_file(tmp_path: Path):
     assert loaded.task_file == cfg.task_file
 
 
+def test_protected_files_merge_defaults_into_existing_list():
+    data = default_config().model_dump(mode="json")
+    data["protection"]["protected_files"] = [".auto-loop/task.md"]
+    cfg = parse_config_dict(data)
+    assert ".auto-loop/task.md" in cfg.protection.protected_files
+    assert any("planner" in p for p in cfg.protection.protected_files)
+
+
 def test_load_config_missing_file(tmp_path: Path):
     with pytest.raises(ConfigurationError, match="not found"):
         load_config(tmp_path / "missing.yaml")

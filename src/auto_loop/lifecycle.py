@@ -182,6 +182,36 @@ def next_cycle_id(state: LifecycleState) -> str:
     return f"review-{state.review_cycle_seq:04d}"
 
 
+def adopt_session_identity(
+    state: LifecycleState,
+    slot: SessionSlot,
+    observed_session_id: str,
+    model: str,
+) -> bool:
+    """Persist the first observed Cursor session id or fail closed on mismatch/duplication.
+
+    Returns True when this call first assigned the slot's session id.
+    """
+    from auto_loop.providers.cursor import SessionError
+
+    record = state.sessions[slot]
+    created = False
+    if record.session_id is None:
+        record.session_id = observed_session_id
+        record.model = model
+        record.status = "active"
+        created = True
+    elif record.session_id != observed_session_id:
+        raise SessionError(
+            f"Session slot {slot} observed new id {observed_session_id!r} "
+            f"but stored id is {record.session_id!r}"
+        )
+    for message in session_consistency_errors(state):
+        if message.startswith("duplicate session id"):
+            raise SessionError(message)
+    return created
+
+
 def session_consistency_errors(state: LifecycleState) -> list[str]:
     errors: list[str] = []
     ids = [
@@ -230,6 +260,67 @@ def _migrate_inflight(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     migrated["role"] = actor
     migrated.pop("actor", None)
     return migrated
+
+
+def _migrate_v1_active_review(
+    raw: dict[str, Any] | None,
+    migrated: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not raw or not isinstance(raw, dict):
+        return None
+    scope = raw.get("scope")
+    if scope not in ("plan", "batch", "final"):
+        return None
+    target = raw.get("target")
+    if not isinstance(target, str) or not target.strip():
+        return None
+    seq = int(migrated.get("review_cycle_seq") or 0)
+    cycle_id = raw.get("cycle_id")
+    if not isinstance(cycle_id, str) or not cycle_id.strip():
+        seq += 1
+        migrated["review_cycle_seq"] = seq
+        cycle_id = f"review-{seq:04d}"
+    round_no = int(raw.get("round") or 1)
+    purpose: SessionSlot = "plan_reviewer" if scope == "plan" else "reviewer"
+    targets: list[dict[str, Any]] = []
+    base = raw.get("approved_base_commit")
+    head = raw.get("current_candidate_head") or raw.get("head_commit")
+    if base and head:
+        targets.append(
+            {
+                "kind": "git_range",
+                "id": "git",
+                "base_commit": base,
+                "head_commit": head,
+            }
+        )
+    elif scope == "plan":
+        targets.append(
+            {
+                "kind": "path",
+                "id": "plan",
+                "path": ".auto-loop/plan.md",
+                "fingerprint": "",
+                "exists": True,
+                "git_classification": "control",
+                "purpose": "Current plan document",
+            }
+        )
+    return {
+        "cycle_id": cycle_id,
+        "round": round_no,
+        "scope": scope,
+        "target": target,
+        "summary": raw.get("summary") or f"{scope} review",
+        "session_purpose": purpose,
+        "approved_base_commit": base,
+        "production_head_commit": raw.get("production_head_commit"),
+        "current_candidate_head": head,
+        "worker_summary": raw.get("worker_summary"),
+        "plan_summary": raw.get("plan_summary"),
+        "plan_sha256": raw.get("plan_sha256"),
+        "targets": targets,
+    }
 
 
 def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
@@ -286,6 +377,17 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
             },
         }
         migrated["inflight"] = _migrate_inflight(data.get("inflight"))
+        raw_review = data.get("active_review")
+        migrated_review = _migrate_v1_active_review(
+            raw_review if isinstance(raw_review, dict) else None,
+            migrated,
+        )
+        if migrated_review is not None:
+            migrated["active_review"] = migrated_review
+        elif raw_review:
+            migrated["active_review"] = None
+            if next_session == "reviewer":
+                migrated["next_session"] = "worker"
     else:
         migrated["phase"] = "planning"
         migrated["next_session"] = "planner"

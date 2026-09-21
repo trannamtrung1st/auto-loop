@@ -1,5 +1,7 @@
 # Developing auto-loop
 
+This file and `.agents/skills/` are a **contributor harness** for humans and coding agents working **on the auto-loop repository**. They are not part of the auto-loop application runtime, are not copied by `auto-loop init`, and are not packaged in the wheel. Target repositories may have their own `AGENTS.md` and skills; auto-loop respects those at runtime but does not install this harness into them.
+
 `auto-loop` is a **mechanical controller** for a planner / worker / reviewer lifecycle. Agents own semantic reasoning. The controller owns protocol, Git, session identity, protection, and recovery. Do not leak task semantics into controller scheduling.
 
 ## Durable facts
@@ -14,20 +16,16 @@
 - New behavior needs unit tests and fake-provider integration coverage.
 - Run focused tests first, then the full offline pytest suite. Ordinary CI must not require live Cursor.
 
-## Skills
+## Contributor skills
 
-| Change | Skill |
-|--------|--------|
-| Starting work / stale architecture context | `auto-loop-repo-discovery` |
-| Phase, session-slot, recovery, stop, completion | `auto-loop-lifecycle-change` |
-| Result schemas, Git/review targets, persistence | `auto-loop-protocol-state` |
-| Cursor CLI, resume, streams, supervision | `auto-loop-cursor-provider` |
-| Choosing and reporting verification | `auto-loop-test-and-verify` |
-| Implementation-ready / release check | `auto-loop-release-review` |
+| When | Skill |
+|------|--------|
+| Implementing or fixing auto-loop | `auto-loop-develop` |
+| Reviewing a change before merge/release | `auto-loop-review` |
 
-Root `.agents/skills/` is the only development harness. Do not reintroduce a packaged installer or copy these skills into target `.auto-loop/` workspaces.
+Skills are workflow-oriented guides (discovery, invariants, checklists inside one file). They are not runtime roles the controller dispatches.
 
 ## Two planes
 
-- **Development:** this file and `.agents/skills/**` — for contributors working on this repository.
-- **Runtime:** the CLI, `.auto-loop/context.yaml`, and generated role templates — for planner/worker/reviewer agents on a target task.
+- **Development (this repo):** `AGENTS.md` + `.agents/skills/**` — for contributors maintaining auto-loop.
+- **Runtime (target task):** CLI, `.auto-loop/context.yaml`, generated role templates — for planner/worker/reviewer agents on a user task.

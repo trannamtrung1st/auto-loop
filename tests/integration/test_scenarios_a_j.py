@@ -200,7 +200,7 @@ def test_scenario_I_final_revise_routes_through_batch_before_complete(tmp_path: 
     provider.set_reviewer_revise("final", "whole-task")
     run_lifecycle(repo, run_opts(2), provider)
     head_d = commit_file(repo, "fix.txt", "fix\n", "fix D")
-    provider.set_response("worker", batch_worker_payload(approved_c, head_d))
+    provider.set_response("worker", batch_worker_payload(approved_c, head_d, target="W02"))
     provider.set_reviewer_pass("batch", "W02")
     provider.set_worker_final_request(head=head_d)
     provider.set_reviewer_complete(head_d)
