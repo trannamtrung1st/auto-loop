@@ -37,13 +37,6 @@ Resume it:
 Inspect it:
   auto-loop status"""
 
-COMPLETED_RUN_MESSAGE = """This repository already has a completed Auto Loop run.
-
-The stored goal was not replaced.
-
-Inspect it:
-  auto-loop status"""
-
 NO_RESUME_MESSAGE = """No resumable Auto Loop run found.
 
 Start one:
@@ -72,6 +65,28 @@ def has_lifecycle_state(repo: Path) -> bool:
     from auto_loop.runtime import load_lifecycle_state
 
     return load_lifecycle_state(repo) is not None
+
+
+def _user_supplied_new_goal(inputs: RunInputs) -> bool:
+    if inputs.goal_text and inputs.goal_text.strip():
+        return True
+    return inputs.goal_file is not None
+
+
+def clear_prior_run_for_new_goal(repo: Path) -> None:
+    """Remove terminal records and lifecycle state so a new goal can start fresh."""
+    from auto_loop.config import resolved_config_snapshot_path
+    from auto_loop.runtime import state_path
+    from auto_loop.terminal_records import blocked_path, completion_path
+
+    for path in (
+        state_path(repo),
+        completion_path(repo),
+        blocked_path(repo),
+        resolved_config_snapshot_path(repo),
+    ):
+        if path.is_file():
+            path.unlink()
 
 
 def resolve_optional_file(repo: Path, given: Path) -> Path:
@@ -144,16 +159,21 @@ def prepare_repo_for_run(repo: Path, inputs: RunInputs | None = None) -> Prepare
 
     from auto_loop.terminal_records import load_completion_record
 
-    existing = has_lifecycle_state(repo)
+    has_lifecycle = has_lifecycle_state(repo)
     completed = load_completion_record(repo) is not None
-    if inputs.resume_only and not existing:
+    if inputs.resume_only and not has_lifecycle:
         raise RunInputError(NO_RESUME_MESSAGE)
-    if existing and (inputs.goal_text or inputs.goal_file is not None):
-        raise RunInputError(COMPLETED_RUN_MESSAGE if completed else EXISTING_RUN_MESSAGE)
+
+    if _user_supplied_new_goal(inputs) and not inputs.resume_only:
+        if has_lifecycle and not completed:
+            raise RunInputError(EXISTING_RUN_MESSAGE)
+        if completed or has_lifecycle:
+            clear_prior_run_for_new_goal(repo)
+            has_lifecycle = False
 
     materialize_control_workspace(repo, minimal=inputs.minimal)
 
-    if existing:
+    if has_lifecycle:
         config = load_resolved_config_from_repo(repo)
         stored = _stored_goal_text(repo, config)
         if not stored:

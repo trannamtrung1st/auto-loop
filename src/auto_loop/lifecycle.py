@@ -405,14 +405,10 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _configured_plan_file(repo: Path) -> str:
-    from auto_loop.config import ConfigurationError, load_config
-    from auto_loop.paths import auto_loop_root
+    from auto_loop.config import ConfigurationError, load_resolved_config_from_repo
 
-    path = auto_loop_root(repo) / "config.yaml"
-    if not path.is_file():
-        return ".auto-loop/plan.md"
     try:
-        return load_config(path).plan_file
+        return load_resolved_config_from_repo(repo).plan_file
     except ConfigurationError:
         return ".auto-loop/plan.md"
 

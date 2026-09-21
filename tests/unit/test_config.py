@@ -126,6 +126,32 @@ def test_invalid_user_config_names_the_file(tmp_path: Path):
         overlay_user_config(default_config(), path)
 
 
+def test_user_yaml_ignores_stale_internal_config(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    stale = default_config()
+    stale.limits.max_turns = 50
+    internal = repo / ".auto-loop" / "config.yaml"
+    internal.parent.mkdir(parents=True, exist_ok=True)
+    internal.write_text(dump_config(stale), encoding="utf-8")
+    (repo / "auto-loop.yaml").write_text("run:\n  max_turns: 7\n", encoding="utf-8")
+    cfg = load_config_from_repo(repo)
+    assert cfg.limits.max_turns == 7
+
+
+def test_user_run_overlay_rejects_invalid_limits(tmp_path: Path):
+    for body in (
+        "run:\n  max_turns: 0\n",
+        "run:\n  max_turns: -3\n",
+        "run:\n  max_turns: abc\n",
+        "run:\n  max_runtime_minutes: 0\n",
+    ):
+        path = tmp_path / "auto-loop.yaml"
+        path.write_text(body, encoding="utf-8")
+        with pytest.raises(ConfigurationError):
+            overlay_user_config(default_config(), path)
+
+
 def test_resume_uses_frozen_snapshot_not_changed_user_yaml(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()

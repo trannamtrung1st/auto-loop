@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
 from auto_loop.exits import ExitCode
 from auto_loop.providers.argv_session import resume_session_id_from_argv
 from auto_loop.providers.fake_cursor import FakeBehavior, FakeCursorEngine
@@ -39,10 +37,11 @@ class FlakyScriptedProvider(ScriptedProvider):
 
 
 def _bump_provider_retries(repo: Path, retries: int = 2) -> None:
-    path = repo / ".auto-loop" / "config.yaml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    data["limits"]["provider_retries"] = retries
-    path.write_text(yaml.dump(data), encoding="utf-8")
+    from auto_loop.config import dump_config, load_config_from_repo
+
+    cfg = load_config_from_repo(repo)
+    cfg = cfg.model_copy(update={"limits": cfg.limits.model_copy(update={"provider_retries": retries})})
+    (repo / "auto-loop.yaml").write_text(dump_config(cfg), encoding="utf-8")
 
 
 def test_provider_retry_resumes_same_session_id(tmp_path: Path):

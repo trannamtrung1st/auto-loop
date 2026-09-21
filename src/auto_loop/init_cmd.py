@@ -22,6 +22,16 @@ from auto_loop.paths import auto_loop_root
 
 RUNTIME_GITIGNORE_ENTRY = ".auto-loop/runtime/"
 
+INIT_FORCE_BLOCKED_MESSAGE = """Cannot re-initialize while a run is in progress.
+
+Your existing run was not reset.
+
+Resume it:
+  auto-loop resume
+
+Inspect it:
+  auto-loop status"""
+
 
 class InitError(Exception):
     """Initialization refused or failed."""
@@ -277,6 +287,11 @@ def run_init(repo: Path, *, force: bool = False, minimal: bool = False) -> InitR
             )
 
     if force and auto_loop_root(repo).is_dir():
+        from auto_loop.runtime import load_lifecycle_state
+        from auto_loop.terminal_records import load_completion_record
+
+        if load_lifecycle_state(repo) is not None and load_completion_record(repo) is None:
+            raise InitError(INIT_FORCE_BLOCKED_MESSAGE)
         materialized = materialize_control_workspace(repo, force=True, minimal=minimal)
         result.created.extend(materialized.created)
         result.skipped.extend(materialized.skipped)

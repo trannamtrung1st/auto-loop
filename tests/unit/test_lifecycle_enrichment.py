@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from auto_loop.config import dump_config, load_config
+from auto_loop.config import load_config_from_repo, write_resolved_config
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
     LEGACY_V1_PLAN_TARGET_PATH,
@@ -88,9 +88,9 @@ def test_reload_does_not_retarget_v2_plan_when_config_plan_file_changes(tmp_path
 
     custom = ".auto-loop/design.md"
     (repo / ".auto-loop" / "design.md").write_text("# other plan\n", encoding="utf-8")
-    cfg = load_config(repo / ".auto-loop" / "config.yaml")
+    cfg = load_config_from_repo(repo)
     cfg.plan_file = custom
-    (repo / ".auto-loop" / "config.yaml").write_text(dump_config(cfg), encoding="utf-8")
+    write_resolved_config(repo, cfg)
 
     loaded = load_lifecycle_state(repo)
     assert loaded is not None

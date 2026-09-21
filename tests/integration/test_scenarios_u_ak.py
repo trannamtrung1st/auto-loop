@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from auto_loop.config import dump_config, load_config_from_repo
+from auto_loop.config import load_config_from_repo
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.lifecycle import InflightMarker, utc_now
@@ -189,7 +189,10 @@ def test_scenario_X_three_model_selections(tmp_path: Path):
     cfg.agents["planner"] = cfg.agents["planner"].model_copy(update={"model": "P_MODEL"})
     cfg.agents["worker"] = cfg.agents["worker"].model_copy(update={"model": "W_MODEL"})
     cfg.agents["reviewer"] = cfg.agents["reviewer"].model_copy(update={"model": "R_MODEL"})
-    (repo / ".auto-loop" / "config.yaml").write_text(dump_config(cfg), encoding="utf-8")
+    (repo / "auto-loop.yaml").write_text(
+        "models:\n  planner: P_MODEL\n  worker: W_MODEL\n  reviewer: R_MODEL\n",
+        encoding="utf-8",
+    )
     loaded = load_config_from_repo(repo)
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
@@ -213,7 +216,10 @@ def test_scenario_Y_cli_role_override_precedence(tmp_path: Path):
     cfg.agents["planner"] = cfg.agents["planner"].model_copy(update={"model": "P_CFG"})
     cfg.agents["worker"] = cfg.agents["worker"].model_copy(update={"model": "W_CFG"})
     cfg.agents["reviewer"] = cfg.agents["reviewer"].model_copy(update={"model": "R_CFG"})
-    (repo / ".auto-loop" / "config.yaml").write_text(dump_config(cfg), encoding="utf-8")
+    (repo / "auto-loop.yaml").write_text(
+        "models:\n  planner: P_MODEL\n  worker: W_MODEL\n  reviewer: R_MODEL\n",
+        encoding="utf-8",
+    )
     loaded = load_config_from_repo(repo)
     options = build_run_options(
         loaded,

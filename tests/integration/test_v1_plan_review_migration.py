@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from auto_loop.config import dump_config, load_config
+from auto_loop.config import load_config_from_repo, write_resolved_config
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.loop import run_lifecycle
@@ -75,9 +75,9 @@ def test_migrated_v1_plan_review_honors_configured_plan_file(tmp_path: Path):
     head = head_commit(repo)
     custom_plan = ".auto-loop/design.md"
     (repo / ".auto-loop" / "design.md").write_text("# design\n", encoding="utf-8")
-    cfg = load_config(repo / ".auto-loop" / "config.yaml")
+    cfg = load_config_from_repo(repo)
     cfg.plan_file = custom_plan
-    (repo / ".auto-loop" / "config.yaml").write_text(dump_config(cfg), encoding="utf-8")
+    write_resolved_config(repo, cfg)
 
     digest, exists = fingerprint_path(repo / custom_plan)
     assert exists

@@ -80,7 +80,7 @@ auto-loop run --goal-file goal.md
 | custom context/resource files | you | yes — optional, pass `--context` |
 | `.auto-loop/` | Auto Loop | no — tool-managed plan, reviews, agents, runtime |
 
-Configuration resolution: built-in defaults, then a legacy `.auto-loop/config.yaml` snapshot if present, then `auto-loop.yaml`, then CLI overrides. The resolved snapshot is stored under `.auto-loop/` for resume safety.
+Configuration resolution: built-in defaults plus `auto-loop.yaml` when present. Repositories without `auto-loop.yaml` still load legacy `.auto-loop/config.yaml`. On `auto-loop run`, the resolved snapshot is frozen under `.auto-loop/runtime/config.resolved.yaml` for resume; CLI overrides apply at launch.
 
 ## Stable exit codes
 

@@ -220,41 +220,41 @@ def dump_config(config: AutoLoopConfig) -> str:
 
 
 def load_config_from_repo(repo: Path) -> AutoLoopConfig:
-    """Resolve configuration: defaults < internal snapshot < auto-loop.yaml."""
+    """Resolve configuration for a new run or tooling.
+
+    When ``auto-loop.yaml`` exists it is the sole user source (defaults + overlay).
+    Legacy repositories without ``auto-loop.yaml`` still load ``.auto-loop/config.yaml``.
+    """
     user_path = user_config_path(repo)
-    snapshot_path = config_path(repo)
-    if not user_path.is_file() and not snapshot_path.is_file():
+    legacy_internal = config_path(repo)
+    if not user_path.is_file() and not legacy_internal.is_file():
         raise ConfigurationError(
             "No Auto Loop configuration found.\n\n"
             f"Create one with:\n  auto-loop init\n\nExpected: {USER_CONFIG_FILENAME}"
         )
 
-    if snapshot_path.is_file():
-        config = load_config(snapshot_path)
-    else:
-        config = default_config()
     if user_path.is_file():
-        config = overlay_user_config(config, user_path)
-    return config
+        return overlay_user_config(default_config(), user_path)
+    return load_config(legacy_internal)
 
 
 def load_resolved_config_from_repo(repo: Path) -> AutoLoopConfig:
     """Load the frozen resolved snapshot for an in-progress run (no user yaml re-overlay)."""
-    for path in (config_path(repo), resolved_config_snapshot_path(repo)):
-        if path.is_file():
-            return load_config(path)
+    frozen = resolved_config_snapshot_path(repo)
+    if frozen.is_file():
+        return load_config(frozen)
+    legacy = config_path(repo)
+    if legacy.is_file():
+        return load_config(legacy)
     return load_config_from_repo(repo)
 
 
 def write_resolved_config(repo: Path, config: AutoLoopConfig) -> None:
-    """Write the internal resolved snapshot used by the rest of the controller."""
+    """Write the immutable run snapshot used on resume."""
     text = dump_config(config)
-    snapshot = config_path(repo)
-    snapshot.parent.mkdir(parents=True, exist_ok=True)
-    snapshot.write_text(text, encoding="utf-8")
-    runtime_snapshot = resolved_config_snapshot_path(repo)
-    runtime_snapshot.parent.mkdir(parents=True, exist_ok=True)
-    runtime_snapshot.write_text(text, encoding="utf-8")
+    path = resolved_config_snapshot_path(repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def parse_config_dict(data: dict[str, Any]) -> AutoLoopConfig:
@@ -322,13 +322,25 @@ def apply_user_overlay(
         if "max_runtime_minutes" in run and run["max_runtime_minutes"] is not None:
             limits_update["max_runtime_minutes"] = run["max_runtime_minutes"]
         if limits_update:
+            merged_limits = config.limits.model_dump(mode="json")
+            merged_limits.update(limits_update)
             try:
-                updates["limits"] = config.limits.model_copy(update=limits_update)
+                updates["limits"] = LimitSettings.model_validate(merged_limits)
             except (ValueError, ValidationError) as exc:
                 raise ConfigurationError(str(exc)) from exc
     if not updates:
         return config
-    return config.model_copy(update=updates)
+    patched = config.model_dump(mode="json")
+    if "agents" in updates:
+        patched["agents"] = {
+            role: agent.model_dump(mode="json") for role, agent in updates["agents"].items()
+        }
+    if "limits" in updates:
+        patched["limits"] = updates["limits"].model_dump(mode="json")
+    try:
+        return AutoLoopConfig.model_validate(patched)
+    except (ValueError, ValidationError) as exc:
+        raise ConfigurationError(str(exc)) from exc
 
 
 def dump_user_config(*, models: dict[str, str], run: dict[str, int] | None = None) -> str:

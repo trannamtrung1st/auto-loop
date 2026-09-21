@@ -4,12 +4,13 @@ import subprocess
 from importlib import resources
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
 from auto_loop.cli import app
-from auto_loop.config import load_config, load_config_from_repo, user_config_path
-from auto_loop.init_cmd import bootstrap_workspace, run_init
+from auto_loop.config import load_config_from_repo, user_config_path
+from auto_loop.init_cmd import InitError, bootstrap_workspace, run_init
 
 runner = CliRunner()
 
@@ -75,6 +76,19 @@ def test_force_regenerates_control_templates_when_workspace_exists(tmp_path: Pat
     assert "implementation worker" in text or "implementation" in text
 
 
+def test_force_refuses_while_resumable_run_exists(tmp_path: Path):
+    repo = _repo(tmp_path)
+    _git(repo, "commit", "--allow-empty", "-m", "init")
+    bootstrap_workspace(repo, goal="In progress")
+    from auto_loop.git import head_commit
+    from auto_loop.lifecycle import create_lifecycle
+    from auto_loop.runtime import save_lifecycle_state
+
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    with pytest.raises(InitError, match="in progress"):
+        run_init(repo, force=True)
+
+
 def test_packaged_worker_reviewer_contract_clauses():
     pkg = resources.files("auto_loop").joinpath("templates")
     planner = pkg.joinpath("agents/planner.md").read_text(encoding="utf-8")
@@ -107,5 +121,5 @@ def test_bootstrap_writes_internal_context(tmp_path: Path):
     bootstrap_workspace(repo)
     data = yaml.safe_load((repo / ".auto-loop" / "context.yaml").read_text(encoding="utf-8"))
     assert data["version"] == 1
-    cfg = load_config(repo / ".auto-loop" / "config.yaml")
+    cfg = load_config_from_repo(repo)
     assert cfg.task_file == ".auto-loop/task.md"

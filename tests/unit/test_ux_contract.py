@@ -111,6 +111,12 @@ def test_legacy_project_is_loadable_and_migration_is_non_destructive(tmp_path: P
     repo = git_repo(tmp_path)
     bootstrap_workspace(repo, goal="Legacy stored goal")
     (repo / "auto-loop.yaml").unlink()
+    from auto_loop.config import config_path, dump_config, load_config, resolved_config_snapshot_path
+
+    frozen = resolved_config_snapshot_path(repo)
+    if frozen.is_file():
+        config_path(repo).parent.mkdir(parents=True, exist_ok=True)
+        config_path(repo).write_text(dump_config(load_config(frozen)), encoding="utf-8")
     (repo / "task.md").write_text("Deprecated root task\n", encoding="utf-8")
     (repo / "context.yaml").write_text("version: 1\n", encoding="utf-8")
     from auto_loop.git import head_commit
@@ -228,3 +234,37 @@ def test_run_without_new_goal_continues_in_progress_run(tmp_path: Path):
     prepared = prepare_repo_for_run(repo, RunInputs())
     assert prepared.is_resume is True
     assert "Continue me" in prepared.goal_text
+
+
+def test_new_goal_after_completed_run_starts_fresh(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="First goal"))
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import completion_path, load_completion_record
+    from datetime import datetime, timezone
+
+    from auto_loop.terminal_records import CompletionRecord
+
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    completion_path(repo).parent.mkdir(parents=True, exist_ok=True)
+    record = CompletionRecord(
+        completed_at=datetime.now(timezone.utc),
+        lifecycle_id="test-lifecycle",
+        turn=1,
+        worker_session_id="w1",
+        reviewer_session_id="r1",
+        initial_base_commit=head_commit(repo),
+        final_commit=head_commit(repo),
+        last_approved_commit=head_commit(repo),
+        final_review_file=".auto-loop/reviews/done.md",
+        task_sha256="abc",
+    )
+    completion_path(repo).write_text(record.model_dump_json(), encoding="utf-8")
+    assert load_completion_record(repo) is not None
+
+    prepared = prepare_repo_for_run(repo, RunInputs(goal_text="Second goal"))
+    assert prepared.is_resume is False
+    assert "Second goal" in prepared.goal_text
+    assert load_completion_record(repo) is None
+    assert load_lifecycle_state(repo) is None
