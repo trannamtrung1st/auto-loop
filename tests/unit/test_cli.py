@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from rich.text import Text
 from typer.testing import CliRunner
 
 from auto_loop.cli import app
@@ -50,6 +51,7 @@ def test_run_accepts_path_and_flags(tmp_path: Path):
 def test_run_help_lists_model_and_limit_flags():
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
+    plain_output = Text.from_ansi(result.stdout).plain
     for flag in (
         "--model",
         "--planner-model",
@@ -60,7 +62,7 @@ def test_run_help_lists_model_and_limit_flags():
         "--verbose",
         "--quiet",
     ):
-        assert flag in result.stdout
+        assert flag in plain_output
 
 
 def test_run_minimal_init_fails_closed_before_provider(tmp_path: Path):
