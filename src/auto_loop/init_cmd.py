@@ -10,6 +10,7 @@ import yaml
 
 from auto_loop.config import (
     USER_CONFIG_FILENAME,
+    AutoLoopConfig,
     ConfigurationError,
     InstructionRoleSettings,
     InstructionSettings,
@@ -190,6 +191,21 @@ def materialize_control_workspace(
     _ensure_dir(root / "reviews", result, ".auto-loop/reviews/")
     _ensure_dir(root / "runtime", result, ".auto-loop/runtime/")
     return result
+
+
+def reset_run_scoped_workspace(
+    repo: Path,
+    *,
+    config: AutoLoopConfig,
+    minimal: bool = False,
+) -> None:
+    """Regenerate plan and default context only. Preserves customized agents/instructions."""
+    context_path = repo / config.context_file
+    plan_path = repo / config.plan_file
+    context_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    context_path.write_text(_read_template("context.default.yaml"), encoding="utf-8")
+    plan_path.write_text(_read_template("plan.md"), encoding="utf-8")
 
 
 def bootstrap_workspace(

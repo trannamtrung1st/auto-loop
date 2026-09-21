@@ -15,7 +15,7 @@ from auto_loop.config import (
     write_resolved_config,
 )
 from auto_loop.exits import ExitCode
-from auto_loop.init_cmd import materialize_control_workspace
+from auto_loop.init_cmd import materialize_control_workspace, reset_run_scoped_workspace
 from auto_loop.paths import auto_loop_root
 
 
@@ -114,9 +114,10 @@ def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
             shutil.copy2(path, archive_dir / Path(rel).name)
             path.unlink()
 
-    events = root / "runtime" / "events.jsonl"
+    events = repo / config.logging.event_log
     if events.is_file():
-        shutil.copy2(events, archive_dir / "events.jsonl")
+        archived_name = Path(config.logging.event_log).name
+        shutil.copy2(events, archive_dir / archived_name)
         events.unlink()
 
     state_file = state_path(repo)
@@ -209,6 +210,27 @@ def _stored_goal_text(repo: Path, config: AutoLoopConfig) -> str | None:
     return None
 
 
+def _resolve_required_goal(repo: Path, inputs: RunInputs) -> str:
+    if inputs.goal_text and inputs.goal_text.strip():
+        return inputs.goal_text
+    if inputs.goal_file is not None:
+        goal_path = resolve_optional_file(repo, inputs.goal_file)
+        return _read_text_file(
+            goal_path,
+            missing_message=f"Goal file not found: {inputs.goal_file}",
+        )
+    raise RunInputError(MISSING_GOAL_MESSAGE)
+
+
+def _validate_context_source(repo: Path, inputs: RunInputs) -> Path | None:
+    if inputs.context_file is None:
+        return None
+    context_path = resolve_optional_file(repo, inputs.context_file)
+    if not context_path.is_file():
+        raise RunInputError(f"Context file not found: {inputs.context_file}")
+    return context_path
+
+
 def prepare_repo_for_run(repo: Path, inputs: RunInputs | None = None) -> PreparedRun:
     """Materialize tool-managed state and freeze the canonical goal for this run."""
     inputs = inputs or RunInputs()
@@ -222,17 +244,21 @@ def prepare_repo_for_run(repo: Path, inputs: RunInputs | None = None) -> Prepare
     if inputs.resume_only and not has_lifecycle:
         raise RunInputError(NO_RESUME_MESSAGE)
 
-    fresh_run_workspace = False
+    validated_goal: str | None = None
+    validated_context: Path | None = None
+
     if _user_supplied_new_goal(inputs) and not inputs.resume_only:
         if has_active_lifecycle(repo):
             raise RunInputError(EXISTING_RUN_MESSAGE)
+        config_preview = load_config_from_repo(repo)
+        validated_goal = _resolve_required_goal(repo, inputs)
+        validated_context = _validate_context_source(repo, inputs)
         if has_terminal_record(repo) or has_lifecycle:
-            config_for_reset = load_config_from_repo(repo)
-            clear_prior_run_for_new_goal(repo, config=config_for_reset)
+            clear_prior_run_for_new_goal(repo, config=config_preview)
+            reset_run_scoped_workspace(repo, config=config_preview, minimal=inputs.minimal)
             has_lifecycle = False
-            fresh_run_workspace = True
 
-    materialize_control_workspace(repo, minimal=inputs.minimal, force=fresh_run_workspace)
+    materialize_control_workspace(repo, minimal=inputs.minimal, force=False)
 
     if has_lifecycle:
         config = load_resolved_config_from_repo(repo)
@@ -254,15 +280,8 @@ def prepare_repo_for_run(repo: Path, inputs: RunInputs | None = None) -> Prepare
     config = load_config_from_repo(repo)
     write_resolved_config(repo, config)
 
-    goal_text: str | None = None
-    if inputs.goal_text and inputs.goal_text.strip():
-        goal_text = inputs.goal_text
-    elif inputs.goal_file is not None:
-        goal_path = resolve_optional_file(repo, inputs.goal_file)
-        goal_text = _read_text_file(
-            goal_path,
-            missing_message=f"Goal file not found: {inputs.goal_file}",
-        )
+    if validated_goal is not None:
+        goal_text = validated_goal
     else:
         goal_text = _legacy_goal_text(repo) or _stored_goal_text(repo, config)
 
@@ -271,10 +290,11 @@ def prepare_repo_for_run(repo: Path, inputs: RunInputs | None = None) -> Prepare
 
     snapshot_goal(repo, goal_text, config=config)
 
-    if inputs.context_file is not None:
-        context_path = resolve_optional_file(repo, inputs.context_file)
-        if not context_path.is_file():
-            raise RunInputError(f"Context file not found: {inputs.context_file}")
+    if validated_context is not None:
+        snapshot_context(repo, validated_context, config=config)
+    elif inputs.context_file is not None:
+        context_path = _validate_context_source(repo, inputs)
+        assert context_path is not None
         snapshot_context(repo, context_path, config=config)
 
     user_rel = (

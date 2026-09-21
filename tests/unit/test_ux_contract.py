@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
 from rich.text import Text
 from typer.testing import CliRunner
 
@@ -16,7 +17,7 @@ from auto_loop.lifecycle import create_lifecycle
 from auto_loop.loop import run_lifecycle
 from auto_loop.migrate_cmd import migrate_legacy_layout
 from auto_loop.providers.scripted import ScriptedProvider
-from auto_loop.run_inputs import prepare_repo_for_run, RunInputs
+from auto_loop.run_inputs import RunInputError, prepare_repo_for_run, RunInputs
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 from tests.integration.scenario_harness import git, run_opts
 from tests.repo_utils import git_repo
@@ -312,3 +313,126 @@ def test_new_goal_after_blocked_run_starts_fresh(tmp_path: Path):
     assert "Replacement goal" in prepared.goal_text
     assert load_blocked_record(repo) is None
     assert not list((repo / ".auto-loop" / "reviews").glob("*.md"))
+
+
+def test_new_goal_preserves_custom_agent_templates(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="First goal"))
+    marker = "CUSTOM_AGENT_MARKER_XYZ"
+    worker = repo / ".auto-loop" / "agents" / "worker.md"
+    worker.write_text(f"{marker}\n", encoding="utf-8")
+    from datetime import datetime, timezone
+
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import CompletionRecord, completion_path, load_completion_record
+
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    completion_path(repo).write_text(
+        CompletionRecord(
+            completed_at=datetime.now(timezone.utc),
+            lifecycle_id="lc-1",
+            turn=1,
+            worker_session_id="w1",
+            reviewer_session_id="r1",
+            initial_base_commit=head_commit(repo),
+            final_commit=head_commit(repo),
+            last_approved_commit=head_commit(repo),
+            final_review_file=".auto-loop/reviews/done.md",
+            task_sha256="abc",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    assert load_completion_record(repo) is not None
+
+    prepare_repo_for_run(repo, RunInputs(goal_text="Next goal"))
+    assert marker in worker.read_text(encoding="utf-8")
+
+
+def test_missing_goal_file_leaves_terminal_run_intact(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Done goal"))
+    from datetime import datetime, timezone
+
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import CompletionRecord, completion_path, load_completion_record
+
+    plan = repo / ".auto-loop" / "plan.md"
+    plan.write_text("# Old plan marker\n", encoding="utf-8")
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    completion_path(repo).write_text(
+        CompletionRecord(
+            completed_at=datetime.now(timezone.utc),
+            lifecycle_id="lc-1",
+            turn=1,
+            worker_session_id="w1",
+            reviewer_session_id="r1",
+            initial_base_commit=head_commit(repo),
+            final_commit=head_commit(repo),
+            last_approved_commit=head_commit(repo),
+            final_review_file=".auto-loop/reviews/done.md",
+            task_sha256="abc",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    with pytest.raises(RunInputError, match="Goal file not found"):
+        prepare_repo_for_run(repo, RunInputs(goal_file=Path("does-not-exist.md")))
+    assert load_completion_record(repo) is not None
+    assert "Old plan marker" in plan.read_text(encoding="utf-8")
+
+
+def test_blocked_terminal_resume_returns_blocked_exit(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Blocked goal"))
+    from datetime import datetime, timezone
+
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import BlockedRecord, blocked_path
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    blocked_path(repo).write_text(
+        BlockedRecord(
+            blocked_at=datetime.now(timezone.utc),
+            lifecycle_id=state.lifecycle_id,
+            turn=1,
+            worker_session_id="w1",
+            reviewer_session_id="r1",
+            summary="external blocker",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    provider = ScriptedProvider()
+    outcome = run_lifecycle(repo, run_opts(2), provider, inputs=RunInputs(resume_only=True))
+    assert outcome.exit_code == ExitCode.BLOCKED
+    assert outcome.message == "external blocker"
+
+
+def test_blocked_terminal_run_without_new_goal_returns_blocked(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Blocked goal"))
+    from datetime import datetime, timezone
+
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import BlockedRecord, blocked_path
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    blocked_path(repo).write_text(
+        BlockedRecord(
+            blocked_at=datetime.now(timezone.utc),
+            lifecycle_id=state.lifecycle_id,
+            turn=1,
+            worker_session_id="w1",
+            reviewer_session_id="r1",
+            summary="still blocked",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    provider = ScriptedProvider()
+    outcome = run_lifecycle(repo, run_opts(2), provider, inputs=RunInputs())
+    assert outcome.exit_code == ExitCode.BLOCKED
+    assert outcome.message == "still blocked"

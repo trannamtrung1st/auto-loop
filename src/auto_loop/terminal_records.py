@@ -140,3 +140,7 @@ def assert_completion_inputs_unchanged(repo: Path, config: AutoLoopConfig, recor
 IDEMPOTENT_COMPLETE_MESSAGE = (
     "This lifecycle is already complete for the current task and repository state."
 )
+
+IDEMPOTENT_BLOCKED_MESSAGE = (
+    "This lifecycle is blocked. Supply a new goal to start a fresh run, or inspect status for details."
+)

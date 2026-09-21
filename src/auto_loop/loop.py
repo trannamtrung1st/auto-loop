@@ -90,8 +90,10 @@ from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 from auto_loop.terminal_records import (
     BlockedRecord,
     CompletionRecord,
+    IDEMPOTENT_BLOCKED_MESSAGE,
     IDEMPOTENT_COMPLETE_MESSAGE,
     assert_completion_inputs_unchanged,
+    load_blocked_record,
     load_completion_record,
     save_blocked_record,
     save_completion_record,
@@ -1155,6 +1157,20 @@ class LifecycleRunner:
         )
 
 
+def _check_idempotent_blocked(repo: Path, config: AutoLoopConfig) -> RunOutcome | None:
+    record = load_blocked_record(repo)
+    if record is None:
+        return None
+    state = load_lifecycle_state(repo)
+    summary = (record.summary or "").strip()
+    message = summary or IDEMPOTENT_BLOCKED_MESSAGE
+    return RunOutcome(
+        exit_code=ExitCode.BLOCKED,
+        state=state,
+        message=message,
+    )
+
+
 def _check_idempotent_completion(repo: Path, config: AutoLoopConfig) -> RunOutcome | None:
     record = load_completion_record(repo)
     if record is None:
@@ -1178,6 +1194,9 @@ def run_lifecycle(
     from auto_loop.locking import acquire_workspace_lock
 
     config = ensure_run_prerequisites(repo, inputs)
+    idempotent_blocked = _check_idempotent_blocked(repo, config)
+    if idempotent_blocked is not None:
+        return idempotent_blocked
     idempotent = _check_idempotent_completion(repo, config)
     if idempotent is not None:
         return idempotent
