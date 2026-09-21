@@ -54,7 +54,7 @@ Result: succeeds; harness resources and templates present in wheel (`test_wheel_
 | Harness + runbook | Present: `src/auto_loop/live_smoke.py`, `tests/integration/test_live_cursor_smoke.py`, `docs/live-cursor-smoke.md` |
 | CLI uses subprocess provider | `SubprocessCursorProvider` in `cli.py` `run` |
 | Default CI / offline pytest | **Skipped** with reason: `Set AUTO_LOOP_LIVE_CURSOR=1 to opt into the real Cursor smoke test.` |
-| Executed in this environment | **No** — Cursor CLI authentication, quota, and multi-turn runtime were not run as part of this verification record. |
+| Executed in this environment | **Yes** — 2026-09-21: `AUTO_LOOP_LIVE_CURSOR=1 python -m pytest tests/integration/test_live_cursor_smoke.py -m live_cursor -q` → **1 passed in 304.55s** (product commit `c26bbf3`, includes `--trust` for headless temp workspaces). |
 
 To execute when prerequisites exist:
 
@@ -80,4 +80,4 @@ All scenarios **A–T** have named tests listed in [v1-traceability.md](v1-trace
 
 ## Release readiness statement
 
-Offline implementation, deterministic integration scenarios A–T, packaging smoke tests, and operator documentation are **verified** as above. **Live Cursor end-to-end success** remains **environment-dependent** and was **not** recorded as pass in this run; use the runbook when a suitable Cursor CLI environment is available.
+Offline implementation, deterministic integration scenarios A–T, packaging smoke tests, and operator documentation are **verified** as above. **Live Cursor end-to-end success** was **recorded as pass** in this environment on 2026-09-21 (opt-in pytest marker; see table above). Re-run the runbook command after material CLI or auth changes.
