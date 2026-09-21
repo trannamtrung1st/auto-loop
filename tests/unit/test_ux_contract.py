@@ -643,3 +643,24 @@ def test_archive_preserves_relative_paths_for_same_basename(tmp_path: Path):
     assert archived_context.is_file()
     assert "actual goal body" in archived_goal.read_text(encoding="utf-8")
     assert "context body" in archived_context.read_text(encoding="utf-8")
+
+
+def test_archive_rejects_paths_escaping_workspace(tmp_path: Path):
+    from auto_loop.config import load_config_from_repo, write_resolved_config
+    from auto_loop.terminal_records import load_completion_record
+
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Prior goal"))
+    frozen = load_config_from_repo(repo)
+    frozen.task_file = "../../../outside-goal.md"
+    write_resolved_config(repo, frozen)
+    escape_target = (repo / frozen.task_file).resolve()
+    escape_target.parent.mkdir(parents=True, exist_ok=True)
+    escape_target.write_text("outside secret\n", encoding="utf-8")
+    _seed_completed_terminal_run(repo)
+    before = _repo_file_snapshot(repo)
+    with pytest.raises(RunInputError, match="escapes workspace"):
+        prepare_repo_for_run(repo, RunInputs(goal_text="Next goal"))
+    assert _repo_file_snapshot(repo) == before
+    assert load_completion_record(repo) is not None

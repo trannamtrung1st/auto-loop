@@ -96,16 +96,55 @@ def _archive_repo_file(
     *,
     move: bool = False,
 ) -> None:
-    if not source.is_file():
+    repo_root = repo.resolve()
+    resolved_source = source.resolve()
+    if not resolved_source.is_file():
         return
-    rel = source.relative_to(repo.resolve())
-    dest = archive_dir / rel
+    try:
+        rel = resolved_source.relative_to(repo_root)
+    except ValueError as exc:
+        raise RunInputError(f"Configured run path escapes workspace: {source}") from exc
+    dest = (archive_dir / rel).resolve()
+    try:
+        dest.relative_to(archive_dir.resolve())
+    except ValueError as exc:
+        raise RunInputError(f"Configured run path escapes archive: {source}") from exc
     dest.parent.mkdir(parents=True, exist_ok=True)
     if move:
-        shutil.move(str(source), str(dest))
+        shutil.move(str(resolved_source), str(dest))
     else:
-        shutil.copy2(source, dest)
-        source.unlink()
+        shutil.copy2(resolved_source, dest)
+        resolved_source.unlink()
+
+
+def _assert_archive_paths_contained(repo: Path, config: AutoLoopConfig) -> None:
+    from auto_loop.config import resolved_config_snapshot_path
+    from auto_loop.runtime import state_path
+    from auto_loop.terminal_records import blocked_path, completion_path
+
+    candidates: list[Path] = [
+        repo / config.plan_file,
+        repo / config.context_file,
+        repo / config.task_file,
+        repo / config.logging.event_log,
+        state_path(repo),
+        completion_path(repo),
+        blocked_path(repo),
+        resolved_config_snapshot_path(repo),
+    ]
+    reviews = repo / config.reviews_dir
+    if reviews.is_dir():
+        candidates.extend(path for path in reviews.iterdir() if path.is_file())
+
+    repo_root = repo.resolve()
+    for source in candidates:
+        resolved = source.resolve()
+        if not resolved.is_file():
+            continue
+        try:
+            resolved.relative_to(repo_root)
+        except ValueError as exc:
+            raise RunInputError(f"Configured run path escapes workspace: {source}") from exc
 
 
 def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
@@ -117,6 +156,9 @@ def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
     label = _prior_run_archive_label(repo)
     root = auto_loop_root(repo)
     archive_dir = root / "runtime" / "archives" / label
+
+    _assert_archive_paths_contained(repo, config)
+
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     reviews = repo / config.reviews_dir
