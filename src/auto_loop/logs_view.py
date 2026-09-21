@@ -9,7 +9,12 @@ from pathlib import Path
 
 from auto_loop.lifecycle import LifecycleStatus
 from auto_loop.runtime import load_lifecycle_state
-from auto_loop.turn_logs import latest_turn_with_logs, read_turn_logs, turn_log_paths
+from auto_loop.turn_logs import (
+    latest_turn_with_logs,
+    read_turn_logs,
+    role_with_log_for_turn,
+    turn_log_paths,
+)
 
 WriteChunk = Callable[[str], None]
 
@@ -40,7 +45,10 @@ def stream_follow_logs(
         emit("No turn logs recorded yet.")
         return
 
-    role = state.next_actor
+    role = role_with_log_for_turn(repo, lifecycle_id, selected, raw=raw)
+    if role is None:
+        emit(f"No turn logs recorded for turn {selected}.")
+        return
     jsonl_path, log_path = turn_log_paths(repo, lifecycle_id, selected, role)
     target = jsonl_path if raw else log_path
     if not target.is_file():

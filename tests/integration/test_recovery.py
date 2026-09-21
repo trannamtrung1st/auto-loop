@@ -81,6 +81,87 @@ def test_stale_inflight_resumes_worker_with_reconciliation_prompt(tmp_path: Path
     assert reloaded.inflight is None
 
 
+def test_inflight_before_provider_launch_invokes_once_without_extra_commits(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    initial_head = head_commit(repo)
+    state = load_lifecycle_state(repo)
+    if state is None:
+        from auto_loop.lifecycle import create_lifecycle
+
+        state = create_lifecycle(initial_head)
+        save_lifecycle_state(repo, state)
+    state.inflight = InflightMarker(
+        actor="worker",
+        turn=state.turn,
+        session_id="worker-session-1",
+        started_at=utc_now(),
+        head_before=initial_head,
+    )
+    state.sessions["worker"].session_id = "worker-session-1"
+    state.next_actor = "reviewer"
+    save_lifecycle_state(repo, state)
+
+    invoke_count = 0
+    provider = PromptCapturingProvider()
+    provider._inner.engine.sessions["worker"] = "worker-session-1"
+
+    def counting_invoke(argv):
+        nonlocal invoke_count
+        invoke_count += 1
+        return provider._inner.invoke(argv)
+
+    provider.invoke = counting_invoke  # type: ignore[method-assign]
+    provider.set_worker_plan_request()
+    provider.set_reviewer_pass("plan", "plan")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert invoke_count == 2
+    assert head_commit(repo) == initial_head
+
+
+def test_inflight_resume_with_uncommitted_product_file_keeps_single_head(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    initial_head = head_commit(repo)
+    partial = repo / "partial-work.txt"
+    partial.write_text("in progress\n", encoding="utf-8")
+    state = load_lifecycle_state(repo)
+    if state is None:
+        from auto_loop.lifecycle import create_lifecycle
+
+        state = create_lifecycle(initial_head)
+        save_lifecycle_state(repo, state)
+    state.inflight = InflightMarker(
+        actor="worker",
+        turn=state.turn,
+        session_id="worker-session-1",
+        started_at=utc_now(),
+        head_before=initial_head,
+    )
+    state.sessions["worker"].session_id = "worker-session-1"
+    save_lifecycle_state(repo, state)
+
+    provider = PromptCapturingProvider()
+    provider._inner.engine.sessions["worker"] = "worker-session-1"
+    provider.set_worker_plan_request()
+    provider.set_reviewer_pass("plan", "plan")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert partial.read_text(encoding="utf-8") == "in progress\n"
+    assert head_commit(repo) == initial_head
+    assert provider.worker_prompts
+    assert "interrupted" in provider.worker_prompts[0].lower()
+
+
 def test_inflight_cleared_after_successful_handoff(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()

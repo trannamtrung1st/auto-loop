@@ -80,6 +80,26 @@ def test_render_logs_follow_no_duplicate_body(tmp_path: Path):
     assert output.count("only once") == 1
 
 
+def test_stream_follow_uses_worker_log_when_next_actor_is_reviewer(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    state.next_actor = "reviewer"
+    save_lifecycle_state(repo, state)
+
+    jsonl_path, log_path = turn_log_paths(repo, state.lifecycle_id, 1, "worker")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text('{"type":"assistant","text":"w"}\n', encoding="utf-8")
+    log_path.write_text("worker turn output\n", encoding="utf-8")
+
+    chunks: list[str] = []
+    stream_follow_logs(repo, write=chunks.append, follow_max_seconds=0.5, follow_idle_seconds=0.15)
+    body = "".join(chunks)
+    assert "worker turn output" in body
+    assert "reviewer" not in body.split("===")[0]
+
+
 def test_stream_follow_stops_after_terminal_lifecycle_idle(tmp_path: Path):
     repo = _repo(tmp_path)
     from auto_loop.git import head_commit

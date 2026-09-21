@@ -243,34 +243,60 @@ class LifecycleRunner:
             role,
         )
         self.invoker.prepare(role)
+        if hasattr(self.invoker, "stop_check"):
+            self.invoker.stop_check = lambda: self._stop.requested
+        if hasattr(self.invoker, "on_provider_pid"):
+
+            def _provider_pid(pid: int | None) -> None:
+                self._stop.set_active_provider(pid)
+                register_active_run(self.repo, state.lifecycle_id, provider_pid=pid)
+
+            self.invoker.on_provider_pid = _provider_pid
         max_attempts = 1 + max(self.config.limits.provider_retries, 0)
         parsed = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                _code, lines = self.invoker.invoke(argv)
-                turn_log.write_stream_lines(lines)
-                parsed = parse_cursor_stream(
-                    lines,
-                    expected_session_id=session.session_id,
-                )
-                break
-            except SessionError:
-                turn_log.finalize()
-                raise
-            except FakeCursorError as exc:
-                if attempt >= max_attempts:
+        try:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    _code, lines = self.invoker.invoke(argv)
+                    turn_log.write_stream_lines(lines)
+                    parsed = parse_cursor_stream(
+                        lines,
+                        expected_session_id=session.session_id,
+                    )
+                    break
+                except SessionError:
                     turn_log.finalize()
-                    raise ProviderError(str(exc)) from exc
-                append_event(
-                    self.repo,
-                    self.config,
-                    {
-                        "type": "provider_retry",
-                        "actor": role,
-                        "attempt": attempt,
-                        "lifecycle_id": state.lifecycle_id,
-                    },
-                )
+                    raise
+                except ProviderError:
+                    turn_log.finalize()
+                    if self._stop.requested:
+                        persist_stopped_state(self.repo, state)
+                        append_event(
+                            self.repo,
+                            self.config,
+                            {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
+                        )
+                        self._terminal_exit = ExitCode.STOPPED
+                        self._terminal_message = "Lifecycle stopped"
+                    raise
+                except FakeCursorError as exc:
+                    if attempt >= max_attempts:
+                        turn_log.finalize()
+                        raise ProviderError(str(exc)) from exc
+                    append_event(
+                        self.repo,
+                        self.config,
+                        {
+                            "type": "provider_retry",
+                            "actor": role,
+                            "attempt": attempt,
+                            "lifecycle_id": state.lifecycle_id,
+                        },
+                    )
+        finally:
+            if hasattr(self.invoker, "on_provider_pid"):
+                self.invoker.on_provider_pid(None)
+            self._stop.set_active_provider(None)
         if parsed is None:
             turn_log.finalize()
             raise ProviderError(f"Provider failed for role {role}")
@@ -661,6 +687,12 @@ class LifecycleRunner:
                 message=str(exc),
             )
         except ProviderError as exc:
+            if self._stop.requested or self._terminal_exit == ExitCode.STOPPED:
+                return RunOutcome(
+                    exit_code=ExitCode.STOPPED,
+                    state=load_lifecycle_state(self.repo),
+                    message=self._terminal_message or str(exc),
+                )
             return RunOutcome(
                 exit_code=exc.exit_code,
                 state=load_lifecycle_state(self.repo),

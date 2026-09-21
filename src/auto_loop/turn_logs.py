@@ -118,3 +118,21 @@ def read_turn_logs(
 def latest_turn_with_logs(repo: Path, lifecycle_id: str) -> int | None:
     turns = list_turn_numbers(repo, lifecycle_id)
     return turns[-1] if turns else None
+
+
+def role_with_log_for_turn(
+    repo: Path,
+    lifecycle_id: str,
+    turn: int,
+    *,
+    raw: bool = False,
+) -> str | None:
+    """Return a role name that has a log file for ``turn`` (worker first)."""
+    run_dir = run_logs_dir(repo, lifecycle_id)
+    if not run_dir.is_dir():
+        return None
+    suffix = ".jsonl" if raw else ".log"
+    for role in ("worker", "reviewer"):
+        if (run_dir / f"turn-{turn:04d}-{role}{suffix}").is_file():
+            return role
+    return None

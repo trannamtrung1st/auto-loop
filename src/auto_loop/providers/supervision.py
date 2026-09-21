@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import queue
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -49,6 +51,8 @@ class RetryOutcome:
 
 Clock = Callable[[], float]
 LineIterator = Callable[[], str | None]
+StopCheck = Callable[[], bool]
+PidCallback = Callable[[int | None], None]
 
 
 def supervise_stream(
@@ -57,6 +61,7 @@ def supervise_stream(
     clock: Clock = time.monotonic,
     wall_timeout_seconds: float,
     idle_timeout_seconds: float,
+    stop_check: StopCheck | None = None,
 ) -> SupervisionOutcome:
     """Read NDJSON lines until EOF or a timeout; refresh idle clock on each line."""
     outcome = SupervisionOutcome()
@@ -64,6 +69,10 @@ def supervise_stream(
     last_activity = started
 
     while True:
+        if stop_check and stop_check():
+            outcome.failure = ProviderFailureKind.INTERRUPTED
+            outcome.interrupted = True
+            return outcome
         now = clock()
         if now - started > wall_timeout_seconds:
             outcome.failure = ProviderFailureKind.WALL_TIMEOUT
@@ -76,6 +85,9 @@ def supervise_stream(
 
         line = next_line()
         if line is None:
+            if stop_check and stop_check():
+                outcome.failure = ProviderFailureKind.INTERRUPTED
+                outcome.interrupted = True
             return outcome
         if line == "":
             continue
@@ -109,6 +121,9 @@ def run_subprocess_streaming(
     graceful_seconds: float = 5.0,
     clock: Clock = time.monotonic,
     expected_session_id: str | None = None,
+    stop_check: StopCheck | None = None,
+    on_provider_pid: PidCallback | None = None,
+    poll_interval: float = 0.05,
 ) -> SupervisionOutcome:
     proc = subprocess.Popen(
         argv,
@@ -117,14 +132,45 @@ def run_subprocess_streaming(
         text=True,
     )
     assert proc.stdout is not None
+    assert proc.stderr is not None
+    if on_provider_pid is not None:
+        on_provider_pid(proc.pid)
+
+    line_queue: queue.Queue[str | None] = queue.Queue()
+    eof_sent = threading.Event()
+
+    def _stdout_reader() -> None:
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == "":
+                    break
+                line_queue.put(line)
+        finally:
+            if not eof_sent.is_set():
+                eof_sent.set()
+                line_queue.put(None)
+
+    def _stderr_drainer() -> None:
+        try:
+            while True:
+                chunk = proc.stderr.read(8192)
+                if not chunk:
+                    break
+        except OSError:
+            return
+
+    threading.Thread(target=_stdout_reader, daemon=True).start()
+    threading.Thread(target=_stderr_drainer, daemon=True).start()
 
     def _read() -> str | None:
-        line = proc.stdout.readline()
-        if line:
-            return line
-        if proc.poll() is not None:
+        if stop_check and stop_check():
             return None
-        return ""
+        try:
+            line = line_queue.get(timeout=poll_interval)
+        except queue.Empty:
+            return ""
+        return line
 
     try:
         outcome = supervise_stream(
@@ -132,13 +178,17 @@ def run_subprocess_streaming(
             clock=clock,
             wall_timeout_seconds=wall_timeout_seconds,
             idle_timeout_seconds=idle_timeout_seconds,
+            stop_check=stop_check,
         )
         if outcome.failure in {
             ProviderFailureKind.IDLE_TIMEOUT,
             ProviderFailureKind.WALL_TIMEOUT,
+            ProviderFailureKind.INTERRUPTED,
         }:
             terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
             proc.wait(timeout=graceful_seconds)
+            if outcome.failure == ProviderFailureKind.INTERRUPTED:
+                outcome.interrupted = True
             return classify_stream_outcome(outcome, expected_session_id=expected_session_id)
 
         outcome.exit_code = proc.wait(timeout=graceful_seconds)
@@ -150,6 +200,8 @@ def run_subprocess_streaming(
         terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
         raise
     finally:
+        if on_provider_pid is not None:
+            on_provider_pid(None)
         if proc.poll() is None:
             terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
 
@@ -180,6 +232,8 @@ def run_with_provider_retries(
         last = attempt(attempt_index)
         if last.failure is None:
             return RetryOutcome(attempts=attempt_index, last=last, session_id=session_id)
+        if last.failure == ProviderFailureKind.INTERRUPTED:
+            break
         if not is_retryable_failure(last) or attempt_index >= max_attempts:
             break
     raise ProviderError(

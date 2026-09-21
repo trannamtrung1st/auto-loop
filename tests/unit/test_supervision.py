@@ -1,6 +1,7 @@
 """Provider supervision and retry tests."""
 
 import json
+import sys
 
 import pytest
 
@@ -10,6 +11,7 @@ from auto_loop.providers.supervision import (
     classify_stream_outcome,
     fake_clock,
     iter_lines_from_list,
+    run_subprocess_streaming,
     run_with_provider_retries,
     supervise_stream,
 )
@@ -93,6 +95,29 @@ def test_provider_retries_exhausted():
     with pytest.raises(ProviderError):
         run_with_provider_retries(attempt, provider_retries=2, session_id="sess-1")
     assert calls == 3
+
+
+def test_run_subprocess_streaming_idle_timeout_terminates_silent_child():
+    outcome = run_subprocess_streaming(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        wall_timeout_seconds=30.0,
+        idle_timeout_seconds=0.4,
+        poll_interval=0.05,
+    )
+    assert outcome.failure == ProviderFailureKind.IDLE_TIMEOUT
+    assert outcome.idle_timed_out
+
+
+def test_run_subprocess_streaming_stop_check_interrupts_silent_child():
+    outcome = run_subprocess_streaming(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        wall_timeout_seconds=30.0,
+        idle_timeout_seconds=10.0,
+        stop_check=lambda: True,
+        poll_interval=0.05,
+    )
+    assert outcome.failure == ProviderFailureKind.INTERRUPTED
+    assert outcome.interrupted
 
 
 def test_provider_retries_stop_on_success():

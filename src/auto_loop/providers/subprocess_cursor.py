@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from auto_loop.config import AutoLoopConfig
 from auto_loop.providers.supervision import (
+    PidCallback,
+    StopCheck,
     run_subprocess_streaming,
     run_with_provider_retries,
 )
@@ -28,6 +31,8 @@ class SubprocessCursorProvider:
 
     config: AutoLoopConfig
     uses_live_cursor: bool = True
+    stop_check: StopCheck | None = None
+    on_provider_pid: PidCallback | None = None
 
     def prepare(self, role: str) -> None:
         return None
@@ -42,6 +47,8 @@ class SubprocessCursorProvider:
                 wall_timeout_seconds=float(limits.agent_timeout_seconds),
                 idle_timeout_seconds=float(limits.agent_idle_timeout_seconds),
                 expected_session_id=session_id if session_id != "new-session" else None,
+                stop_check=self.stop_check,
+                on_provider_pid=self.on_provider_pid,
             )
 
         result = run_with_provider_retries(

@@ -82,7 +82,11 @@ class RunStopController:
 
     repo: Path
     requested: bool = False
+    active_provider_pid: int | None = None
     _previous_handlers: dict[int, object] = None  # type: ignore[assignment]
+
+    def set_active_provider(self, pid: int | None) -> None:
+        self.active_provider_pid = pid
 
     def install(self) -> None:
         self._previous_handlers = {}
@@ -104,6 +108,8 @@ class RunStopController:
 
     def _handle(self, signum: int, _frame: object) -> None:
         self.requested = True
+        if self.active_provider_pid is not None:
+            terminate_process_tree(self.active_provider_pid)
 
 
 def request_remote_stop(repo: Path, *, wait_seconds: float = 2.0) -> str:
