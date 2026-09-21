@@ -1,7 +1,6 @@
 """Fake Cursor provider behavior tests."""
 
 import json
-import os
 
 import pytest
 

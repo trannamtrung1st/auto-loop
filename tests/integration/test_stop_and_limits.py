@@ -3,7 +3,6 @@
 import subprocess
 from pathlib import Path
 
-import pytest
 
 from auto_loop.exits import ExitCode
 from auto_loop.init_cmd import run_init

@@ -1,6 +1,6 @@
 # Live Cursor smoke test (proposal §45)
 
-This is an **optional**, **environment-gated** end-to-end check that runs real Cursor worker and reviewer sessions against a disposable Git repository. Normal CI and `pytest -q` **do not** run it.
+This is an **optional**, **environment-gated** end-to-end check that runs real Cursor worker and reviewer sessions against a disposable Git repository. Normal CI (`pytest -q` and GitHub Actions) **does not** run it: runners have no Cursor CLI auth, and the workflow does not set `AUTO_LOOP_LIVE_CURSOR`.
 
 ## Prerequisites
 

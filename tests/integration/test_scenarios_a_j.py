@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
 
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit

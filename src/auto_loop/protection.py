@@ -10,7 +10,7 @@ from auto_loop.config import AutoLoopConfig
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.models import ActiveReviewTarget
-from auto_loop.product_state import ProductChange, list_product_changes
+from auto_loop.product_state import list_product_changes
 from auto_loop.review_targets import verify_path_targets_unchanged, sha256_file
 
 

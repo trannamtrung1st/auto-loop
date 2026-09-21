@@ -11,7 +11,6 @@ from auto_loop.lifecycle import (
     LEGACY_V1_PLAN_TARGET_PATH,
     ActiveReview,
     LifecycleState,
-    LifecycleStatus,
     SessionRecord,
     create_lifecycle,
 )

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from auto_loop.config import AutoLoopConfig, load_config_from_repo
 from auto_loop.git import head_commit
-from auto_loop.lifecycle import LifecycleState
 from auto_loop.product_state import is_product_tree_clean
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.terminal_records import load_completion_record

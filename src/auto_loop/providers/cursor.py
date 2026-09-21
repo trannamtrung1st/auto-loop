@@ -6,7 +6,6 @@ import json
 import shutil
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
 from typing import Any, Iterable
 
 from auto_loop.config import AutoLoopConfig, CursorProviderSettings

@@ -1,7 +1,7 @@
 """Live smoke gate and evidence helpers (no real Cursor)."""
 
 from auto_loop.exits import ExitCode
-from auto_loop.live_smoke import assert_smoke_success, collect_smoke_evidence, live_smoke_gate
+from auto_loop.live_smoke import assert_smoke_success, live_smoke_gate
 from auto_loop.live_smoke import SmokeEvidence
 
 

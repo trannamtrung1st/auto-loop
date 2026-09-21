@@ -9,8 +9,6 @@ from pathlib import Path
 import pytest
 
 from auto_loop.config import default_config
-from auto_loop.exits import ExitCode
-from auto_loop.init_cmd import run_init
 from auto_loop.lifecycle import LifecycleStatus, create_lifecycle
 from auto_loop.loop import LifecycleRunner
 from auto_loop.providers.cursor import SessionError

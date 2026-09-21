@@ -21,6 +21,7 @@ dependencies = [
 dev = [
     "pytest>=8.0,<9",
     "pytest-cov>=5.0,<6",
+    "ruff>=0.8,<1",
 ]
 
 [project.scripts]
@@ -45,3 +46,10 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Explicit pre-0.16 default set. Ruff 0.16 enables 400+ rules by default; this
+# project only configured line-length/target-version and is not clean against
+# that expansion. Keep a stable CI gate (syntax, pyflakes) without a repo-wide
+# style rewrite.
+select = ["E4", "E7", "E9", "F"]

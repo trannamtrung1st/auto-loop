@@ -14,7 +14,7 @@ This file and `.agents/skills/` are a **contributor harness** for humans and cod
 - Prefer changing existing modules over introducing parallel orchestration abstractions.
 - Preserve stable exit-code meanings unless an explicit versioned migration requires change.
 - New behavior needs unit tests and fake-provider integration coverage.
-- Run focused tests first, then the full offline pytest suite. Ordinary CI must not require live Cursor.
+- Run focused tests first, then the full offline pytest suite. Ordinary CI (GitHub Actions on pull requests and `main`) must not require live Cursor.
 
 ## Contributor skills
 

@@ -108,4 +108,4 @@ def test_lifecycle_runner_retries_subprocess_with_resume(tmp_path: Path, monkeyp
     assert state.sessions["planner"].session_id == "retry-sess-fixed-001"
     assert len(recorded) == 2
     assert not any(arg.startswith("--resume=") for arg in recorded[0])
-    assert f"--resume=retry-sess-fixed-001" in recorded[1]
+    assert "--resume=retry-sess-fixed-001" in recorded[1]

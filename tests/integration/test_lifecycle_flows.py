@@ -4,7 +4,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
 
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
@@ -309,7 +308,6 @@ def test_wrong_batch_head_exits_git_protocol_error(tmp_path: Path):
     (repo / "feature.txt").write_text("x\n", encoding="utf-8")
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature")
-    head = head_commit(repo)
     provider.set_response(
         "worker",
         _batch_worker_payload(baseline, baseline),

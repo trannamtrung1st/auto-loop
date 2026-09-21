@@ -3,7 +3,6 @@
 import subprocess
 from pathlib import Path
 
-import yaml
 
 from auto_loop.context_manifest import (
     ContextDocument,

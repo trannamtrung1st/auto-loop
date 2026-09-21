@@ -49,6 +49,7 @@ Add or extend **fake-provider integration tests** for behavior changes. Run focu
 python -m pip install -e ".[dev]"
 python -m pytest -q
 python -m pytest tests/unit/test_packaging.py tests/unit/test_development_harness.py -q
+ruff check src tests
 ```
 
-Live Cursor smoke is opt-in (`AUTO_LOOP_LIVE_CURSOR=1`); do not claim it passed unless you ran it.
+Live Cursor smoke is opt-in (`AUTO_LOOP_LIVE_CURSOR=1`); do not claim it passed unless you ran it. GitHub Actions runs the offline suite, packaging tests, and Ruff only.

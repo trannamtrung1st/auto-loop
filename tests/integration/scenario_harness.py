@@ -11,7 +11,6 @@ from auto_loop.init_cmd import run_init
 from auto_loop.loop import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import RunOptions
-from auto_loop.runtime import load_lifecycle_state
 
 
 def git(repo: Path, *args: str) -> None:

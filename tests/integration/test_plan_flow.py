@@ -34,7 +34,7 @@ def test_plan_review_pass_marks_plan_approved(tmp_path: Path):
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
-    outcome = run_lifecycle(
+    run_lifecycle(
         repo,
         RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
         provider,
@@ -98,7 +98,6 @@ def test_path_only_batch_does_not_advance_baseline(tmp_path: Path):
         RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
         provider,
     )
-    baseline = load_lifecycle_state(repo).last_approved_commit
     (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
     _git(repo, "add", ".gitignore")
     _git(repo, "commit", "-m", "ignore build")

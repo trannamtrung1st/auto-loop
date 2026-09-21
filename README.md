@@ -169,15 +169,21 @@ See the generated file after `init` for defaults.
 
 ## Testing
 
-Offline verification (no live Cursor):
+GitHub Actions (`.github/workflows/ci.yml`) runs on pull requests and pushes to `main`: offline pytest on Python 3.12 and 3.14, packaging tests plus a wheel build, and `ruff check src tests`. It does not set `AUTO_LOOP_LIVE_CURSOR` and does not need Cursor credentials or repository secrets.
+
+The same checks locally:
 
 ```bash
+python -m pip install -e ".[dev]"
 python -m pytest -q
+python -m pytest tests/unit/test_packaging.py -q
+python -m pip wheel . --no-deps -w dist
+ruff check src tests
 ```
 
 Integration tests use a deterministic in-process provider and real temporary Git repositories. The CLI `run` command invokes the **real Cursor agent subprocess** when prerequisites are met.
 
-Optional live Cursor smoke test: see [docs/live-cursor-smoke.md](docs/live-cursor-smoke.md). Set `AUTO_LOOP_LIVE_CURSOR=1` and run `pytest tests/integration/test_live_cursor_smoke.py -m live_cursor`. Skipped by default with an explicit reason.
+Optional live Cursor smoke test: see [docs/live-cursor-smoke.md](docs/live-cursor-smoke.md). Set `AUTO_LOOP_LIVE_CURSOR=1` and run `pytest tests/integration/test_live_cursor_smoke.py -m live_cursor` on a machine with Cursor CLI auth. Skipped by default (including in GitHub CI) with an explicit reason.
 
 ## Traceability and release verification
 

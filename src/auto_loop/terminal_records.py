@@ -11,7 +11,6 @@ from typing import Literal
 from pydantic import BaseModel, ValidationError
 
 from auto_loop.config import AutoLoopConfig
-from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.atomic_io import atomic_write_json
 from auto_loop.paths import auto_loop_root
