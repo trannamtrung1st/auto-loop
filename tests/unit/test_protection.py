@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from auto_loop.config import load_config
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.models import ActivePathTarget
 from auto_loop.review_targets import sha256_file
 from auto_loop.protection import (
@@ -33,7 +33,7 @@ def _repo(tmp_path: Path) -> Path:
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "T")
     _git(repo, "commit", "--allow-empty", "-m", "init")
-    run_init(repo)
+    bootstrap_workspace(repo)
     return repo
 
 

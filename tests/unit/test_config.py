@@ -11,7 +11,11 @@ from auto_loop.config import (
     default_config,
     dump_config,
     load_config,
+    load_config_from_repo,
+    load_resolved_config_from_repo,
+    overlay_user_config,
     parse_config_dict,
+    write_resolved_config,
 )
 
 
@@ -90,3 +94,53 @@ def test_load_config_malformed_yaml(tmp_path: Path):
     path.write_text(":\n  bad:\n- ", encoding="utf-8")
     with pytest.raises(ConfigurationError, match="Malformed YAML"):
         load_config(path)
+
+
+def test_user_config_overlay_models_and_run(tmp_path: Path):
+    path = tmp_path / "auto-loop.yaml"
+    path.write_text(
+        "models:\n  worker: gpt-5.6\nrun:\n  max_turns: 7\n",
+        encoding="utf-8",
+    )
+    cfg = overlay_user_config(default_config(), path)
+    assert cfg.agents["worker"].model == "gpt-5.6"
+    assert cfg.agents["planner"].model == "auto"
+    assert cfg.limits.max_turns == 7
+
+
+def test_load_config_from_repo_prefers_user_file(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "auto-loop.yaml").write_text(
+        "models:\n  planner: p-user\n",
+        encoding="utf-8",
+    )
+    cfg = load_config_from_repo(repo)
+    assert cfg.agents["planner"].model == "p-user"
+
+
+def test_invalid_user_config_names_the_file(tmp_path: Path):
+    path = tmp_path / "auto-loop.yaml"
+    path.write_text("run:\n  mystery: 1\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="Invalid auto-loop.yaml"):
+        overlay_user_config(default_config(), path)
+
+
+def test_resume_uses_frozen_snapshot_not_changed_user_yaml(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "auto-loop.yaml").write_text(
+        "run:\n  max_turns: 11\n",
+        encoding="utf-8",
+    )
+    base = default_config()
+    base.limits.max_turns = 11
+    write_resolved_config(repo, base)
+    (repo / "auto-loop.yaml").write_text(
+        "run:\n  max_turns: 99\n",
+        encoding="utf-8",
+    )
+    resolved = load_resolved_config_from_repo(repo)
+    assert resolved.limits.max_turns == 11
+    merged = load_config_from_repo(repo)
+    assert merged.limits.max_turns == 99

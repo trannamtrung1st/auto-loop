@@ -32,6 +32,7 @@ def test_wheel_contains_templates_and_license(tmp_path: Path):
     with zipfile.ZipFile(wheel) as zf:
         names = zf.namelist()
     assert any(n.endswith("auto_loop/templates/task.md") for n in names)
+    assert any(n.endswith("auto_loop/templates/auto-loop.yaml") for n in names)
     assert any(n.endswith("auto_loop/templates/agents/planner.md") for n in names)
     assert not any("harness_resources" in n for n in names)
     assert not any(".agents/" in n or n.endswith("AGENTS.md") for n in names)
@@ -63,6 +64,7 @@ def test_clean_venv_install_help_init_and_import(tmp_path: Path):
     )
     assert "init" in help_result.stdout
     assert "doctor" in help_result.stdout
+    assert "resume" in help_result.stdout
     assert "resources" not in help_result.stdout
 
     import_check = subprocess.run(
@@ -91,8 +93,9 @@ def test_clean_venv_install_help_init_and_import(tmp_path: Path):
         text=True,
     )
     assert init_result.returncode == 0, init_result.stderr or init_result.stdout
-    assert (repo / ".auto-loop" / "config.yaml").is_file()
-    assert (repo / ".auto-loop" / "task.md").is_file()
+    assert (repo / "auto-loop.yaml").is_file()
+    assert not (repo / "task.md").exists()
+    assert not (repo / ".auto-loop" / "task.md").exists()
 
     uninstall = subprocess.run(
         [str(pip), "uninstall", "-y", "auto-loop"],

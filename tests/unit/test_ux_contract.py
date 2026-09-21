@@ -1,0 +1,230 @@
+"""User-facing UX contract: init, goal inputs, resume, legacy, samples, help."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+from rich.text import Text
+from typer.testing import CliRunner
+
+from auto_loop.cli import app
+from auto_loop.config import load_config_from_repo
+from auto_loop.exits import ExitCode
+from auto_loop.init_cmd import bootstrap_workspace, run_init
+from auto_loop.lifecycle import create_lifecycle
+from auto_loop.loop import run_lifecycle
+from auto_loop.migrate_cmd import migrate_legacy_layout
+from auto_loop.providers.scripted import ScriptedProvider
+from auto_loop.run_inputs import prepare_repo_for_run, RunInputs
+from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
+from tests.integration.scenario_harness import git, run_opts
+from tests.repo_utils import git_repo
+
+runner = CliRunner()
+_REPO = Path(__file__).resolve().parents[2]
+
+
+def test_fresh_init_cli_tells_user_how_to_run(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    result = runner.invoke(app, ["init", str(repo)])
+    assert result.exit_code == 0
+    assert (repo / "auto-loop.yaml").is_file()
+    assert not (repo / "task.md").exists()
+    assert not (repo / "context.yaml").exists()
+    assert "auto-loop run" in result.stdout
+    assert "--goal-file" in result.stdout
+
+
+def test_inline_goal_becomes_canonical_snapshot(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepared = prepare_repo_for_run(repo, RunInputs(goal_text="Implement X"))
+    assert "Implement X" in prepared.goal_text
+    task = (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")
+    assert "Implement X" in task
+    assert not (repo / "task.md").exists()
+    assert (repo / ".auto-loop" / "plan.md").is_file()
+    assert (repo / ".auto-loop" / "runtime").is_dir()
+
+
+def test_goal_file_becomes_run_goal(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    (repo / "goal.md").write_text("# Board\n\nBuild a kanban board.\n", encoding="utf-8")
+    prepared = prepare_repo_for_run(repo, RunInputs(goal_file=Path("goal.md")))
+    assert "Build a kanban board." in prepared.goal_text
+    assert "Build a kanban board." in (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")
+
+
+def test_explicit_context_is_optional_and_snapshotted(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    (repo / "goal.md").write_text("Implement X\n", encoding="utf-8")
+    context = repo / "extra-context.yaml"
+    context.write_text(
+        "version: 1\nshared:\n  resources: []\n  skills: []\n"
+        "planner:\n  resources: []\n  skills: []\n"
+        "worker:\n  resources: []\n  skills: []\n"
+        "reviewer:\n  resources: []\n  skills: []\n",
+        encoding="utf-8",
+    )
+    prepare_repo_for_run(
+        repo,
+        RunInputs(goal_file=Path("goal.md"), context_file=context),
+    )
+    assert (repo / ".auto-loop" / "context.yaml").is_file()
+    assert not (repo / "context.yaml").exists()
+
+
+def test_resume_keeps_stored_goal_when_root_goal_changes(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Original goal"))
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    (repo / "goal.md").write_text("Changed goal that must not replace the run\n", encoding="utf-8")
+    prepared = prepare_repo_for_run(repo, RunInputs(resume_only=True))
+    assert "Original goal" in prepared.goal_text
+    assert prepared.is_resume is True
+    assert "Changed goal" not in (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")
+
+
+def test_new_goal_does_not_overwrite_existing_run(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Original goal"))
+    from auto_loop.git import head_commit
+
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    result = runner.invoke(app, ["run", "--path", str(repo), "A different goal"])
+    assert result.exit_code == int(ExitCode.CONFIG_ERROR)
+    output = result.stderr + result.stdout
+    assert "already in progress" in output
+    assert "auto-loop resume" in output
+    assert "Original goal" in (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")
+
+
+def test_legacy_project_is_loadable_and_migration_is_non_destructive(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    bootstrap_workspace(repo, goal="Legacy stored goal")
+    (repo / "auto-loop.yaml").unlink()
+    (repo / "task.md").write_text("Deprecated root task\n", encoding="utf-8")
+    (repo / "context.yaml").write_text("version: 1\n", encoding="utf-8")
+    from auto_loop.git import head_commit
+
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    cfg = load_config_from_repo(repo)
+    assert cfg.agents["worker"].mode == "ask" or cfg.agents["reviewer"].mode == "ask"
+    result = migrate_legacy_layout(repo)
+    assert result.migrated is True
+    assert (repo / "auto-loop.yaml").is_file()
+    assert load_lifecycle_state(repo) is not None
+    assert (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8").startswith("Legacy stored goal")
+    assert (repo / "task.md").is_file()
+    assert "task.md" in "\n".join(result.deprecated_inputs)
+
+
+def test_kanban_sample_reaches_execution_without_manual_internal_edits(tmp_path: Path):
+    sample = _REPO / "samples" / "kanban-board"
+    dest = tmp_path / "kanban-board"
+    shutil.copytree(sample, dest)
+    git(dest, "init")
+    git(dest, "config", "user.email", "t@example.com")
+    git(dest, "config", "user.name", "T")
+    git(dest, "add", ".")
+    git(dest, "commit", "-m", "sample")
+    assert not (dest / ".auto-loop").exists()
+    prepared = prepare_repo_for_run(dest, RunInputs(goal_file=dest / "goal.md"))
+    assert "kanban" in prepared.goal_text.lower()
+    provider = ScriptedProvider()
+    provider.set_worker_plan_request()
+    provider.set_reviewer_pass("plan", "plan")
+    outcome = run_lifecycle(dest, run_opts(2), provider, inputs=RunInputs())
+    assert outcome.exit_code in {ExitCode.LIMIT_REACHED, ExitCode.COMPLETE}
+    assert (dest / ".auto-loop" / "plan.md").is_file()
+    assert (dest / ".auto-loop" / "reviews").is_dir()
+    state = load_lifecycle_state(dest)
+    assert state is not None
+    assert state.plan_approved is True
+
+
+def test_help_teaches_canonical_commands_not_internal_files():
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    plain = Text.from_ansi(result.stdout).plain
+    for name in ("init", "run", "status", "resume"):
+        assert name in plain
+    run_help = Text.from_ansi(runner.invoke(app, ["run", "--help"]).stdout).plain
+    assert "--goal-file" in run_help
+    assert "--context" in run_help
+    assert ".auto-loop/task.md" not in run_help
+    init_help = Text.from_ansi(runner.invoke(app, ["init", "--help"]).stdout).plain
+    assert "auto-loop.yaml" in init_help
+    assert "task.md" not in init_help.lower() or "does not create a goal" in init_help.lower()
+    status_help = Text.from_ansi(runner.invoke(app, ["status", "--help"]).stdout).plain
+    resume_help = Text.from_ansi(runner.invoke(app, ["resume", "--help"]).stdout).plain
+    assert "tool-managed" in status_help.lower() or ".auto-loop" in status_help
+    assert "stored run" in resume_help.lower() or "saved goal" in resume_help.lower()
+
+
+def test_legacy_root_task_is_used_when_no_goal_flag(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    (repo / "task.md").write_text("Legacy root task body\n", encoding="utf-8")
+    prepared = prepare_repo_for_run(repo, RunInputs())
+    assert "Legacy root task body" in prepared.goal_text
+
+
+def test_resume_cli_keeps_stored_goal(tmp_path: Path, monkeypatch):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Original goal"))
+    from auto_loop.git import head_commit
+    from auto_loop.loop import RunOutcome
+
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    (repo / "goal.md").write_text("Changed goal\n", encoding="utf-8")
+    seen: dict[str, RunInputs] = {}
+
+    def fake_run(_repo, _options, _invoker, *, inputs=None):
+        assert inputs is not None
+        seen["inputs"] = inputs
+        return RunOutcome(exit_code=ExitCode.LIMIT_REACHED)
+
+    monkeypatch.setattr("auto_loop.cli.run_lifecycle", fake_run)
+    result = runner.invoke(app, ["resume", str(repo), "--quiet"])
+    assert result.exit_code == int(ExitCode.LIMIT_REACHED)
+    assert seen["inputs"].resume_only is True
+    assert "Original goal" in (repo / ".auto-loop" / "task.md").read_text(encoding="utf-8")
+
+
+def test_migrate_preserves_resumable_session(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    bootstrap_workspace(repo, goal="Session goal")
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    lifecycle_id = state.lifecycle_id
+    (repo / "auto-loop.yaml").unlink()
+    migrate = migrate_legacy_layout(repo)
+    assert migrate.migrated is True
+    resumed = prepare_repo_for_run(repo, RunInputs(resume_only=True))
+    assert resumed.is_resume is True
+    assert "Session goal" in resumed.goal_text
+    assert load_lifecycle_state(repo).lifecycle_id == lifecycle_id
+
+
+def test_run_without_new_goal_continues_in_progress_run(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Continue me"))
+    from auto_loop.git import head_commit
+
+    save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+    prepared = prepare_repo_for_run(repo, RunInputs())
+    assert prepared.is_resume is True
+    assert "Continue me" in prepared.goal_text

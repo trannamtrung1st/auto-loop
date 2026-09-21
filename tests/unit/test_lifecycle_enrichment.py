@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from auto_loop.config import dump_config, load_config
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
     LEGACY_V1_PLAN_TARGET_PATH,
     ActiveReview,
@@ -59,7 +59,7 @@ def _execution_plan_review_state(repo: Path, plan_target: ActivePathTarget) -> L
 
 def test_reload_preserves_v2_plan_fingerprint_after_plan_changes(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     plan_path = repo / ".auto-loop" / "plan.md"
     f1, _ = fingerprint_path(plan_path)
     state = _execution_plan_review_state(repo, _plan_target(f1))
@@ -80,7 +80,7 @@ def test_reload_preserves_v2_plan_fingerprint_after_plan_changes(tmp_path: Path)
 
 def test_reload_does_not_retarget_v2_plan_when_config_plan_file_changes(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     plan_path = repo / ".auto-loop" / "plan.md"
     digest, _ = fingerprint_path(plan_path)
     state = _execution_plan_review_state(repo, _plan_target(digest, ".auto-loop/plan.md"))
@@ -101,7 +101,7 @@ def test_reload_does_not_retarget_v2_plan_when_config_plan_file_changes(tmp_path
 
 def test_empty_fingerprint_on_non_legacy_path_target_is_not_enriched(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     artifact = repo / "build" / "report.html"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     artifact.write_text("<html>v1</html>\n", encoding="utf-8")
@@ -136,7 +136,7 @@ def test_empty_fingerprint_on_non_legacy_path_target_is_not_enriched(tmp_path: P
 
 def test_legacy_sentinel_still_enriches_on_first_load(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     from auto_loop.git import head_commit
 
     head = head_commit(repo)

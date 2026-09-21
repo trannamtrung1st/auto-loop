@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from auto_loop.cli import app
 from auto_loop.doctor import Severity, run_doctor
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace, run_init
 from auto_loop.locking import acquire_workspace_lock
 
 runner = CliRunner()
@@ -62,7 +62,7 @@ def test_doctor_reports_missing_workspace(tmp_path: Path):
 
 def test_minimal_init_reports_missing_instruction_templates(tmp_path: Path, monkeypatch):
     repo = _repo(tmp_path)
-    run_init(repo, minimal=True)
+    bootstrap_workspace(repo, minimal=True)
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
     monkeypatch.setattr(
         "auto_loop.doctor.subprocess.run",
@@ -81,7 +81,7 @@ def test_doctor_cli_exits_nonzero_on_failure(tmp_path: Path):
 
 def test_doctor_reports_workspace_lock(tmp_path: Path, monkeypatch):
     repo = _repo(tmp_path)
-    run_init(repo, minimal=True)
+    bootstrap_workspace(repo, minimal=True)
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
     monkeypatch.setattr(
         "auto_loop.doctor.subprocess.run",
@@ -108,7 +108,7 @@ def test_doctor_cli_path_argument(tmp_path: Path, monkeypatch):
 
 def test_doctor_reports_missing_planner_template(tmp_path: Path, monkeypatch):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     (repo / ".auto-loop" / "agents" / "planner.md").unlink()
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
     monkeypatch.setattr(

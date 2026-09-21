@@ -11,7 +11,7 @@ from auto_loop.config import load_config_from_repo
 from auto_loop.doctor import run_doctor
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.providers.cursor import resolve_cursor_binary
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.terminal_records import load_completion_record
@@ -71,8 +71,7 @@ def prepare_smoke_repository(repo: Path) -> None:
     (repo / "src" / "__init__.py").write_text("", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init smoke project"], cwd=repo, check=True, capture_output=True)
-    run_init(repo)
-    (repo / ".auto-loop" / "task.md").write_text(SMOKE_TASK, encoding="utf-8")
+    bootstrap_workspace(repo, goal=SMOKE_TASK)
     (repo / ".auto-loop" / "plan.md").write_text(SMOKE_PLAN, encoding="utf-8")
 
 

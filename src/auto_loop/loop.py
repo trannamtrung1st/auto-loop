@@ -84,6 +84,7 @@ from auto_loop.events import append_event
 from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
 from auto_loop.turn_logs import TurnLogWriter, prune_run_history
+from auto_loop.run_inputs import RunInputs
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 from auto_loop.terminal_records import (
@@ -96,6 +97,13 @@ from auto_loop.terminal_records import (
     save_completion_record,
     task_and_plan_hashes,
 )
+
+
+INTERRUPTED_MESSAGE = """Run interrupted.
+
+Your state was saved.
+Resume with:
+  auto-loop resume"""
 
 
 class ProviderInvoker(Protocol):
@@ -205,7 +213,7 @@ class LifecycleRunner:
             {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
         )
         self._terminal_exit = ExitCode.STOPPED
-        self._terminal_message = "Lifecycle stopped"
+        self._terminal_message = INTERRUPTED_MESSAGE
         return True
 
     def _protocol_repair_or_fail(self, state: LifecycleState, slot: str) -> bool:
@@ -396,7 +404,7 @@ class LifecycleRunner:
                                 {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
                             )
                             self._terminal_exit = ExitCode.STOPPED
-                            self._terminal_message = "Lifecycle stopped"
+                            self._terminal_message = INTERRUPTED_MESSAGE
                         raise ProviderError(f"Provider interrupted for session {slot}")
                     if attempt_result.failure is not None:
                         if not is_retryable_provider_failure(attempt_result.failure):
@@ -437,7 +445,7 @@ class LifecycleRunner:
                             {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
                         )
                         self._terminal_exit = ExitCode.STOPPED
-                        self._terminal_message = "Lifecycle stopped"
+                        self._terminal_message = INTERRUPTED_MESSAGE
                     raise
                 except FakeCursorError as exc:
                     if attempt >= max_attempts:
@@ -936,6 +944,7 @@ class LifecycleRunner:
                 state.active_review = None
                 state.pending_revision = None
                 state.next_session = "worker"
+                self._console.plan_ready(self.config.plan_file)
             else:
                 state.pending_revision = PendingRevision(
                     cycle_id=active.cycle_id,
@@ -1045,7 +1054,12 @@ class LifecycleRunner:
             self.config,
             {"type": "lifecycle_started", "lifecycle_id": state.lifecycle_id},
         )
-        self._console.lifecycle_started(state.lifecycle_id)
+        self._console.lifecycle_started(
+            state.lifecycle_id,
+            goal_summary=self.options.goal_summary,
+            user_config_rel=self.options.user_config_rel,
+            resuming=self.options.resuming,
+        )
         self._reconcile_stale_inflight(state)
         state = load_lifecycle_state(self.repo) or state
         if state.inflight is not None:
@@ -1158,10 +1172,12 @@ def run_lifecycle(
     repo: Path,
     options: RunOptions,
     invoker: ProviderInvoker,
+    *,
+    inputs: RunInputs | None = None,
 ) -> RunOutcome:
     from auto_loop.locking import acquire_workspace_lock
 
-    config = ensure_run_prerequisites(repo)
+    config = ensure_run_prerequisites(repo, inputs)
     idempotent = _check_idempotent_completion(repo, config)
     if idempotent is not None:
         return idempotent

@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from auto_loop.config import dump_config, load_config
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.instructions import compose_role_instructions, load_protocol_contract
 
 
@@ -24,7 +24,7 @@ def _repo(tmp_path: Path) -> Path:
 
 def test_protocol_present_on_first_invocation(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     config = load_config(repo / ".auto-loop" / "config.yaml")
     planner = compose_role_instructions(repo, config, "planner", first_invocation=True)
     worker = compose_role_instructions(repo, config, "worker", first_invocation=True)
@@ -41,14 +41,14 @@ def test_protocol_present_on_first_invocation(tmp_path: Path):
 
 def test_resume_turn_omits_instruction_stack(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     config = load_config(repo / ".auto-loop" / "config.yaml")
     assert compose_role_instructions(repo, config, "worker", first_invocation=False) == ""
 
 
 def test_replace_role_omits_playbook_only(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     config = load_config(repo / ".auto-loop" / "config.yaml")
     config.instructions.worker.mode = "replace_role"
     worker = compose_role_instructions(repo, config, "worker", first_invocation=True)
@@ -59,7 +59,7 @@ def test_replace_role_omits_playbook_only(tmp_path: Path):
 
 def test_doctor_reports_missing_configured_custom_instruction(tmp_path: Path, monkeypatch):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     config_path = repo / ".auto-loop" / "config.yaml"
     config = load_config(config_path)
     config.instructions.worker.files.append("docs/extra-worker.md")

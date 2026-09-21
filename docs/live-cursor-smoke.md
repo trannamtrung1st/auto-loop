@@ -37,7 +37,7 @@ pytest tests/integration/test_live_cursor_smoke.py -m live_cursor -v
 ## What it does
 
 1. Creates a temporary Git repo with a tiny `src/` layout.
-2. Runs `auto-loop init` and writes a deterministic **greet** task/plan.
+2. Runs `auto-loop init` and writes a deterministic **greet** goal/plan.
 3. Runs `auto-loop run` via `SubprocessCursorProvider` (real CLI, not the fake provider).
 4. On `COMPLETE`, asserts every proposal §45 bullet from durable artifacts:
    - two distinct `session_created` roles and stable worker/reviewer session IDs across review files;

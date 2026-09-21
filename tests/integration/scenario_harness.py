@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from auto_loop.git import head_commit
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.loop import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import RunOptions
@@ -24,7 +24,7 @@ def make_repo(tmp_path: Path) -> Path:
     git(repo, "config", "user.email", "t@example.com")
     git(repo, "config", "user.name", "T")
     git(repo, "commit", "--allow-empty", "-m", "init")
-    run_init(repo)
+    bootstrap_workspace(repo)
     return repo
 
 

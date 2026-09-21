@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import LifecycleStatus, RoleSession, create_lifecycle
 from auto_loop.logs_view import render_logs, stream_follow_logs
 from auto_loop.runtime import save_lifecycle_state
@@ -19,7 +19,7 @@ def _repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
-    run_init(repo)
+    bootstrap_workspace(repo)
     return repo
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.loop import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.runtime import load_lifecycle_state
@@ -25,7 +25,7 @@ def _repo(tmp_path: Path) -> Path:
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "T")
     _git(repo, "commit", "--allow-empty", "-m", "init")
-    run_init(repo)
+    bootstrap_workspace(repo)
     return repo
 
 

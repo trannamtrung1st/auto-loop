@@ -8,7 +8,7 @@ from pathlib import Path
 
 from auto_loop.git import GitProtocolError
 
-DEFAULT_PRODUCT_EXCLUDES = (".auto-loop/",)
+DEFAULT_PRODUCT_EXCLUDES = (".auto-loop/", "auto-loop.yaml")
 
 
 @dataclass(frozen=True)

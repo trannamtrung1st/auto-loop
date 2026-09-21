@@ -13,7 +13,7 @@ runner = CliRunner()
 def test_help_exposes_all_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for name in ("init", "doctor", "run", "status", "logs", "stop"):
+    for name in ("init", "doctor", "run", "status", "logs", "stop", "resume", "migrate"):
         assert name in result.stdout
     assert "resources" not in result.stdout
 
@@ -61,6 +61,9 @@ def test_run_help_lists_model_and_limit_flags():
         "--max-runtime-minutes",
         "--verbose",
         "--quiet",
+        "--goal-file",
+        "--context",
+        "--path",
     ):
         assert flag in plain_output
 
@@ -76,9 +79,10 @@ def test_run_minimal_init_fails_closed_before_provider(tmp_path: Path):
     from auto_loop.init_cmd import run_init
 
     run_init(repo, minimal=True)
-    result = runner.invoke(app, ["run", str(repo)])
+    result = runner.invoke(app, ["run", "--path", str(repo), "Implement X"])
     assert result.exit_code == 10
-    assert "Missing instruction templates" in result.stderr or "Missing instruction templates" in result.stdout
+    combined = result.stderr + result.stdout
+    assert "Missing instruction templates" in combined
 
 
 def test_resources_command_removed():

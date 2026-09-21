@@ -18,3 +18,27 @@ def test_verbose_includes_session_resume():
     console = RunConsole("verbose", stream=stream)
     console.session_resumed("worker", "abcd-1234-efgh-5678")
     assert "resuming session" in stream.getvalue()
+
+
+def test_start_banner_mentions_goal_and_tool_managed_state():
+    stream = StringIO()
+    console = RunConsole("normal", stream=stream)
+    console.lifecycle_started(
+        "lc-1",
+        goal_summary="Build a kanban board",
+        user_config_rel="auto-loop.yaml",
+        resuming=False,
+    )
+    text = stream.getvalue()
+    assert "Starting Auto Loop" in text
+    assert "Goal: Build a kanban board" in text
+    assert "Config: auto-loop.yaml" in text
+    assert ".auto-loop/" in text
+    assert "lc-1" not in text
+
+
+def test_plan_ready_points_at_generated_plan():
+    stream = StringIO()
+    console = RunConsole("normal", stream=stream)
+    console.plan_ready(".auto-loop/plan.md")
+    assert "Plan ready: .auto-loop/plan.md" in stream.getvalue()

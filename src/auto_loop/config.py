@@ -13,7 +13,12 @@ from auto_loop.exits import ExitCode
 CONFIG_VERSION = 1
 CONTEXT_VERSION = 1
 
+USER_CONFIG_FILENAME = "auto-loop.yaml"
+USER_OVERLAY_KEYS = frozenset({"models", "run"})
+
 DEFAULT_PROTECTED_FILES: tuple[str, ...] = (
+    "auto-loop.yaml",
+    "goal.md",
     ".auto-loop/task.md",
     ".auto-loop/config.yaml",
     ".auto-loop/context.yaml",
@@ -102,7 +107,7 @@ class LimitSettings(BaseModel):
 
 
 class ProtectionSettings(BaseModel):
-    product_exclude: list[str] = Field(default_factory=lambda: [".auto-loop/**"])
+    product_exclude: list[str] = Field(default_factory=lambda: [".auto-loop/**", "auto-loop.yaml"])
     protected_files: list[str] = Field(default_factory=list)
 
 
@@ -188,24 +193,25 @@ def default_config() -> AutoLoopConfig:
 
 
 def config_path(repo: Path) -> Path:
+    """Internal resolved configuration snapshot (tool-managed)."""
     return repo / ".auto-loop" / "config.yaml"
 
 
+def user_config_path(repo: Path) -> Path:
+    """User-owned configuration file."""
+    return repo / USER_CONFIG_FILENAME
+
+
+def resolved_config_snapshot_path(repo: Path) -> Path:
+    return repo / ".auto-loop" / "runtime" / "config.resolved.yaml"
+
+
 def load_config(path: Path) -> AutoLoopConfig:
-    if not path.is_file():
-        raise ConfigurationError(f"Configuration file not found: {path}")
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise ConfigurationError(f"Malformed YAML in {path}: {exc}") from exc
-    if raw is None:
-        raw = {}
-    if not isinstance(raw, dict):
-        raise ConfigurationError(f"Configuration root must be a mapping: {path}")
+    raw = _load_yaml_mapping(path)
     try:
         return AutoLoopConfig.model_validate(raw)
     except (ValueError, ValidationError) as exc:
-        raise ConfigurationError(str(exc)) from exc
+        raise ConfigurationError(_format_validation_error(path, exc)) from exc
 
 
 def dump_config(config: AutoLoopConfig) -> str:
@@ -214,7 +220,41 @@ def dump_config(config: AutoLoopConfig) -> str:
 
 
 def load_config_from_repo(repo: Path) -> AutoLoopConfig:
-    return load_config(config_path(repo))
+    """Resolve configuration: defaults < internal snapshot < auto-loop.yaml."""
+    user_path = user_config_path(repo)
+    snapshot_path = config_path(repo)
+    if not user_path.is_file() and not snapshot_path.is_file():
+        raise ConfigurationError(
+            "No Auto Loop configuration found.\n\n"
+            f"Create one with:\n  auto-loop init\n\nExpected: {USER_CONFIG_FILENAME}"
+        )
+
+    if snapshot_path.is_file():
+        config = load_config(snapshot_path)
+    else:
+        config = default_config()
+    if user_path.is_file():
+        config = overlay_user_config(config, user_path)
+    return config
+
+
+def load_resolved_config_from_repo(repo: Path) -> AutoLoopConfig:
+    """Load the frozen resolved snapshot for an in-progress run (no user yaml re-overlay)."""
+    for path in (config_path(repo), resolved_config_snapshot_path(repo)):
+        if path.is_file():
+            return load_config(path)
+    return load_config_from_repo(repo)
+
+
+def write_resolved_config(repo: Path, config: AutoLoopConfig) -> None:
+    """Write the internal resolved snapshot used by the rest of the controller."""
+    text = dump_config(config)
+    snapshot = config_path(repo)
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text(text, encoding="utf-8")
+    runtime_snapshot = resolved_config_snapshot_path(repo)
+    runtime_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    runtime_snapshot.write_text(text, encoding="utf-8")
 
 
 def parse_config_dict(data: dict[str, Any]) -> AutoLoopConfig:
@@ -222,3 +262,132 @@ def parse_config_dict(data: dict[str, Any]) -> AutoLoopConfig:
         return AutoLoopConfig.model_validate(data)
     except (ValueError, ValidationError) as exc:
         raise ConfigurationError(str(exc)) from exc
+
+
+def overlay_user_config(base: AutoLoopConfig, path: Path) -> AutoLoopConfig:
+    raw = _load_yaml_mapping(path)
+    models = raw.get("models")
+    run = raw.get("run")
+    rest = {key: value for key, value in raw.items() if key not in USER_OVERLAY_KEYS}
+    merged = base.model_dump(mode="json")
+    _deep_merge(merged, rest)
+    try:
+        config = AutoLoopConfig.model_validate(merged)
+    except (ValueError, ValidationError) as exc:
+        raise ConfigurationError(_format_validation_error(path, exc)) from exc
+    try:
+        return apply_user_overlay(config, models=models, run=run)
+    except ConfigurationError as exc:
+        raise ConfigurationError(_format_validation_error(path, exc)) from exc
+
+
+def apply_user_overlay(
+    config: AutoLoopConfig,
+    *,
+    models: Any = None,
+    run: Any = None,
+) -> AutoLoopConfig:
+    updates: dict[str, Any] = {}
+    if models is not None:
+        if not isinstance(models, dict):
+            raise ConfigurationError("models must be a mapping of role names to model ids")
+        agents = dict(config.agents)
+        for role in ("planner", "worker", "reviewer"):
+            if role not in models:
+                continue
+            model = models[role]
+            if model is None:
+                continue
+            if not isinstance(model, str) or not model.strip():
+                raise ConfigurationError(f"models.{role} must be a non-empty string")
+            agents[role] = agents[role].model_copy(update={"model": model.strip()})
+        unknown = [key for key in models if key not in {"planner", "worker", "reviewer"}]
+        if unknown:
+            raise ConfigurationError(
+                "Unknown models role(s): " + ", ".join(str(key) for key in unknown)
+            )
+        updates["agents"] = agents
+    if run is not None:
+        if not isinstance(run, dict):
+            raise ConfigurationError("run must be a mapping")
+        allowed = {"max_turns", "max_runtime_minutes"}
+        unknown_run = [key for key in run if key not in allowed]
+        if unknown_run:
+            raise ConfigurationError(
+                "Unknown run field(s): " + ", ".join(str(key) for key in unknown_run)
+            )
+        limits_update: dict[str, Any] = {}
+        if "max_turns" in run and run["max_turns"] is not None:
+            limits_update["max_turns"] = run["max_turns"]
+        if "max_runtime_minutes" in run and run["max_runtime_minutes"] is not None:
+            limits_update["max_runtime_minutes"] = run["max_runtime_minutes"]
+        if limits_update:
+            try:
+                updates["limits"] = config.limits.model_copy(update=limits_update)
+            except (ValueError, ValidationError) as exc:
+                raise ConfigurationError(str(exc)) from exc
+    if not updates:
+        return config
+    return config.model_copy(update=updates)
+
+
+def dump_user_config(*, models: dict[str, str], run: dict[str, int] | None = None) -> str:
+    data: dict[str, Any] = {
+        "models": {
+            "planner": models.get("planner", "auto"),
+            "worker": models.get("worker", "auto"),
+            "reviewer": models.get("reviewer", "auto"),
+        }
+    }
+    if run:
+        data["run"] = run
+    header = (
+        "# User-owned Auto Loop configuration.\n"
+        "# Tool-managed state lives under .auto-loop/ and is created on `auto-loop run`.\n\n"
+    )
+    return header + yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+
+
+def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise ConfigurationError(f"Configuration file not found: {path}")
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigurationError(
+            f"Invalid {path.name}\n\nMalformed YAML: {exc}\n\nFix the file and run again."
+        ) from exc
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigurationError(
+            f"Invalid {path.name}\n\nConfiguration root must be a mapping.\n\n"
+            "Fix the field above and run again."
+        )
+    return raw
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    for key, value in overlay.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _format_validation_error(path: Path, exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        lines = [f"Invalid {path.name}", ""]
+        for error in exc.errors():
+            loc = ".".join(str(part) for part in error.get("loc", ()) if part != "body")
+            message = error.get("msg", str(error))
+            if loc:
+                lines.append(f"{loc}:")
+                lines.append(f"  {message}")
+            else:
+                lines.append(message)
+            lines.append("")
+        lines.append("Fix the field above and run again.")
+        return "\n".join(lines).rstrip()
+    return f"Invalid {path.name}\n\n{exc}\n\nFix the field above and run again."

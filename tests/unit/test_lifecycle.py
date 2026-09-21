@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from auto_loop.git import head_commit
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
     ActiveReview,
     LifecycleState,
@@ -164,7 +164,7 @@ def test_phase_next_session_validation():
 
 def test_runtime_round_trip(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     state = create_lifecycle(head_commit(repo))
     save_lifecycle_state(repo, state)
     loaded = load_lifecycle_state(repo)
@@ -287,7 +287,7 @@ def test_migrate_v1_active_batch_review_while_waiting_on_reviewer():
 
 def test_load_lifecycle_enriches_migrated_plan_target_fingerprint(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     plan_path = repo / ".auto-loop" / "plan.md"
     digest, _ = fingerprint_path(plan_path)
     from auto_loop.git import head_commit

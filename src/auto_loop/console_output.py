@@ -19,8 +19,41 @@ class RunConsole:
             return
         print(message, file=self.stream)
 
-    def lifecycle_started(self, lifecycle_id: str) -> None:
-        self._emit(f"Lifecycle {lifecycle_id} started", min_level="normal")
+    def lifecycle_started(
+        self,
+        lifecycle_id: str,
+        *,
+        goal_summary: str | None = None,
+        user_config_rel: str = "auto-loop.yaml",
+        resuming: bool = False,
+    ) -> None:
+        if resuming:
+            self._emit("Resuming Auto Loop", min_level="normal")
+            if goal_summary:
+                self._emit(f"Goal: {goal_summary}", min_level="normal")
+            self._emit(
+                f"Lifecycle {lifecycle_id} resumed",
+                min_level="verbose",
+            )
+            return
+        self._emit("Starting Auto Loop", min_level="normal")
+        self._emit("", min_level="normal")
+        if goal_summary:
+            self._emit(f"Goal: {goal_summary}", min_level="normal")
+        self._emit(f"Config: {user_config_rel}", min_level="normal")
+        self._emit("", min_level="normal")
+        self._emit("Planner   starting", min_level="normal")
+        self._emit("Worker    waiting", min_level="normal")
+        self._emit("Reviewer  waiting", min_level="normal")
+        self._emit("", min_level="normal")
+        self._emit("Generated state will be stored in .auto-loop/", min_level="normal")
+        self._emit("You normally do not need to edit that directory.", min_level="normal")
+        self._emit(f"Lifecycle {lifecycle_id} started", min_level="verbose")
+
+    def plan_ready(self, plan_path: str) -> None:
+        self._emit("", min_level="normal")
+        self._emit(f"Plan ready: {plan_path}", min_level="normal")
+        self._emit("Starting worker...", min_level="normal")
 
     def turn_started(self, turn: int, actor: str) -> None:
         self._emit(f"Turn {turn}: {actor}", min_level="normal")

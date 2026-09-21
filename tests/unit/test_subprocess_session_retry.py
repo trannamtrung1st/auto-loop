@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from auto_loop.config import default_config
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import create_lifecycle
 from auto_loop.loop import LifecycleRunner
 from auto_loop.providers.cursor import parse_cursor_stream
@@ -61,7 +61,7 @@ def test_lifecycle_runner_retries_subprocess_with_resume(tmp_path: Path, monkeyp
     repo = tmp_path / "repo"
     repo.mkdir()
     _git_repo(repo)
-    run_init(repo)
+    bootstrap_workspace(repo)
     counter = tmp_path / "counter"
     monkeypatch.setenv("AUTO_LOOP_CURSOR_RETRY_COUNTER", str(counter))
 

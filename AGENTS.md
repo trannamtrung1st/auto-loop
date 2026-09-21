@@ -28,4 +28,4 @@ Skills are workflow-oriented guides (discovery, invariants, checklists inside on
 ## Two planes
 
 - **Development (this repo):** `AGENTS.md` + `.agents/skills/**` — for contributors maintaining auto-loop.
-- **Runtime (target task):** CLI, `.auto-loop/context.yaml`, generated role templates — for planner/worker/reviewer agents on a user task.
+- **Runtime (target task):** CLI, user-owned `auto-loop.yaml` / goal input, `.auto-loop/` tool-managed templates and state — for planner/worker/reviewer agents on a user task.

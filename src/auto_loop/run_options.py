@@ -17,6 +17,9 @@ class RunOptions:
     quiet: bool
     console_level: ConsoleLevel = "normal"
     planner_model: str = "auto"
+    goal_summary: str | None = None
+    user_config_rel: str = "auto-loop.yaml"
+    resuming: bool = False
 
 
 def _role_model(
@@ -45,6 +48,9 @@ def build_run_options(
     max_runtime_minutes: int | None = None,
     verbose: bool = False,
     quiet: bool = False,
+    goal_summary: str | None = None,
+    user_config_rel: str = "auto-loop.yaml",
+    resuming: bool = False,
 ) -> RunOptions:
     planner_cfg = config.agents.get("planner")
     worker_cfg = config.agents["worker"]
@@ -78,4 +84,7 @@ def build_run_options(
             if quiet
             else ("verbose" if verbose else config.logging.console)
         ),
+        goal_summary=goal_summary,
+        user_config_rel=user_config_rel,
+        resuming=resuming,
     )

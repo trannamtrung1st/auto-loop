@@ -1,6 +1,6 @@
 # auto-loop
 
-**auto-loop** is a Python controller for a planner / worker / reviewer lifecycle. A **planner** writes the initial plan, a **plan reviewer** approves it, a **worker** implements scoped batches (and may update the plan), and an **execution reviewer** is the sole completion authority. Git commits are the source of truth for product progress; durable state under `.auto-loop/` records sessions, reviews, and recovery metadata.
+**auto-loop** is a Python controller for a planner / worker / reviewer lifecycle. A **planner** writes the initial plan, a **plan reviewer** approves it, a **worker** implements scoped batches (and may update the plan), and an **execution reviewer** is the sole completion authority. Git commits are the source of truth for product progress. **`.auto-loop/` is tool-managed state** (plan, reviews, sessions, runtime); you do not edit it for normal use.
 
 This document describes the current operator experience. Parallel workers, PR bots, dashboards, and similar ideas remain out of scope.
 
@@ -8,7 +8,7 @@ This document describes the current operator experience. Parallel workers, PR bo
 
 - **Python 3.12+**
 - A **Git** repository for the product code you want the loop to change
-- For live runs: the **Cursor agent CLI** (`agent` or `cursor-agent` on `PATH`, configurable in `.auto-loop/config.yaml`) and valid Cursor credentials. The offline test suite does not call live Cursor.
+- For live runs: the **Cursor agent CLI** (`agent` or `cursor-agent` on `PATH`, configurable in `auto-loop.yaml`) and valid Cursor credentials. The offline test suite does not call live Cursor.
 
 ## Installation
 
@@ -37,26 +37,50 @@ python -m pytest tests/unit/test_packaging.py -q
 cd your-product-repo
 git init   # if needed
 auto-loop init
-# Edit .auto-loop/task.md and .auto-loop/plan.md
-auto-loop doctor
-auto-loop run --max-turns 20
+auto-loop run "Implement the feature described in README.md"
 auto-loop status
 ```
 
-`init` creates `.auto-loop/` with `config.yaml`, `context.yaml`, planner/worker/reviewer role files, instructions, review directory, and optional resource stubs. Re-running `init` is non-destructive unless you pass `--force`. Use `--minimal` for a skeleton without instructions/resources.
+Or pass a goal file:
+
+```bash
+auto-loop run --goal-file goal.md
+```
+
+`init` creates user-owned `auto-loop.yaml` and prints how to start a run (including optional `.auto-loop/runtime/` ignore guidance). It does not create a goal, a root `task.md`, or a root `context.yaml`. `.auto-loop/` is created when a run starts. Re-running `init` is non-destructive unless you pass `--force`. Use `--minimal` for a skeleton without default instruction files.
+
+A maintained example is [`samples/kanban-board`](samples/kanban-board):
+
+```bash
+./bootstrap.sh
+auto-loop run --goal-file goal.md
+```
 
 ## Commands
 
 | Command | Purpose |
 |--------|---------|
-| `auto-loop init [path]` | Create control workspace templates (`--force`, `--minimal`). |
-| `auto-loop doctor [path]` | Check workspace layout, config, Git, Cursor CLI, sessions, lock. |
-| `auto-loop run [path]` | Start or continue the lifecycle (`--max-turns`, `--max-runtime-minutes`, `--planner-model` / `--worker-model` / `--reviewer-model` / `--model`, `--verbose` / `--quiet`). |
-| `auto-loop status [path]` | Summarize lifecycle id, phase, turn, baseline, HEAD, sessions, plan approval. |
+| `auto-loop init [path]` | Create `auto-loop.yaml` (`--force`, `--minimal`). |
+| `auto-loop run ["goal"]` | Start a run from inline goal or `--goal-file` (`--context`, `--path`, `--max-turns`, `--max-runtime-minutes`, `--planner-model` / `--worker-model` / `--reviewer-model` / `--model`, `--verbose` / `--quiet`). Omit a new goal to continue the stored run. |
+| `auto-loop resume [path]` | Resume the stored run without replacing its goal. |
+| `auto-loop status [path]` | Summarize run, phase, planner/worker/reviewer, and where to inspect the plan/reviews. |
+| `auto-loop doctor [path]` | Check config, Git, Cursor CLI, sessions, lock. |
+| `auto-loop migrate [path]` | Create `auto-loop.yaml` from a legacy layout without discarding run state. |
 | `auto-loop logs [path]` | Show per-turn provider logs (`--turn`, `--raw`, `--follow`). |
 | `auto-loop stop [path]` | Request graceful stop of the active run (also respects SIGINT/SIGTERM during `run`). |
 
-All commands accept an optional repository path; default is the current working directory.
+`run` accepts `--path` for the target repository. Other commands still take an optional path argument; default is the current working directory.
+
+## User-owned vs tool-managed
+
+| Path | Owner | User edits normally? |
+|------|--------|---------------------:|
+| `auto-loop.yaml` | you | yes — config |
+| `goal.md` | you | yes — optional goal input |
+| custom context/resource files | you | yes — optional, pass `--context` |
+| `.auto-loop/` | Auto Loop | no — tool-managed plan, reviews, agents, runtime |
+
+Configuration resolution: built-in defaults, then a legacy `.auto-loop/config.yaml` snapshot if present, then `auto-loop.yaml`, then CLI overrides. The resolved snapshot is stored under `.auto-loop/` for resume safety.
 
 ## Stable exit codes
 
@@ -100,13 +124,16 @@ Generated defaults live under `.auto-loop/instructions/` and `.auto-loop/agents/
 
 ## Context and task resources
 
-`context.yaml` lists optional resources (paths, skills) included in prompts per role (`shared`, `planner`, `worker`, `reviewer`). Plan-reviewer receives shared + reviewer resources. Validate with `doctor`. Task-specific material belongs in `.auto-loop/task.md` and `.auto-loop/plan.md`; treat `task.md` as authoritative for scope.
+Context is optional. Pass `--context path/to/context.yaml` when a run needs extra resources or skills. Auto Loop snapshots that file into tool-managed state; a root `context.yaml` is not required.
+
+The context document lists optional resources (paths, skills) included in prompts per role (`shared`, `planner`, `worker`, `reviewer`). Plan-reviewer receives shared + reviewer resources. Validate with `doctor`. The run **goal** is the user-facing source of intent; internally it is snapshotted for the planner/worker/reviewer protocol.
 
 Recommended protected control inputs (configure in `protection.protected_files`):
 
 ```yaml
 protection:
   protected_files:
+    - auto-loop.yaml
     - .auto-loop/task.md
 ```
 
@@ -128,32 +155,45 @@ Use `auto-loop status` and `auto-loop logs` for operator-friendly views.
 ## Stop, restart, and limits
 
 - `auto-loop stop` marks a running lifecycle **STOPPED** when a controller is active.
-- Re-run `auto-loop run` to continue from durable state (same session ids, reconciled inflight).
-- Defaults: `limits.max_turns`, `limits.max_runtime_minutes`, `limits.max_consecutive_worker_no_progress`—tune in `config.yaml` or `run` flags.
+- `auto-loop resume` (or `auto-loop run` with no new goal) continues from durable state (same session ids, reconciled inflight). Changing `goal.md` does not replace an in-progress run.
+- Defaults: `limits.max_turns`, `limits.max_runtime_minutes`, `limits.max_consecutive_worker_no_progress`—tune in `auto-loop.yaml` or `run` flags.
 
 ## Configuration reference (high level)
 
-Key sections in `.auto-loop/config.yaml`:
+User-owned config is `auto-loop.yaml`. A compact file is enough:
+
+```yaml
+models:
+  planner: auto
+  worker: auto
+  reviewer: auto
+
+run:
+  max_turns: 100
+  max_runtime_minutes: 480
+```
+
+The full internal schema is still accepted in `auto-loop.yaml` (and used for the tool-managed snapshot):
 
 | Section | Role |
 |---------|------|
+| `models` / `agents.*.model` | Per-role model ids. Plan-reviewer uses the reviewer model. |
+| `run.max_turns` / `run.max_runtime_minutes` | Convenience aliases for `limits`. |
 | `provider.cursor` | CLI command (`agent` / `cursor-agent`), extra args per role. |
-| `agents.planner` / `agents.worker` / `agents.reviewer` | Role files, model, `agent` vs `ask` mode. Plan-reviewer uses the reviewer model. |
+| `agents.planner` / `agents.worker` / `agents.reviewer` | Role files, model, `agent` vs `ask` mode. |
 | `instructions` | Shared/planner/worker/reviewer markdown stacks. |
 | `git` | Clean-tree requirements, worker commits, history protection. |
 | `limits` | Turns, runtime, timeouts, retries, no-progress streak. |
 | `protection` | Product exclude globs, protected control files. |
 | `logging` | Console verbosity, event log path, run history retention. |
 
-Model precedence for each role: role-specific CLI override, then `--model`, then `config.agents.<role>.model`, then `auto`.
-
-See the generated file after `init` for defaults.
+Model precedence for each role: role-specific CLI override, then `--model`, then `auto-loop.yaml` / `agents.<role>.model`, then `auto`.
 
 ## Troubleshooting
 
 | Symptom | Things to check |
 |---------|------------------|
-| `CONFIG_ERROR` on `run` | Run `auto-loop init` and `doctor`; fix `context.yaml` / missing paths. Missing planner templates: rerun `auto-loop init`. |
+| `CONFIG_ERROR` on `run` | Run `auto-loop init` and `doctor`; provide a goal (`auto-loop run "…"` or `--goal-file`). Optional `--context` if you use extra resources. Missing planner templates: rerun `auto-loop init` then `run`. |
 | `GIT_PROTOCOL_ERROR` | Dirty product tree before batch review, empty Git range without path targets, or history rewrite. |
 | `SESSION_ERROR` | Cursor resume id drift; inspect turn logs; do not hand-edit session ids in `state.json`. |
 | `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `protocol_retries` only after fixing prompts. |

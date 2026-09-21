@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from auto_loop.config import AutoLoopConfig, load_config_from_repo
+from auto_loop.config import (
+    AutoLoopConfig,
+    USER_CONFIG_FILENAME,
+    ConfigurationError,
+    load_config_from_repo,
+    user_config_path,
+)
 from auto_loop.git import head_commit
 from auto_loop.product_state import is_product_tree_clean
 from auto_loop.runtime import load_lifecycle_state
@@ -53,13 +59,59 @@ def _latest_review_summary(repo: Path, config: AutoLoopConfig) -> str:
     return f"{verdict} {slug} ({scope})"
 
 
+def _session_label(status: str, session_id: str | None) -> str:
+    if status == "retired":
+        return "complete"
+    if session_id:
+        return status
+    if status == "pending":
+        return "waiting"
+    return status
+
+
+def _phase_label(state) -> str:
+    if state.next_session in ("reviewer", "plan_reviewer") or state.active_review is not None:
+        return "review"
+    return state.phase
+
+
+def _run_label(status: str) -> str:
+    mapping = {
+        "running": "active",
+        "completed": "complete",
+        "stopped": "interrupted",
+        "blocked": "blocked",
+        "limit_reached": "limit reached",
+        "error": "error",
+    }
+    return mapping.get(status, status)
+
+
+def _try_load_config(repo: Path) -> AutoLoopConfig | None:
+    try:
+        return load_config_from_repo(repo)
+    except ConfigurationError:
+        return None
+
+
 def build_status_report(repo: Path, *, now: datetime | None = None) -> str:
-    config = load_config_from_repo(repo)
+    config = _try_load_config(repo)
     now = now or datetime.now(timezone.utc)
     completion = load_completion_record(repo)
+    plan_rel = config.plan_file if config is not None else ".auto-loop/plan.md"
+    reviews_rel = config.reviews_dir if config is not None else ".auto-loop/reviews"
+    config_rel = (
+        USER_CONFIG_FILENAME if user_config_path(repo).is_file() else ".auto-loop/config.yaml"
+    )
+
     if completion is not None:
         state = load_lifecycle_state(repo)
         lines = [
+            "Run:        complete",
+            f"Config:     {config_rel}",
+            f"Plan:       {plan_rel}",
+            f"Reviews:    {reviews_rel}/" if not reviews_rel.endswith("/") else f"Reviews:    {reviews_rel}",
+            "",
             "status: completed",
             f"lifecycle: {completion.lifecycle_id}",
             f"final commit: {completion.final_commit[:7]}",
@@ -67,14 +119,36 @@ def build_status_report(repo: Path, *, now: datetime | None = None) -> str:
         ]
         if state is not None:
             lines.append(f"turn: {state.turn}")
-        lines.append(f"latest review: {_latest_review_summary(repo, config)}")
+        if config is not None:
+            lines.append(f"latest review: {_latest_review_summary(repo, config)}")
         return "\n".join(lines)
 
     state = load_lifecycle_state(repo)
     if state is None:
-        return "status: idle\nlifecycle: (none)\nRun `auto-loop run` to start a lifecycle."
+        return "\n".join(
+            [
+                "Run:        idle",
+                f"Config:     {config_rel if config is not None else '(none)'}",
+                "",
+                "status: idle",
+                "lifecycle: (none)",
+                "No active Auto Loop run.",
+                "Start with:",
+                '  auto-loop run "Describe the goal"',
+                "  auto-loop run --goal-file goal.md",
+            ]
+        )
 
+    reviews_display = f"{reviews_rel}/" if not str(reviews_rel).endswith("/") else reviews_rel
     lines = [
+        f"Run:        {_run_label(state.status.value)}",
+        f"Phase:      {_phase_label(state)}",
+        f"Planner:    {_session_label(state.sessions['planner'].status, state.sessions['planner'].session_id)}",
+        f"Worker:     {_session_label(state.sessions['worker'].status, state.sessions['worker'].session_id)}",
+        f"Reviewer:   {_session_label(state.sessions['reviewer'].status, state.sessions['reviewer'].session_id)}",
+        f"Plan:       {plan_rel}",
+        f"Reviews:    {reviews_display}",
+        "",
         f"status: {state.status.value}",
         f"lifecycle: {state.lifecycle_id}",
         f"phase: {state.phase}",
@@ -97,7 +171,7 @@ def build_status_report(repo: Path, *, now: datetime | None = None) -> str:
         f"HEAD: {head_commit(repo)[:7]}",
         f"product tree: {'clean' if is_product_tree_clean(repo) else 'dirty'}",
         "",
-        f"latest review: {_latest_review_summary(repo, config)}",
+        f"latest review: {_latest_review_summary(repo, config) if config is not None else '(none)'}",
         f"elapsed: {_format_duration(state.started_at, now)}",
         f"last activity: {_format_ago(state.updated_at, now)}",
     ]

@@ -3,7 +3,7 @@
 import subprocess
 from pathlib import Path
 
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import create_lifecycle
 from auto_loop.runtime import save_lifecycle_state
 from auto_loop.status_report import build_status_report
@@ -16,7 +16,7 @@ def _repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
-    run_init(repo, minimal=True)
+    bootstrap_workspace(repo, minimal=True)
     return repo
 
 

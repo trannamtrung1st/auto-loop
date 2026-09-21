@@ -12,7 +12,7 @@ from auto_loop.context_manifest import (
     render_resource_manifest,
     validate_context,
 )
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import create_lifecycle
 from auto_loop.prompts import TurnContext, build_worker_prompt
 
@@ -121,6 +121,6 @@ def test_manifest_appended_on_resume_turn(tmp_path: Path):
 
 def test_load_init_context_file(tmp_path: Path):
     repo = _repo(tmp_path)
-    run_init(repo)
+    bootstrap_workspace(repo)
     doc = load_context_file(repo / ".auto-loop" / "context.yaml")
     assert doc.version == 1

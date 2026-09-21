@@ -50,7 +50,7 @@ Supporting integration coverage: `test_plan_flow.py`, `test_lifecycle_flows.py`,
 
 | Area | Requirement (summary) | Implementation | Verification |
 |------|----------------------|----------------|--------------|
-| Setup / CLI | `init`, `doctor`, `run` continue lifecycle | `init_cmd.py`, `doctor.py`, `cli.py`, `loop.py` | `test_init.py`, `test_cli.py`, `test_doctor.py`, integration flows |
+| Setup / CLI | `init`, `doctor`, `run`, `resume`, `migrate`; user-owned `auto-loop.yaml` + goal; frozen config on resume | `init_cmd.py`, `run_inputs.py`, `config.py`, `cli.py`, `loop.py` | `test_init.py`, `test_cli.py`, `test_ux_contract.py`, `test_config.py`, `test_doctor.py`, integration flows |
 | Persistent sessions | Four slots: planner, plan_reviewer, worker, reviewer; resume; mismatch | `loop.py`, `providers/cursor.py`, `lifecycle.py` | Scenarios K–M, `test_fake_cursor.py`, `test_cursor_stream.py` |
 | Planning | Dedicated planner + plan-reviewer; retire after PASS | `loop.py`, `prompts.py` | Scenarios A–B, U–V, `test_plan_flow.py`, `test_retired_planning_slots_reject_resume_after_handoff` |
 | Batch | Clean tree; `last_approved..HEAD`; no rewrite | `git.py`, `loop.py` | Scenarios C–G, `test_git.py` |

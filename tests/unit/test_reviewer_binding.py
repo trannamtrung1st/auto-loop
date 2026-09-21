@@ -9,7 +9,7 @@ import pytest
 from auto_loop.config import default_config
 from auto_loop.exits import ExitCode
 from auto_loop.git import GitProtocolError
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import ActiveReview, PendingRevision, create_lifecycle
 from auto_loop.loop import LifecycleRunner
 from auto_loop.models import ActiveGitTarget, ReviewerResult
@@ -30,7 +30,7 @@ from auto_loop.providers.scripted import ScriptedProvider
 def _runner(tmp_path: Path) -> LifecycleRunner:
     repo = tmp_path / "r"
     repo.mkdir()
-    run_init(repo)
+    bootstrap_workspace(repo)
     config = default_config()
     return LifecycleRunner(
         repo,

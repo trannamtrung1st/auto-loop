@@ -8,7 +8,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from auto_loop.config import AutoLoopConfig, ConfigurationError, load_config
+from auto_loop.config import (
+    AutoLoopConfig,
+    USER_CONFIG_FILENAME,
+    ConfigurationError,
+    load_config_from_repo,
+    user_config_path,
+)
 from auto_loop.git import is_git_repository
 from auto_loop.paths import auto_loop_root
 from auto_loop.product_state import is_product_tree_clean
@@ -70,26 +76,42 @@ def _path_readable(repo: Path, rel: str) -> bool:
 
 def _check_workspace_layout(repo: Path, report: DoctorReport) -> AutoLoopConfig | None:
     root = auto_loop_root(repo)
-    if not root.is_dir():
-        report.add("workspace", Severity.ERROR, "Missing .auto-loop directory; run `auto-loop init`")
-        return None
-
-    config_path = root / "config.yaml"
-    if not config_path.is_file():
-        report.add("config", Severity.ERROR, f"Missing {config_path}")
+    user_path = user_config_path(repo)
+    snapshot_path = root / "config.yaml"
+    if not user_path.is_file() and not snapshot_path.is_file():
+        report.add(
+            "workspace",
+            Severity.ERROR,
+            f"Missing {USER_CONFIG_FILENAME}; run `auto-loop init`",
+        )
         return None
 
     try:
-        config = load_config(config_path)
+        config = load_config_from_repo(repo)
     except ConfigurationError as exc:
         report.add("config", Severity.ERROR, f"Invalid configuration: {exc}")
         return None
 
     report.add("config", Severity.OK, "Configuration loaded and validated")
+    if not root.is_dir():
+        report.add(
+            "workspace",
+            Severity.WARNING,
+            "No tool-managed state yet; `.auto-loop/` will be created on `auto-loop run`. "
+            "You normally do not need to edit that directory.",
+        )
+    else:
+        report.add("workspace", Severity.OK, ".auto-loop/ is present (tool-managed state)")
     return config
 
 
-def _check_role_and_task_files(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
+def _check_role_and_task_files(
+    repo: Path,
+    config: AutoLoopConfig,
+    report: DoctorReport,
+    *,
+    require_task: bool,
+) -> None:
     for label, rel in (
         ("task", config.task_file),
         ("plan", config.plan_file),
@@ -100,6 +122,12 @@ def _check_role_and_task_files(repo: Path, config: AutoLoopConfig, report: Docto
     ):
         if _path_readable(repo, rel):
             report.add(f"file:{label}", Severity.OK, f"{rel} is readable")
+        elif label == "task" and not require_task:
+            report.add(
+                f"file:{label}",
+                Severity.WARNING,
+                "No run goal snapshot yet; provide one with `auto-loop run` or `--goal-file`",
+            )
         elif "planner" in label:
             report.add(
                 f"file:{label}",
@@ -279,13 +307,21 @@ def run_doctor(repo: Path, *, verbose: bool = False) -> DoctorReport:
     config = _check_workspace_layout(repo, report)
     if config is None:
         return report
-    _check_role_and_task_files(repo, config, report)
+    root = auto_loop_root(repo)
+    _check_git(repo, config, report)
+    _check_cursor_cli(config, report)
+    if not root.is_dir():
+        return report
+    state = None
+    try:
+        state = load_lifecycle_state(repo)
+    except RuntimeStateError:
+        state = None
+    _check_role_and_task_files(repo, config, report, require_task=state is not None)
     _check_instruction_templates(repo, config, report)
     _check_instruction_composition(repo, config, report)
     _check_context_manifest(repo, config, report)
-    _check_git(repo, config, report)
     _check_runtime_writable(repo, report)
     _check_workspace_lock(repo, report)
     _check_lifecycle_sessions(repo, report)
-    _check_cursor_cli(config, report)
     return report
