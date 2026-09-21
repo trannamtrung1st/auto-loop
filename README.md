@@ -163,7 +163,7 @@ See the generated file after `init` for defaults.
 | `SESSION_ERROR` | Cursor resume id drift; inspect turn logs; do not hand-edit session ids in `state.json`. |
 | `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `protocol_retries` only after fixing prompts. |
 | `LIMIT_REACHED` | Raise `max_turns` / runtime or reduce revise loops; check `worker_no_progress_streak`. |
-| `CONCURRENT_RUN` | Another `run` holds `.auto-loop/runtime/workspace.lock`; wait or stop the other process. |
+| `CONCURRENT_RUN` | Another `run` holds `.auto-loop/runtime/lock.json`; wait, use `auto-loop stop`, or remove a stale lock after verifying no live controller. |
 | Doctor: Cursor not found | Install Cursor CLI or set `provider.cursor.command`. |
 
 ## Security and secrets

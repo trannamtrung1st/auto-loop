@@ -67,4 +67,4 @@ Not implemented: specialist reviewers, orchestrator agent, parallel workers, PR 
 
 ## Production commit index (v1 implementation line)
 
-Representative commits on `main` (newest first): `8b321e3` live smoke + subprocess CLI; `dc111bf` operator README/packaging; `7722918` / `3a90ee1` scenarios K–J; `1d01a3b` stop/limits/repair; `9128b35` observability; `946760a` persistence/locks; `804fcbe` completion/blocked; earlier phases through `4cb0bb6` package skeleton. Full history: `git log --oneline`.
+Representative commits on `main` (newest first): `013dc65` live smoke verification record; `c26bbf3` logs follow + §45 smoke assertions + Cursor `--trust`; `b93d1f1` traceability/verification docs; `8b321e3` live smoke harness + subprocess CLI; `dc111bf` operator README/packaging; `7722918` / `3a90ee1` scenarios K–J; earlier phases through `4cb0bb6` package skeleton. Full history: `git log --oneline`.

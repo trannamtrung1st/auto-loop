@@ -45,7 +45,7 @@ Result: succeeds; harness resources and templates present in wheel (`test_wheel_
 
 ## Static analysis
 
-`ruff` is listed in dev dependencies but was **not** executed in this environment (`No module named ruff`). No blocker for offline functional verification; optional: `pip install -e ".[dev]" && ruff check src tests`.
+`ruff` is configured under `[tool.ruff]` in `pyproject.toml` but is **not** part of the `[project.optional-dependencies].dev` extra (dev installs only pytest and pytest-cov). Ruff was **not** executed in this environment. Optional: `pip install ruff && ruff check src tests`.
 
 ## Live Cursor smoke (§45)
 

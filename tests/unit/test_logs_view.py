@@ -7,7 +7,7 @@ from pathlib import Path
 
 from auto_loop.init_cmd import run_init
 from auto_loop.lifecycle import LifecycleStatus, RoleSession, create_lifecycle
-from auto_loop.logs_view import render_logs
+from auto_loop.logs_view import render_logs, stream_follow_logs
 from auto_loop.runtime import save_lifecycle_state
 from auto_loop.turn_logs import turn_log_paths
 
@@ -23,13 +23,12 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
-def test_render_logs_follow_observes_bytes_written_after_start(tmp_path: Path):
+def test_stream_follow_emits_incremental_chunks_before_return(tmp_path: Path):
     repo = _repo(tmp_path)
     from auto_loop.git import head_commit
 
     state = create_lifecycle(head_commit(repo))
     state.sessions["worker"] = RoleSession(session_id="worker-session-1")
-    state.sessions["reviewer"] = RoleSession(session_id="reviewer-session-1")
     save_lifecycle_state(repo, state)
 
     jsonl_path, log_path = turn_log_paths(repo, state.lifecycle_id, 1, "worker")
@@ -37,23 +36,51 @@ def test_render_logs_follow_observes_bytes_written_after_start(tmp_path: Path):
     jsonl_path.write_text('{"type":"assistant","text":"start"}\n', encoding="utf-8")
     log_path.write_text("line one\n", encoding="utf-8")
 
+    chunks: list[str] = []
+    seen_line_two_before_done = threading.Event()
+
+    def capture(text: str) -> None:
+        chunks.append(text)
+        if "line two" in text:
+            seen_line_two_before_done.set()
+
     def append_later() -> None:
         time.sleep(0.15)
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write("line two\n")
 
     threading.Thread(target=append_later, daemon=True).start()
-    output = render_logs(
+    stream_follow_logs(
         repo,
-        follow=True,
+        write=capture,
         follow_max_seconds=2.0,
         follow_idle_seconds=0.2,
     )
-    assert "line one" in output
-    assert "line two" in output
+    body = "".join(chunks)
+    assert "line one" in body
+    assert "line two" in body
+    assert seen_line_two_before_done.is_set()
+    assert body.count("line one") == 1
+    assert body.count("line two") == 1
 
 
-def test_render_logs_follow_stops_after_terminal_lifecycle_idle(tmp_path: Path):
+def test_render_logs_follow_no_duplicate_body(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    state.status = LifecycleStatus.COMPLETED
+    save_lifecycle_state(repo, state)
+    jsonl_path, log_path = turn_log_paths(repo, state.lifecycle_id, 1, "worker")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text('{"type":"assistant","text":"done"}\n', encoding="utf-8")
+    log_path.write_text("only once\n", encoding="utf-8")
+
+    output = render_logs(repo, follow=True, follow_idle_seconds=0.15)
+    assert output.count("only once") == 1
+
+
+def test_stream_follow_stops_after_terminal_lifecycle_idle(tmp_path: Path):
     repo = _repo(tmp_path)
     from auto_loop.git import head_commit
 
@@ -66,6 +93,8 @@ def test_render_logs_follow_stops_after_terminal_lifecycle_idle(tmp_path: Path):
     log_path.write_text("done\n", encoding="utf-8")
 
     started = time.monotonic()
-    output = render_logs(repo, follow=True, follow_idle_seconds=0.15)
-    assert "done" in output
+    chunks: list[str] = []
+
+    stream_follow_logs(repo, write=chunks.append, follow_idle_seconds=0.15)
+    assert "done" in "".join(chunks)
     assert time.monotonic() - started < 2.0

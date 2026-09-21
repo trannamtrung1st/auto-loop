@@ -16,7 +16,7 @@ from auto_loop.locking import ConcurrentRunError
 from auto_loop.loop import run_lifecycle
 from auto_loop.providers.subprocess_cursor import SubprocessCursorProvider
 from auto_loop.run_options import build_run_options
-from auto_loop.logs_view import render_logs
+from auto_loop.logs_view import render_logs, stream_follow_logs
 from auto_loop.run_prerequisites import RunPreconditionError
 from auto_loop.status_report import build_status_report
 from auto_loop.stop_control import StopError, request_remote_stop
@@ -170,19 +170,17 @@ def logs_cmd(
     """View per-turn provider logs."""
     repo = _resolve_path(path)
     try:
-        output = render_logs(
-            repo,
-            turn=turn,
-            raw=raw,
-            follow=follow,
-        )
+        if follow:
+            stream_follow_logs(repo, turn=turn, raw=raw)
+        else:
+            output = render_logs(repo, turn=turn, raw=raw, follow=False)
+            if output:
+                typer.echo(output)
     except KeyboardInterrupt:
         raise typer.Exit(code=int(ExitCode.COMPLETE))
     except Exception as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR)) from exc
-    if output:
-        typer.echo(output)
     raise typer.Exit(code=int(ExitCode.COMPLETE))
 
 
