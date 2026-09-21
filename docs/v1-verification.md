@@ -18,7 +18,7 @@ python -m pytest -q
 Result (representative run on Python 3.14):
 
 ```text
-198 passed, 1 skipped in ~39s
+202 passed, 1 skipped in ~44s
 ```
 
 The single skip is the opt-in live Cursor smoke test when `AUTO_LOOP_LIVE_CURSOR` is unset (see below).

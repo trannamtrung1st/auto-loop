@@ -92,7 +92,7 @@ def build_cursor_command(
 ) -> list[str]:
     """Build argv for a Cursor create or resume invocation."""
     executable = binary or resolve_cursor_binary(config.provider.cursor)
-    argv: list[str] = [executable, "-p"]
+    argv: list[str] = [executable, "-p", "--trust"]
     if resume_session_id:
         argv.append(f"--resume={resume_session_id}")
     argv.extend(

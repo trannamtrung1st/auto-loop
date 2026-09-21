@@ -34,6 +34,7 @@ def test_build_create_command_includes_stream_json_and_workspace():
     argv = build_cursor_command(config, _request("worker"), binary="/usr/bin/agent")
     assert argv[0] == "/usr/bin/agent"
     assert "-p" in argv
+    assert "--trust" in argv
     assert "--output-format" in argv
     idx = argv.index("--output-format")
     assert argv[idx + 1] == "stream-json"

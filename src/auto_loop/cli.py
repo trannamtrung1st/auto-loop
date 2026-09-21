@@ -157,7 +157,13 @@ def status_cmd(
 @app.command("logs")
 def logs_cmd(
     path: PathArgument = None,
-    follow: Annotated[bool, typer.Option("--follow")] = False,
+    follow: Annotated[
+        bool,
+        typer.Option(
+            "--follow",
+            help="Stream new log bytes until Ctrl+C, or until the lifecycle ends and the log is idle.",
+        ),
+    ] = False,
     turn: Annotated[Optional[int], typer.Option("--turn", min=1)] = None,
     raw: Annotated[bool, typer.Option("--raw")] = False,
 ) -> None:
@@ -169,8 +175,9 @@ def logs_cmd(
             turn=turn,
             raw=raw,
             follow=follow,
-            follow_seconds=0.25 if follow else 0.0,
         )
+    except KeyboardInterrupt:
+        raise typer.Exit(code=int(ExitCode.COMPLETE))
     except Exception as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR)) from exc
