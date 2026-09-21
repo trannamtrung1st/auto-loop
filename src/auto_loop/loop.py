@@ -363,18 +363,6 @@ class LifecycleRunner:
                 try:
                     attempt_result = self.invoker.invoke(argv)
                     turn_log.write_stream_lines(attempt_result.lines)
-                    if attempt_result.failure == ProviderFailureKind.INTERRUPTED:
-                        turn_log.finalize()
-                        if self._stop.requested:
-                            persist_stopped_state(self.repo, state)
-                            append_event(
-                                self.repo,
-                                self.config,
-                                {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
-                            )
-                            self._terminal_exit = ExitCode.STOPPED
-                            self._terminal_message = "Lifecycle stopped"
-                        raise ProviderError(f"Provider interrupted for session {slot}")
                     parsed = self._parse_provider_attempt(attempt_result, session.session_id)
                     if parsed.session_id:
                         created = adopt_session_identity(
@@ -398,6 +386,18 @@ class LifecycleRunner:
                                 },
                             )
                             self._console.session_created(slot, parsed.session_id)
+                    if attempt_result.failure == ProviderFailureKind.INTERRUPTED:
+                        turn_log.finalize()
+                        if self._stop.requested:
+                            persist_stopped_state(self.repo, state)
+                            append_event(
+                                self.repo,
+                                self.config,
+                                {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
+                            )
+                            self._terminal_exit = ExitCode.STOPPED
+                            self._terminal_message = "Lifecycle stopped"
+                        raise ProviderError(f"Provider interrupted for session {slot}")
                     if attempt_result.failure is not None:
                         if not is_retryable_provider_failure(attempt_result.failure):
                             turn_log.finalize()

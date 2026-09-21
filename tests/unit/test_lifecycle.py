@@ -317,6 +317,7 @@ def test_load_lifecycle_enriches_migrated_plan_target_fingerprint(tmp_path: Path
     loaded = load_lifecycle_state(repo)
     assert loaded is not None
     plan = next(t for t in loaded.active_review.targets if t.id == "plan")
+    assert plan.path == ".auto-loop/plan.md"
     assert plan.fingerprint == digest
 
 

@@ -19,6 +19,7 @@ from auto_loop.models import (
 )
 
 RUNTIME_SCHEMA_VERSION = 2
+LEGACY_V1_PLAN_TARGET_PATH = "__auto_loop_legacy_v1_plan__"
 LifecyclePhase = Literal["planning", "execution"]
 SessionStatus = Literal["pending", "active", "retired", "legacy_not_created"]
 
@@ -301,7 +302,7 @@ def _migrate_v1_active_review(
             {
                 "kind": "path",
                 "id": "plan",
-                "path": ".auto-loop/plan.md",
+                "path": LEGACY_V1_PLAN_TARGET_PATH,
                 "fingerprint": "",
                 "exists": True,
                 "git_classification": "control",
@@ -403,6 +404,27 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _configured_plan_file(repo: Path) -> str:
+    from auto_loop.config import ConfigurationError, load_config
+    from auto_loop.paths import auto_loop_root
+
+    path = auto_loop_root(repo) / "config.yaml"
+    if not path.is_file():
+        return ".auto-loop/plan.md"
+    try:
+        return load_config(path).plan_file
+    except ConfigurationError:
+        return ".auto-loop/plan.md"
+
+
+def resolve_plan_review_path(repo: Path, stored_path: str) -> str:
+    """Map legacy migrated plan targets to the workspace's configured plan file."""
+    configured = _configured_plan_file(repo)
+    if stored_path in (LEGACY_V1_PLAN_TARGET_PATH, ".auto-loop/plan.md"):
+        return configured
+    return stored_path
+
+
 def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
     """Repository-aware fixes after schema migration (e.g. plan path fingerprints)."""
     from auto_loop.review_targets import fingerprint_path
@@ -413,7 +435,21 @@ def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
     updated_targets: list[ActiveReviewTarget] = []
     changed = False
     for target in review.targets:
-        if target.kind == "path" and not target.fingerprint:
+        if target.kind == "path" and target.id == "plan":
+            rel = resolve_plan_review_path(repo, target.path)
+            digest, exists = fingerprint_path(repo / rel)
+            if not exists:
+                updates: dict[str, Any] = {"active_review": None}
+                if state.next_session == "reviewer":
+                    updates["next_session"] = "worker"
+                return state.model_copy(update=updates)
+            new_target = target.model_copy(
+                update={"path": rel, "fingerprint": digest, "exists": exists}
+            )
+            if new_target != target:
+                changed = True
+            updated_targets.append(new_target)
+        elif target.kind == "path" and not target.fingerprint:
             digest, exists = fingerprint_path(repo / target.path)
             if not exists:
                 updates: dict[str, Any] = {"active_review": None}

@@ -11,7 +11,7 @@ import pytest
 from auto_loop.config import default_config
 from auto_loop.exits import ExitCode
 from auto_loop.init_cmd import run_init
-from auto_loop.lifecycle import create_lifecycle
+from auto_loop.lifecycle import LifecycleStatus, create_lifecycle
 from auto_loop.loop import LifecycleRunner
 from auto_loop.providers.cursor import SessionError
 from auto_loop.providers.supervision import (
@@ -21,7 +21,7 @@ from auto_loop.providers.supervision import (
     provider_attempt_from_process_output,
 )
 from auto_loop.run_options import RunOptions
-from auto_loop.runtime import save_lifecycle_state
+from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 
 from tests.integration.scenario_harness import make_repo
 
@@ -117,6 +117,43 @@ def test_malformed_stream_retries_then_fails(tmp_path: Path):
     save_lifecycle_state(repo, state)
     with pytest.raises(ProviderError, match="failed after"):
         runner._invoke_slot("planner", "go", state)
+
+
+def test_interrupted_attempt_still_persists_session_id(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    interrupted = ProviderAttemptResult(
+        lines=[json.dumps({"type": "system", "session_id": "persist-on-stop"})],
+        exit_code=None,
+        failure=ProviderFailureKind.INTERRUPTED,
+        parsed=None,
+    )
+    provider = SequenceProvider([interrupted])
+    runner = _runner(repo, provider)
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    runner._stop.requested = True
+    with pytest.raises(ProviderError):
+        runner._invoke_slot("planner", "go", state)
+    loaded = load_lifecycle_state(repo)
+    assert loaded is not None
+    assert loaded.sessions["planner"].session_id == "persist-on-stop"
+    assert loaded.status == LifecycleStatus.STOPPED
+
+    loaded.status = LifecycleStatus.RUNNING
+    save_lifecycle_state(repo, loaded)
+    from auto_loop.providers.scripted import ScriptedProvider
+
+    provider2 = ScriptedProvider()
+    provider2.engine.register_role_session("planner", "persist-on-stop")
+    provider2.set_planner_review_request()
+    runner2 = _runner(repo, provider2)
+    state2 = load_lifecycle_state(repo)
+    assert state2 is not None
+    runner2._invoke_slot("planner", "go", state2)
+    planner_calls = [inv for inv in provider2.engine.invocations if inv.role == "planner"]
+    assert planner_calls[-1].resume_session_id == "persist-on-stop"
 
 
 def test_resumed_session_mismatch_raises_session_error(tmp_path: Path):
