@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -400,3 +401,31 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
         migrated["active_review"] = None
 
     return migrated
+
+
+def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
+    """Repository-aware fixes after schema migration (e.g. plan path fingerprints)."""
+    from auto_loop.review_targets import fingerprint_path
+
+    review = state.active_review
+    if review is None:
+        return state
+    updated_targets: list[ActiveReviewTarget] = []
+    changed = False
+    for target in review.targets:
+        if target.kind == "path" and not target.fingerprint:
+            digest, exists = fingerprint_path(repo / target.path)
+            if not exists:
+                updates: dict[str, Any] = {"active_review": None}
+                if state.next_session == "reviewer":
+                    updates["next_session"] = "worker"
+                return state.model_copy(update=updates)
+            updated_targets.append(target.model_copy(update={"fingerprint": digest, "exists": exists}))
+            changed = True
+        else:
+            updated_targets.append(target)
+    if not changed:
+        return state
+    return state.model_copy(
+        update={"active_review": review.model_copy(update={"targets": updated_targets})}
+    )

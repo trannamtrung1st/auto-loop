@@ -117,7 +117,7 @@ class PromptCapturingProvider:
     def prepare(self, role: str) -> None:
         self._inner.prepare(role)
 
-    def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
+    def invoke(self, argv: list[str]):
         if len(argv) > 1 and argv[0] == "fake-agent":
             prompt = argv[-1]
             fake_role = os.environ.get("AUTO_LOOP_FAKE_ROLE")

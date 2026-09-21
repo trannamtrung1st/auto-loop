@@ -37,10 +37,10 @@ def test_subprocess_provider_single_attempt_returns_partial_stream(tmp_path: Pat
 
     monkeypatch.setattr(sc_mod, "run_subprocess_streaming", counting_stream)
     argv = [sys.executable, str(FIXTURE), "-p", "prompt"]
-    code, lines = provider.invoke(argv)
-    assert code == 0
+    attempt = provider.invoke(argv)
+    assert attempt.exit_code == 0
     assert len(calls) == 1
-    parsed = parse_cursor_stream(lines)
+    parsed = parse_cursor_stream(attempt.lines)
     assert parsed.session_id == "retry-sess-fixed-001"
     assert not parsed.final_text
 

@@ -53,6 +53,39 @@ class RetryOutcome:
     session_id: str
 
 
+@dataclass
+class ProviderAttemptResult:
+    """One supervised provider invocation for controller-owned retry policy."""
+
+    lines: list[str]
+    exit_code: int | None = None
+    failure: ProviderFailureKind | None = None
+    parsed: CursorStreamParseResult | None = None
+
+
+def provider_attempt_from_outcome(outcome: SupervisionOutcome) -> ProviderAttemptResult:
+    return ProviderAttemptResult(
+        lines=list(outcome.lines),
+        exit_code=outcome.exit_code,
+        failure=outcome.failure,
+        parsed=outcome.parsed,
+    )
+
+
+def provider_attempt_from_process_output(
+    lines: list[str],
+    exit_code: int,
+    *,
+    expected_session_id: str | None = None,
+) -> ProviderAttemptResult:
+    """Classify fake/scripted or replayed process output like a subprocess attempt."""
+    outcome = SupervisionOutcome(lines=[line.rstrip("\n") for line in lines], exit_code=exit_code)
+    if exit_code != 0:
+        outcome.failure = ProviderFailureKind.NONZERO_EXIT
+    classified = classify_stream_outcome(outcome, expected_session_id=expected_session_id)
+    return provider_attempt_from_outcome(classified)
+
+
 Clock = Callable[[], float]
 LineIterator = Callable[[], str | None]
 StopCheck = Callable[[], bool]
@@ -212,14 +245,21 @@ def run_subprocess_streaming(
             terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
 
 
+_RETRYABLE_FAILURES = {
+    ProviderFailureKind.NONZERO_EXIT,
+    ProviderFailureKind.IDLE_TIMEOUT,
+    ProviderFailureKind.WALL_TIMEOUT,
+    ProviderFailureKind.MISSING_RESULT,
+    ProviderFailureKind.TRUNCATED,
+}
+
+
 def is_retryable_failure(outcome: SupervisionOutcome) -> bool:
-    return outcome.failure in {
-        ProviderFailureKind.NONZERO_EXIT,
-        ProviderFailureKind.IDLE_TIMEOUT,
-        ProviderFailureKind.WALL_TIMEOUT,
-        ProviderFailureKind.MISSING_RESULT,
-        ProviderFailureKind.TRUNCATED,
-    }
+    return outcome.failure in _RETRYABLE_FAILURES
+
+
+def is_retryable_provider_failure(kind: ProviderFailureKind | None) -> bool:
+    return kind in _RETRYABLE_FAILURES
 
 
 T = TypeVar("T")

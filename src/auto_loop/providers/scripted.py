@@ -7,6 +7,11 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from auto_loop.providers.fake_cursor import FakeCursorEngine
+from auto_loop.providers.argv_session import resume_session_id_from_argv
+from auto_loop.providers.supervision import (
+    ProviderAttemptResult,
+    provider_attempt_from_process_output,
+)
 
 _EMPTY_QUEUES = {
     "planner": deque(),
@@ -33,9 +38,14 @@ class ScriptedProvider:
     def queue(self, role: str, final_text: str) -> None:
         self.queues[role].append(final_text)
 
-    def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
+    def invoke(self, argv: list[str]) -> ProviderAttemptResult:
         self.engine.strict = False
-        return self.engine.run(argv)
+        code, lines = self.engine.run(argv)
+        return provider_attempt_from_process_output(
+            lines,
+            code,
+            expected_session_id=resume_session_id_from_argv(argv),
+        )
 
     def set_response(self, role: str, payload: dict) -> None:
         text = json.dumps(payload)

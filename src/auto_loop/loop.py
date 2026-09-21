@@ -58,9 +58,20 @@ from auto_loop.protection import (
     capture_review_snapshot,
 )
 from auto_loop.providers.base import AgentRequest
-from auto_loop.providers.cursor import SessionError, build_cursor_command, parse_cursor_stream
+from auto_loop.providers.cursor import (
+    CursorStreamParseResult,
+    SessionError,
+    StreamParseError,
+    build_cursor_command,
+    parse_cursor_stream,
+)
 from auto_loop.providers.fake_cursor import FakeCursorError
-from auto_loop.providers.supervision import ProviderError
+from auto_loop.providers.supervision import (
+    ProviderAttemptResult,
+    ProviderError,
+    ProviderFailureKind,
+    is_retryable_provider_failure,
+)
 from auto_loop.review_store import next_review_sequence, review_artifact_path
 from auto_loop.review_targets import (
     normalize_work_targets,
@@ -90,7 +101,7 @@ from auto_loop.terminal_records import (
 class ProviderInvoker(Protocol):
     def prepare(self, role: str) -> None: ...
 
-    def invoke(self, argv: list[str]) -> tuple[int, list[str]]: ...
+    def invoke(self, argv: list[str]) -> ProviderAttemptResult: ...
 
 
 @dataclass
@@ -284,6 +295,21 @@ class LifecycleRunner:
             pending_revision=state.pending_revision,
         )
 
+    def _parse_provider_attempt(
+        self,
+        attempt: ProviderAttemptResult,
+        stored_session_id: str | None,
+    ) -> CursorStreamParseResult:
+        if attempt.failure is None and attempt.parsed is not None:
+            return attempt.parsed
+        expected = stored_session_id
+        strict = expected is not None
+        return parse_cursor_stream(
+            attempt.lines,
+            expected_session_id=expected,
+            fail_on_malformed=strict,
+        )
+
     def _invoke_slot(self, slot: SessionSlot, prompt: str, state: LifecycleState) -> str:
         session = state.sessions[slot]
         role = ROLE_FOR_SLOT[slot]
@@ -335,12 +361,21 @@ class LifecycleRunner:
                     resume_session_id=session.session_id,
                 )
                 try:
-                    _code, lines = self.invoker.invoke(argv)
-                    turn_log.write_stream_lines(lines)
-                    parsed = parse_cursor_stream(
-                        lines,
-                        expected_session_id=session.session_id,
-                    )
+                    attempt_result = self.invoker.invoke(argv)
+                    turn_log.write_stream_lines(attempt_result.lines)
+                    if attempt_result.failure == ProviderFailureKind.INTERRUPTED:
+                        turn_log.finalize()
+                        if self._stop.requested:
+                            persist_stopped_state(self.repo, state)
+                            append_event(
+                                self.repo,
+                                self.config,
+                                {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
+                            )
+                            self._terminal_exit = ExitCode.STOPPED
+                            self._terminal_message = "Lifecycle stopped"
+                        raise ProviderError(f"Provider interrupted for session {slot}")
+                    parsed = self._parse_provider_attempt(attempt_result, session.session_id)
                     if parsed.session_id:
                         created = adopt_session_identity(
                             state,
@@ -363,10 +398,22 @@ class LifecycleRunner:
                                 },
                             )
                             self._console.session_created(slot, parsed.session_id)
-                    if parsed.final_text:
+                    if attempt_result.failure is not None:
+                        if not is_retryable_provider_failure(attempt_result.failure):
+                            turn_log.finalize()
+                            raise ProviderError(
+                                f"Provider failure for session {slot}: {attempt_result.failure}"
+                            )
+                        if attempt >= max_attempts:
+                            turn_log.finalize()
+                            raise ProviderError(
+                                f"Provider failed after {max_attempts} attempt(s) for session {slot}: "
+                                f"{attempt_result.failure}"
+                            )
+                    elif parsed.final_text:
                         final_text = parsed.final_text
                         break
-                    if attempt >= max_attempts:
+                    elif attempt >= max_attempts:
                         turn_log.finalize()
                         raise ProviderError(
                             f"Provider stream for session {slot} missing terminal result"
@@ -374,6 +421,12 @@ class LifecycleRunner:
                 except SessionError:
                     turn_log.finalize()
                     raise
+                except StreamParseError:
+                    if attempt >= max_attempts:
+                        turn_log.finalize()
+                        raise ProviderError(
+                            f"Provider stream for session {slot} malformed after retries"
+                        ) from None
                 except ProviderError:
                     turn_log.finalize()
                     if self._stop.requested:

@@ -18,7 +18,8 @@ def test_subprocess_provider_delegates_to_supervision(monkeypatch):
         "auto_loop.providers.subprocess_cursor.run_subprocess_streaming",
         fake_stream,
     )
-    code, lines = provider.invoke(["agent", "-p", "--workspace", "/tmp", "hi"])
-    assert code == 0
+    attempt = provider.invoke(["agent", "-p", "--workspace", "/tmp", "hi"])
+    assert attempt.failure is None
+    assert attempt.exit_code == 0
     assert captured
     assert provider.uses_live_cursor is True

@@ -21,7 +21,8 @@ from auto_loop.lifecycle import (
 from auto_loop.providers.cursor import SessionError
 from auto_loop.models import ActiveGitTarget
 from auto_loop.prompts import TurnContext, build_reviewer_prompt, build_worker_prompt
-from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
+from auto_loop.review_targets import fingerprint_path
+from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state, state_path
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -282,6 +283,41 @@ def test_migrate_v1_active_batch_review_while_waiting_on_reviewer():
     assert state.active_review.git_head == "bbb"
     assert state.active_review.approved_base_commit == "aaa"
     assert state.active_review.current_candidate_head == "bbb"
+
+
+def test_load_lifecycle_enriches_migrated_plan_target_fingerprint(tmp_path: Path):
+    repo = _repo(tmp_path)
+    run_init(repo)
+    plan_path = repo / ".auto-loop" / "plan.md"
+    digest, _ = fingerprint_path(plan_path)
+    from auto_loop.git import head_commit
+
+    head = head_commit(repo)
+    v1 = {
+        "schema_version": 1,
+        "lifecycle_id": "x",
+        "status": "running",
+        "turn": 1,
+        "next_actor": "reviewer",
+        "plan_approved": True,
+        "initial_base_commit": head,
+        "last_approved_commit": head,
+        "sessions": {
+            "worker": {"session_id": "w", "model": "auto"},
+            "reviewer": {"session_id": "r", "model": "auto"},
+        },
+        "active_review": {"scope": "plan", "target": "plan", "summary": "s"},
+        "started_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    import json
+
+    state_path(repo).parent.mkdir(parents=True, exist_ok=True)
+    state_path(repo).write_text(json.dumps(v1), encoding="utf-8")
+    loaded = load_lifecycle_state(repo)
+    assert loaded is not None
+    plan = next(t for t in loaded.active_review.targets if t.id == "plan")
+    assert plan.fingerprint == digest
 
 
 def test_migrate_v1_execution_plan_review_uses_reviewer_slot():

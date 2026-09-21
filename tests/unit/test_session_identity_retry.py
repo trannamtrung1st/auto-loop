@@ -8,8 +8,10 @@ from pathlib import Path
 import yaml
 
 from auto_loop.exits import ExitCode
+from auto_loop.providers.argv_session import resume_session_id_from_argv
 from auto_loop.providers.fake_cursor import FakeBehavior, FakeCursorEngine
 from auto_loop.providers.scripted import ScriptedProvider
+from auto_loop.providers.supervision import provider_attempt_from_process_output
 from auto_loop.runtime import load_lifecycle_state
 
 from tests.integration.scenario_harness import make_repo, run_lifecycle, run_opts
@@ -22,13 +24,17 @@ class FlakyScriptedProvider(ScriptedProvider):
     engine: FakeCursorEngine = field(default_factory=FakeCursorEngine)
     _fail_next: bool = True
 
-    def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
+    def invoke(self, argv: list[str]):
         if self._fail_next:
             self._fail_next = False
             self.engine.behavior = FakeBehavior.MISSING_RESULT
             code, lines = self.engine.run(argv)
             self.engine.behavior = FakeBehavior.OK
-            return code, lines
+            return provider_attempt_from_process_output(
+                lines,
+                code,
+                expected_session_id=resume_session_id_from_argv(argv),
+            )
         return super().invoke(argv)
 
 
