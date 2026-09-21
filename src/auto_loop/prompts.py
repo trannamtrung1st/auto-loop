@@ -15,6 +15,7 @@ class TurnContext:
     head_commit: str
     product_clean: bool
     interrupted: bool = False
+    protocol_repair: bool = False
     resource_manifest: str = ""
 
 
@@ -54,6 +55,16 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
                 "Inspect current Git/files first and reconcile partial work before deciding "
                 "the next action.",
                 "Do not assume the interrupted turn completed.",
+                "",
+            ]
+        )
+    if ctx.protocol_repair:
+        lines.extend(
+            [
+                "Your previous turn completed work but did not produce a valid AUTO_LOOP_RESULT.",
+                "Do not redo successful work blindly.",
+                "Inspect current durable state and output the correct result for the work "
+                "currently present.",
                 "",
             ]
         )
@@ -108,7 +119,17 @@ def build_reviewer_prompt(
             "You may inspect related repository state outside the diff where needed.",
             "Do not modify product state.",
             "",
-            "End with one valid AUTO_LOOP_RESULT.",
         ]
     )
+    if ctx.protocol_repair:
+        lines.extend(
+            [
+                "Your previous turn completed work but did not produce a valid AUTO_LOOP_RESULT.",
+                "Do not redo successful work blindly.",
+                "Inspect current durable state and output the correct result for the work "
+                "currently present.",
+                "",
+            ]
+        )
+    lines.append("End with one valid AUTO_LOOP_RESULT.")
     return _append_manifest("\n".join(lines), ctx.resource_manifest)

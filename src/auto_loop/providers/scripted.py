@@ -32,8 +32,12 @@ class ScriptedProvider:
         self.engine.response_text = block
 
     def prepare(self, role: str) -> None:
-        if self.queues[role]:
-            self.engine.response_text = self.queues[role].popleft()
+        if not self.queues[role]:
+            raise RuntimeError(f"No scripted provider response queued for role={role!r}")
+        self.engine.response_text = self.queues[role].popleft()
+
+    def set_invalid_protocol_response(self, role: str) -> None:
+        self.queues[role].append("Thanks for waiting, but I forgot the JSON block.")
 
     def set_worker_plan_request(self) -> None:
         self.set_response(

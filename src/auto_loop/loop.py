@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,8 @@ from auto_loop.lifecycle import (
 from auto_loop.models import ReviewerResult
 from auto_loop.product_state import assert_clean_product_tree, is_product_tree_clean
 from auto_loop.prompts import TurnContext, build_reviewer_prompt, build_worker_prompt
-from auto_loop.protocol import parse_reviewer_result, parse_worker_result
+from auto_loop.protocol import ProtocolParseError, parse_reviewer_result, parse_worker_result
+from auto_loop.stop_control import RunStopController, clear_active_run, persist_stopped_state, register_active_run
 from auto_loop.protection import (
     ProtectionViolationError,
     ReviewMutationError,
@@ -47,6 +49,7 @@ from auto_loop.review_store import next_review_sequence, review_artifact_path
 from auto_loop.reviews import render_review_markdown
 from auto_loop.console_output import RunConsole
 from auto_loop.events import append_event
+from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
 from auto_loop.turn_logs import TurnLogWriter, prune_run_history
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
@@ -100,6 +103,9 @@ class LifecycleRunner:
             else ("verbose" if options.verbose else options.console_level)
         )
         self._console = RunConsole(console_level)
+        self._run_started_mono = time.monotonic()
+        self._stop = RunStopController(repo)
+        self._limit_reason: str | None = None
 
     def _load_or_create_state(self) -> LifecycleState:
         state = load_lifecycle_state(self.repo)
@@ -131,6 +137,61 @@ class LifecycleRunner:
 
     def _clear_inflight(self, state: LifecycleState) -> None:
         state.inflight = None
+
+    def _runtime_exceeded(self) -> bool:
+        limit_seconds = self.options.max_runtime_minutes * 60
+        return (time.monotonic() - self._run_started_mono) >= limit_seconds
+
+    def _mark_limit_reached(self, state: LifecycleState, reason: str) -> None:
+        state.status = LifecycleStatus.LIMIT_REACHED
+        state.inflight = None
+        state.updated_at = utc_now()
+        self._clear_inflight(state)
+        save_lifecycle_state(self.repo, state)
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "lifecycle_limit_reached",
+                "reason": reason,
+                "lifecycle_id": state.lifecycle_id,
+            },
+        )
+        self._limit_reason = reason
+        self._terminal_exit = ExitCode.LIMIT_REACHED
+        self._terminal_message = reason
+
+    def _handle_stop_requested(self, state: LifecycleState) -> bool:
+        if not self._stop.requested:
+            return False
+        persist_stopped_state(self.repo, state)
+        append_event(
+            self.repo,
+            self.config,
+            {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
+        )
+        self._terminal_exit = ExitCode.STOPPED
+        self._terminal_message = "Lifecycle stopped"
+        return True
+
+    def _protocol_repair_or_fail(self, state: LifecycleState, role: str) -> bool:
+        """Return True to retry the same role turn with a repair prompt."""
+        state.consecutive_protocol_failures += 1
+        if state.consecutive_protocol_failures > self.config.limits.protocol_retries:
+            return False
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "protocol_repair",
+                "actor": role,
+                "attempt": state.consecutive_protocol_failures,
+                "lifecycle_id": state.lifecycle_id,
+            },
+        )
+        state.updated_at = utc_now()
+        save_lifecycle_state(self.repo, state)
+        return True
 
     def _context_manifest(self, role: str) -> str:
         document = load_context_file(self.repo / self.config.context_file)
@@ -216,24 +277,39 @@ class LifecycleRunner:
         assert_clean_product_tree(self.repo)
 
     def _worker_turn(self, state: LifecycleState) -> None:
-        first = state.sessions["worker"].session_id is None
-        instruction_stack = compose_role_instructions(
-            self.repo, self.config, "worker", first_invocation=first
-        )
-        ctx = TurnContext(
-            task_path=self.config.task_file,
-            plan_path=self.config.plan_file,
-            latest_review_path=self._latest_review_path(),
-            head_commit=head_commit(self.repo),
-            product_clean=is_product_tree_clean(self.repo),
-            interrupted=self._turn_interrupted(state, "worker"),
-            resource_manifest=self._context_manifest("worker"),
-        )
-        prompt = instruction_stack + "\n\n" + build_worker_prompt(state, ctx) if instruction_stack else build_worker_prompt(state, ctx)
-        protected = capture_protected_baseline(self.repo, self.config)
-        final_text = self._invoke_role("worker", prompt, state)
-        assert_protected_unchanged(self.repo, self.config, protected)
-        result = parse_worker_result(final_text)
+        protocol_repair = False
+        while True:
+            first = state.sessions["worker"].session_id is None
+            instruction_stack = compose_role_instructions(
+                self.repo, self.config, "worker", first_invocation=first
+            )
+            ctx = TurnContext(
+                task_path=self.config.task_file,
+                plan_path=self.config.plan_file,
+                latest_review_path=self._latest_review_path(),
+                head_commit=head_commit(self.repo),
+                product_clean=is_product_tree_clean(self.repo),
+                interrupted=self._turn_interrupted(state, "worker"),
+                protocol_repair=protocol_repair,
+                resource_manifest=self._context_manifest("worker"),
+            )
+            prompt = (
+                instruction_stack + "\n\n" + build_worker_prompt(state, ctx)
+                if instruction_stack
+                else build_worker_prompt(state, ctx)
+            )
+            protected = capture_protected_baseline(self.repo, self.config)
+            final_text = self._invoke_role("worker", prompt, state)
+            assert_protected_unchanged(self.repo, self.config, protected)
+            try:
+                result = parse_worker_result(final_text)
+            except ProtocolParseError:
+                if self._protocol_repair_or_fail(state, "worker"):
+                    protocol_repair = True
+                    continue
+                raise
+            break
+        state.consecutive_protocol_failures = 0
 
         if result.status == "blocked":
             append_event(
@@ -280,6 +356,8 @@ class LifecycleRunner:
                 self._dirty_batch_attempts += 1
                 if self._dirty_batch_attempts > self.config.limits.protocol_retries:
                     raise
+                state.worker_no_progress_streak = 0
+                state.last_worker_progress_key = None
                 state.next_actor = "worker"
                 state.turn += 1
                 state.updated_at = utc_now()
@@ -317,6 +395,13 @@ class LifecycleRunner:
                 worker_summary=result.work_summary,
             )
             state.next_actor = "reviewer"
+        current_head = head_commit(self.repo)
+        progress_key = worker_progress_key(
+            self.repo, self.config, state, result, current_head
+        )
+        if update_worker_no_progress(state, self.config, progress_key):
+            self._mark_limit_reached(state, "worker_no_progress")
+            return
         state.turn += 1
         state.updated_at = utc_now()
         self._clear_inflight(state)
@@ -332,28 +417,39 @@ class LifecycleRunner:
     def _reviewer_turn(self, state: LifecycleState) -> None:
         if state.active_review is None:
             raise GitProtocolError("Reviewer invoked without active review")
-        first = state.sessions["reviewer"].session_id is None
-        instruction_stack = compose_role_instructions(
-            self.repo, self.config, "reviewer", first_invocation=first
-        )
-        ctx = TurnContext(
-            task_path=self.config.task_file,
-            plan_path=self.config.plan_file,
-            latest_review_path=self._latest_review_path(),
-            head_commit=head_commit(self.repo),
-            product_clean=is_product_tree_clean(self.repo),
-            interrupted=self._turn_interrupted(state, "reviewer"),
-            resource_manifest=self._context_manifest("reviewer"),
-        )
-        body = build_reviewer_prompt(state, ctx, state.active_review)
-        prompt = instruction_stack + "\n\n" + body if instruction_stack else body
-        protected = capture_protected_baseline(self.repo, self.config)
-        product_before = capture_product_fingerprint(self.repo)
-        final_text = self._invoke_role("reviewer", prompt, state)
-        assert_protected_unchanged(self.repo, self.config, protected)
-        product_after = capture_product_fingerprint(self.repo)
-        assert_reviewer_product_unchanged(product_before, product_after)
-        result = parse_reviewer_result(final_text)
+        protocol_repair = False
+        while True:
+            first = state.sessions["reviewer"].session_id is None
+            instruction_stack = compose_role_instructions(
+                self.repo, self.config, "reviewer", first_invocation=first
+            )
+            ctx = TurnContext(
+                task_path=self.config.task_file,
+                plan_path=self.config.plan_file,
+                latest_review_path=self._latest_review_path(),
+                head_commit=head_commit(self.repo),
+                product_clean=is_product_tree_clean(self.repo),
+                interrupted=self._turn_interrupted(state, "reviewer"),
+                protocol_repair=protocol_repair,
+                resource_manifest=self._context_manifest("reviewer"),
+            )
+            body = build_reviewer_prompt(state, ctx, state.active_review)
+            prompt = instruction_stack + "\n\n" + body if instruction_stack else body
+            protected = capture_protected_baseline(self.repo, self.config)
+            product_before = capture_product_fingerprint(self.repo)
+            final_text = self._invoke_role("reviewer", prompt, state)
+            assert_protected_unchanged(self.repo, self.config, protected)
+            product_after = capture_product_fingerprint(self.repo)
+            assert_reviewer_product_unchanged(product_before, product_after)
+            try:
+                result = parse_reviewer_result(final_text)
+            except ProtocolParseError:
+                if self._protocol_repair_or_fail(state, "reviewer"):
+                    protocol_repair = True
+                    continue
+                raise
+            break
+        state.consecutive_protocol_failures = 0
 
         sequence = next_review_sequence(self.repo, self.config)
         slug = f"{result.scope}-{result.target}"
@@ -475,7 +571,16 @@ class LifecycleRunner:
         save_lifecycle_state(self.repo, state)
 
     def run(self) -> RunOutcome:
+        self._stop.install()
+        try:
+            return self._run_loop()
+        finally:
+            self._stop.restore()
+            clear_active_run(self.repo)
+
+    def _run_loop(self) -> RunOutcome:
         state = self._load_or_create_state()
+        register_active_run(self.repo, state.lifecycle_id)
         prune_run_history(self.repo, self.config, state.lifecycle_id)
         append_event(
             self.repo,
@@ -500,6 +605,12 @@ class LifecycleRunner:
         try:
             while turns < self.options.max_turns:
                 if self._terminal_exit is not None:
+                    break
+                state = load_lifecycle_state(self.repo) or state
+                if self._handle_stop_requested(state):
+                    break
+                if self._runtime_exceeded():
+                    self._mark_limit_reached(state, "max_runtime_minutes")
                     break
                 turns += 1
                 assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
@@ -527,13 +638,25 @@ class LifecycleRunner:
                 state=load_lifecycle_state(self.repo),
                 message=str(exc),
             )
+        except ProtocolParseError as exc:
+            return RunOutcome(
+                exit_code=ExitCode.PROTOCOL_ERROR,
+                state=load_lifecycle_state(self.repo),
+                message=str(exc),
+            )
         if self._terminal_exit is not None:
             return RunOutcome(
                 exit_code=self._terminal_exit,
                 state=state,
                 message=self._terminal_message,
             )
-        return RunOutcome(exit_code=ExitCode.LIMIT_REACHED, state=state)
+        if state.status != LifecycleStatus.LIMIT_REACHED:
+            self._mark_limit_reached(state, "max_turns")
+        return RunOutcome(
+            exit_code=ExitCode.LIMIT_REACHED,
+            state=state,
+            message=self._limit_reason or "max_turns",
+        )
 
 
 def _check_idempotent_completion(repo: Path, config: AutoLoopConfig) -> RunOutcome | None:

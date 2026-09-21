@@ -59,6 +59,8 @@ class LifecycleState(BaseModel):
     inflight: InflightMarker | None = None
     consecutive_provider_failures: int = 0
     consecutive_protocol_failures: int = 0
+    worker_no_progress_streak: int = 0
+    last_worker_progress_key: str | None = None
     started_at: datetime
     updated_at: datetime
 

@@ -19,6 +19,7 @@ from auto_loop.run_options import build_run_options
 from auto_loop.logs_view import render_logs
 from auto_loop.run_prerequisites import RunPreconditionError
 from auto_loop.status_report import build_status_report
+from auto_loop.stop_control import StopError, request_remote_stop
 from auto_loop.init_cmd import InitError, run_init
 from auto_loop.paths import resolve_repository_path
 from auto_loop.resources_install import ResourcesInstallError, run_resources_install
@@ -183,9 +184,14 @@ def stop_cmd(
     path: PathArgument = None,
 ) -> None:
     """Gracefully stop the active lifecycle."""
-    _resolve_path(path)
-    typer.echo("stop: not yet implemented", err=True)
-    raise typer.Exit(code=int(ExitCode.INTERNAL_ERROR))
+    repo = _resolve_path(path)
+    try:
+        message = request_remote_stop(repo)
+    except StopError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(exc.exit_code)) from exc
+    typer.echo(message)
+    raise typer.Exit(code=int(ExitCode.STOPPED))
 
 
 @resources_app.command("install")
