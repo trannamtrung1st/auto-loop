@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from auto_loop.config import (
@@ -67,26 +69,85 @@ def has_lifecycle_state(repo: Path) -> bool:
     return load_lifecycle_state(repo) is not None
 
 
+def has_terminal_record(repo: Path) -> bool:
+    from auto_loop.terminal_records import load_blocked_record, load_completion_record
+
+    return load_completion_record(repo) is not None or load_blocked_record(repo) is not None
+
+
+def has_active_lifecycle(repo: Path) -> bool:
+    """True when a lifecycle exists and has not reached a terminal completion/blocked record."""
+    if not has_lifecycle_state(repo):
+        return False
+    return not has_terminal_record(repo)
+
+
 def _user_supplied_new_goal(inputs: RunInputs) -> bool:
     if inputs.goal_text and inputs.goal_text.strip():
         return True
     return inputs.goal_file is not None
 
 
-def clear_prior_run_for_new_goal(repo: Path) -> None:
-    """Remove terminal records and lifecycle state so a new goal can start fresh."""
+def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
+    """Archive run-scoped artifacts and remove terminal/lifecycle state for a fresh goal."""
     from auto_loop.config import resolved_config_snapshot_path
     from auto_loop.runtime import state_path
     from auto_loop.terminal_records import blocked_path, completion_path
 
+    label = _prior_run_archive_label(repo)
+    root = auto_loop_root(repo)
+    archive_dir = root / "runtime" / "archives" / label
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    reviews = repo / config.reviews_dir
+    if reviews.is_dir():
+        review_files = [path for path in reviews.iterdir() if path.is_file()]
+        if review_files:
+            archived_reviews = archive_dir / "reviews"
+            archived_reviews.mkdir(parents=True, exist_ok=True)
+            for path in review_files:
+                shutil.move(str(path), str(archived_reviews / path.name))
+
+    for rel in (config.plan_file, config.context_file):
+        path = repo / rel
+        if path.is_file():
+            shutil.copy2(path, archive_dir / Path(rel).name)
+            path.unlink()
+
+    events = root / "runtime" / "events.jsonl"
+    if events.is_file():
+        shutil.copy2(events, archive_dir / "events.jsonl")
+        events.unlink()
+
+    state_file = state_path(repo)
+    if state_file.is_file():
+        shutil.copy2(state_file, archive_dir / "state.json")
+        state_file.unlink()
+
     for path in (
-        state_path(repo),
         completion_path(repo),
         blocked_path(repo),
         resolved_config_snapshot_path(repo),
     ):
         if path.is_file():
+            shutil.copy2(path, archive_dir / path.name)
             path.unlink()
+
+
+def _prior_run_archive_label(repo: Path) -> str:
+    from auto_loop.runtime import load_lifecycle_state
+    from auto_loop.terminal_records import load_blocked_record, load_completion_record
+
+    state = load_lifecycle_state(repo)
+    if state is not None:
+        return state.lifecycle_id
+    record = load_completion_record(repo)
+    if record is not None:
+        return record.lifecycle_id
+    blocked = load_blocked_record(repo)
+    if blocked is not None:
+        return blocked.lifecycle_id
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def resolve_optional_file(repo: Path, given: Path) -> Path:
@@ -157,21 +218,21 @@ def prepare_repo_for_run(repo: Path, inputs: RunInputs | None = None) -> Prepare
             f"Create one with:\n  auto-loop init\n\nExpected: {USER_CONFIG_FILENAME}"
         )
 
-    from auto_loop.terminal_records import load_completion_record
-
     has_lifecycle = has_lifecycle_state(repo)
-    completed = load_completion_record(repo) is not None
     if inputs.resume_only and not has_lifecycle:
         raise RunInputError(NO_RESUME_MESSAGE)
 
+    fresh_run_workspace = False
     if _user_supplied_new_goal(inputs) and not inputs.resume_only:
-        if has_lifecycle and not completed:
+        if has_active_lifecycle(repo):
             raise RunInputError(EXISTING_RUN_MESSAGE)
-        if completed or has_lifecycle:
-            clear_prior_run_for_new_goal(repo)
+        if has_terminal_record(repo) or has_lifecycle:
+            config_for_reset = load_config_from_repo(repo)
+            clear_prior_run_for_new_goal(repo, config=config_for_reset)
             has_lifecycle = False
+            fresh_run_workspace = True
 
-    materialize_control_workspace(repo, minimal=inputs.minimal)
+    materialize_control_workspace(repo, minimal=inputs.minimal, force=fresh_run_workspace)
 
     if has_lifecycle:
         config = load_resolved_config_from_repo(repo)

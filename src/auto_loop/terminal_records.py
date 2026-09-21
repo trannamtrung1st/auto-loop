@@ -93,6 +93,17 @@ def save_blocked_record(repo: Path, record: BlockedRecord) -> Path:
     return path
 
 
+def load_blocked_record(repo: Path) -> BlockedRecord | None:
+    path = blocked_path(repo)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return BlockedRecord.model_validate(data)
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+        raise TerminalRecordError(f"Invalid blocked record at {path}: {exc}") from exc
+
+
 def task_and_plan_hashes(repo: Path, config: AutoLoopConfig) -> tuple[str, str | None]:
     task_path = repo / config.task_file
     if not task_path.is_file():

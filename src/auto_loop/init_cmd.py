@@ -265,6 +265,10 @@ def _render_init_message(result: InitResult) -> str:
 def run_init(repo: Path, *, force: bool = False, minimal: bool = False) -> InitResult:
     """Create user-owned auto-loop.yaml and ignore rules. Do not create a goal."""
     from auto_loop.migrate_cmd import migrate_legacy_layout
+    from auto_loop.run_inputs import has_active_lifecycle
+
+    if force and auto_loop_root(repo).is_dir() and has_active_lifecycle(repo):
+        raise InitError(INIT_FORCE_BLOCKED_MESSAGE)
 
     result = InitResult()
     migrated = migrate_legacy_layout(repo, force=force)
@@ -287,11 +291,6 @@ def run_init(repo: Path, *, force: bool = False, minimal: bool = False) -> InitR
             )
 
     if force and auto_loop_root(repo).is_dir():
-        from auto_loop.runtime import load_lifecycle_state
-        from auto_loop.terminal_records import load_completion_record
-
-        if load_lifecycle_state(repo) is not None and load_completion_record(repo) is None:
-            raise InitError(INIT_FORCE_BLOCKED_MESSAGE)
         materialized = materialize_control_workspace(repo, force=True, minimal=minimal)
         result.created.extend(materialized.created)
         result.skipped.extend(materialized.skipped)

@@ -263,8 +263,52 @@ def test_new_goal_after_completed_run_starts_fresh(tmp_path: Path):
     completion_path(repo).write_text(record.model_dump_json(), encoding="utf-8")
     assert load_completion_record(repo) is not None
 
+    (repo / ".auto-loop" / "plan.md").write_text("# Old plan from prior run\n", encoding="utf-8")
+    (repo / ".auto-loop" / "context.yaml").write_text("version: 1\nshared:\n  resources: [stale]\n", encoding="utf-8")
+    (repo / ".auto-loop" / "reviews").mkdir(parents=True, exist_ok=True)
+    (repo / ".auto-loop" / "reviews" / "0001-old.md").write_text("# old review\n", encoding="utf-8")
+
     prepared = prepare_repo_for_run(repo, RunInputs(goal_text="Second goal"))
     assert prepared.is_resume is False
     assert "Second goal" in prepared.goal_text
     assert load_completion_record(repo) is None
     assert load_lifecycle_state(repo) is None
+    assert "Old plan from prior run" not in (repo / ".auto-loop" / "plan.md").read_text(encoding="utf-8")
+    assert "stale" not in (repo / ".auto-loop" / "context.yaml").read_text(encoding="utf-8")
+    assert not list((repo / ".auto-loop" / "reviews").glob("*.md"))
+    archived = list((repo / ".auto-loop" / "runtime" / "archives").rglob("0001-old.md"))
+    assert archived
+
+
+def test_new_goal_after_blocked_run_starts_fresh(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    run_init(repo)
+    prepare_repo_for_run(repo, RunInputs(goal_text="Blocked goal"))
+    from datetime import datetime, timezone
+
+    from auto_loop.git import head_commit
+    from auto_loop.terminal_records import BlockedRecord, blocked_path, load_blocked_record
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    blocked_path(repo).parent.mkdir(parents=True, exist_ok=True)
+    blocked_path(repo).write_text(
+        BlockedRecord(
+            blocked_at=datetime.now(timezone.utc),
+            lifecycle_id=state.lifecycle_id,
+            turn=1,
+            worker_session_id="w1",
+            reviewer_session_id="r1",
+            summary="external blocker",
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    assert load_blocked_record(repo) is not None
+    (repo / ".auto-loop" / "reviews").mkdir(parents=True, exist_ok=True)
+    (repo / ".auto-loop" / "reviews" / "0099-blocked.md").write_text("# blocked review\n", encoding="utf-8")
+
+    prepared = prepare_repo_for_run(repo, RunInputs(goal_text="Replacement goal"))
+    assert prepared.is_resume is False
+    assert "Replacement goal" in prepared.goal_text
+    assert load_blocked_record(repo) is None
+    assert not list((repo / ".auto-loop" / "reviews").glob("*.md"))

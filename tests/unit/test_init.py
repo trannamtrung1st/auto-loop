@@ -85,8 +85,18 @@ def test_force_refuses_while_resumable_run_exists(tmp_path: Path):
     from auto_loop.runtime import save_lifecycle_state
 
     save_lifecycle_state(repo, create_lifecycle(head_commit(repo)))
+
+    def snapshot_bytes() -> dict[Path, bytes]:
+        return {
+            path.relative_to(repo): path.read_bytes()
+            for path in sorted(repo.rglob("*"))
+            if path.is_file()
+        }
+
+    before = snapshot_bytes()
     with pytest.raises(InitError, match="in progress"):
         run_init(repo, force=True)
+    assert snapshot_bytes() == before
 
 
 def test_packaged_worker_reviewer_contract_clauses():

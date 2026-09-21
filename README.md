@@ -156,6 +156,7 @@ Use `auto-loop status` and `auto-loop logs` for operator-friendly views.
 
 - `auto-loop stop` marks a running lifecycle **STOPPED** when a controller is active.
 - `auto-loop resume` (or `auto-loop run` with no new goal) continues from durable state (same session ids, reconciled inflight). Changing `goal.md` does not replace an in-progress run.
+- After a **terminal** run (`completion.json` or `blocked.json`), supplying a **new goal** archives the prior run’s plan, context, reviews, and runtime notes under `.auto-loop/runtime/archives/<lifecycle-id>/`, then starts a fresh workspace. Active (non-terminal) runs must be resumed, not replaced.
 - Defaults: `limits.max_turns`, `limits.max_runtime_minutes`, `limits.max_consecutive_worker_no_progress`—tune in `auto-loop.yaml` or `run` flags.
 
 ## Configuration reference (high level)
