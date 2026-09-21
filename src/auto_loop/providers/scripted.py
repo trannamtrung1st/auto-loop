@@ -64,6 +64,73 @@ class ScriptedProvider:
             },
         )
 
+    def set_worker_final_request(self, head: str | None = None) -> None:
+        review: dict = {
+            "scope": "final",
+            "target": "whole-task",
+            "summary": "requesting whole-task acceptance",
+        }
+        if head:
+            review["head_commit"] = head
+        self.set_response(
+            "worker",
+            {
+                "schema_version": 1,
+                "actor": "worker",
+                "status": "review_requested",
+                "review": review,
+                "work_summary": "ready for final review",
+                "verification": [],
+                "notes": [],
+            },
+        )
+
+    def set_worker_blocked(self, summary: str = "blocked on external dependency") -> None:
+        self.set_response(
+            "worker",
+            {
+                "schema_version": 1,
+                "actor": "worker",
+                "status": "blocked",
+                "review": None,
+                "work_summary": summary,
+                "verification": [],
+                "notes": [],
+            },
+        )
+
+    def set_reviewer_complete(self, head: str) -> None:
+        self.set_response(
+            "reviewer",
+            {
+                "schema_version": 1,
+                "actor": "reviewer",
+                "verdict": "complete",
+                "scope": "final",
+                "target": "whole-task",
+                "reviewed_head_commit": head,
+                "whole_task_reviewed": True,
+                "summary": "whole task satisfied",
+                "findings": [],
+                "verification": [],
+            },
+        )
+
+    def set_reviewer_blocked(self, summary: str = "external intervention required") -> None:
+        self.set_response(
+            "reviewer",
+            {
+                "schema_version": 1,
+                "actor": "reviewer",
+                "verdict": "blocked",
+                "scope": "batch",
+                "target": "blocked",
+                "summary": summary,
+                "findings": [],
+                "verification": [],
+            },
+        )
+
     def set_reviewer_revise(self, scope: str, target: str, finding_id: str = "f-1") -> None:
         self.set_response(
             "reviewer",

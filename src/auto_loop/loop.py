@@ -4,18 +4,34 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
 from auto_loop.config import AutoLoopConfig
 from auto_loop.context_manifest import load_context_file, render_resource_manifest, validate_context
 from auto_loop.exits import ExitCode
-from auto_loop.git import GitProtocolError, assert_approved_baseline_ancestry, head_commit, normalize_batch_range
+from auto_loop.git import (
+    GitProtocolError,
+    assert_approved_baseline_ancestry,
+    head_commit,
+    normalize_batch_range,
+    resolve_commit,
+)
 from auto_loop.instructions import compose_role_instructions
-from auto_loop.lifecycle import ActiveReview, LifecycleState, create_lifecycle, utc_now
+from auto_loop.lifecycle import ActiveReview, LifecycleState, LifecycleStatus, create_lifecycle, utc_now
+from auto_loop.models import ReviewerResult
 from auto_loop.product_state import assert_clean_product_tree, is_product_tree_clean
 from auto_loop.prompts import TurnContext, build_reviewer_prompt, build_worker_prompt
 from auto_loop.protocol import parse_reviewer_result, parse_worker_result
+from auto_loop.protection import (
+    ProtectionViolationError,
+    ReviewMutationError,
+    assert_protected_unchanged,
+    assert_reviewer_product_unchanged,
+    capture_product_fingerprint,
+    capture_protected_baseline,
+)
 from auto_loop.providers.base import AgentRequest
 from auto_loop.providers.cursor import build_cursor_command, parse_cursor_stream
 from auto_loop.review_store import next_review_sequence, review_artifact_path
@@ -23,6 +39,16 @@ from auto_loop.reviews import render_review_markdown
 from auto_loop.run_options import RunOptions
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
+from auto_loop.terminal_records import (
+    BlockedRecord,
+    CompletionRecord,
+    IDEMPOTENT_COMPLETE_MESSAGE,
+    assert_completion_inputs_unchanged,
+    load_completion_record,
+    save_blocked_record,
+    save_completion_record,
+    task_and_plan_hashes,
+)
 
 
 class ProviderInvoker(Protocol):
@@ -35,6 +61,7 @@ class ProviderInvoker(Protocol):
 class RunOutcome:
     exit_code: ExitCode
     state: LifecycleState | None = None
+    message: str | None = None
 
 
 class LifecycleRunner:
@@ -50,6 +77,8 @@ class LifecycleRunner:
         self.options = options
         self.invoker = invoker
         self._dirty_batch_attempts = 0
+        self._terminal_exit: ExitCode | None = None
+        self._terminal_message: str | None = None
 
     def _load_or_create_state(self) -> LifecycleState:
         state = load_lifecycle_state(self.repo)
@@ -103,6 +132,20 @@ class LifecycleRunner:
             session.session_id = parsed.session_id
         return parsed.final_text
 
+    def _assert_final_complete_valid(
+        self,
+        state: LifecycleState,
+        result: ReviewerResult,
+    ) -> None:
+        current_head = head_commit(self.repo)
+        if current_head != state.last_approved_commit:
+            raise GitProtocolError(
+                "COMPLETE requires HEAD to equal last_approved_commit"
+            )
+        if result.reviewed_head_commit and resolve_commit(self.repo, result.reviewed_head_commit) != current_head:
+            raise GitProtocolError("COMPLETE reviewed_head_commit does not match current HEAD")
+        assert_clean_product_tree(self.repo)
+
     def _worker_turn(self, state: LifecycleState) -> None:
         first = state.sessions["worker"].session_id is None
         instruction_stack = compose_role_instructions(
@@ -117,8 +160,22 @@ class LifecycleRunner:
             resource_manifest=self._context_manifest("worker"),
         )
         prompt = instruction_stack + "\n\n" + build_worker_prompt(state, ctx) if instruction_stack else build_worker_prompt(state, ctx)
+        protected = capture_protected_baseline(self.repo, self.config)
         final_text = self._invoke_role("worker", prompt, state)
+        assert_protected_unchanged(self.repo, self.config, protected)
         result = parse_worker_result(final_text)
+
+        if result.status == "blocked":
+            state.active_review = ActiveReview(
+                scope="batch",
+                target="blocked",
+                summary=result.work_summary,
+            )
+            state.next_actor = "reviewer"
+            state.turn += 1
+            state.updated_at = utc_now()
+            save_lifecycle_state(self.repo, state)
+            return
 
         if not state.plan_approved:
             if result.review is None or result.review.scope != "plan":
@@ -126,6 +183,18 @@ class LifecycleRunner:
             if head_commit(self.repo) != state.initial_base_commit:
                 raise GitProtocolError("Product HEAD must remain at initial baseline before plan PASS")
             assert_clean_product_tree(self.repo)
+
+        elif result.review and result.review.scope == "final":
+            if not state.plan_approved:
+                raise GitProtocolError("Final review requires an approved plan")
+            assert_clean_product_tree(self.repo)
+            current_head = head_commit(self.repo)
+            if current_head != state.last_approved_commit:
+                state.next_actor = "worker"
+                state.turn += 1
+                state.updated_at = utc_now()
+                save_lifecycle_state(self.repo, state)
+                return
 
         elif result.review and result.review.scope == "batch":
             try:
@@ -162,6 +231,13 @@ class LifecycleRunner:
         state.updated_at = utc_now()
         save_lifecycle_state(self.repo, state)
 
+    def _review_kind(self, review: ActiveReview, result: ReviewerResult) -> str:
+        if result.scope == "final" or review.scope == "final":
+            return "final"
+        if review.target == "blocked":
+            return "batch"
+        return "plan" if result.scope == "plan" else "batch"
+
     def _reviewer_turn(self, state: LifecycleState) -> None:
         if state.active_review is None:
             raise GitProtocolError("Reviewer invoked without active review")
@@ -179,16 +255,22 @@ class LifecycleRunner:
         )
         body = build_reviewer_prompt(state, ctx, state.active_review)
         prompt = instruction_stack + "\n\n" + body if instruction_stack else body
+        protected = capture_protected_baseline(self.repo, self.config)
+        product_before = capture_product_fingerprint(self.repo)
         final_text = self._invoke_role("reviewer", prompt, state)
+        assert_protected_unchanged(self.repo, self.config, protected)
+        product_after = capture_product_fingerprint(self.repo)
+        assert_reviewer_product_unchanged(product_before, product_after)
         result = parse_reviewer_result(final_text)
 
         sequence = next_review_sequence(self.repo, self.config)
         slug = f"{result.scope}-{result.target}"
         path = review_artifact_path(self.repo, self.config, sequence=sequence, slug=slug)
+        kind = self._review_kind(state.active_review, result)
         markdown = render_review_markdown(
             sequence=sequence,
             title=slug,
-            kind="plan" if result.scope == "plan" else "batch",
+            kind=kind,
             worker=None,
             reviewer=result,
             worker_session_id=state.sessions["worker"].session_id,
@@ -196,12 +278,60 @@ class LifecycleRunner:
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(markdown, encoding="utf-8")
+        review_rel = str(path.relative_to(self.repo))
+
+        if result.verdict == "blocked":
+            save_blocked_record(
+                self.repo,
+                BlockedRecord(
+                    blocked_at=datetime.now(timezone.utc),
+                    lifecycle_id=state.lifecycle_id,
+                    turn=state.turn,
+                    worker_session_id=state.sessions["worker"].session_id,
+                    reviewer_session_id=state.sessions["reviewer"].session_id,
+                    summary=result.summary,
+                    review_file=review_rel,
+                ),
+            )
+            state.status = LifecycleStatus.BLOCKED
+            state.active_review = None
+            state.updated_at = utc_now()
+            save_lifecycle_state(self.repo, state)
+            self._terminal_exit = ExitCode.BLOCKED
+            return
 
         if result.verdict == "pass" and result.scope == "plan":
             state.plan_approved = True
         if result.verdict == "pass" and result.scope == "batch":
             state.last_approved_commit = head_commit(self.repo)
             self._dirty_batch_attempts = 0
+
+        if result.verdict == "complete" and result.scope == "final":
+            self._assert_final_complete_valid(state, result)
+            task_hash, plan_hash = task_and_plan_hashes(self.repo, self.config)
+            final_head = head_commit(self.repo)
+            save_completion_record(
+                self.repo,
+                CompletionRecord(
+                    completed_at=datetime.now(timezone.utc),
+                    lifecycle_id=state.lifecycle_id,
+                    turn=state.turn,
+                    worker_session_id=state.sessions["worker"].session_id,
+                    reviewer_session_id=state.sessions["reviewer"].session_id,
+                    initial_base_commit=state.initial_base_commit,
+                    final_commit=final_head,
+                    last_approved_commit=state.last_approved_commit,
+                    final_review_file=review_rel,
+                    task_sha256=task_hash,
+                    plan_sha256=plan_hash,
+                ),
+            )
+            state.status = LifecycleStatus.COMPLETED
+            state.active_review = None
+            state.updated_at = utc_now()
+            save_lifecycle_state(self.repo, state)
+            self._terminal_exit = ExitCode.COMPLETE
+            return
 
         state.active_review = None
         state.next_actor = "worker"
@@ -214,6 +344,8 @@ class LifecycleRunner:
         turns = 0
         try:
             while turns < self.options.max_turns:
+                if self._terminal_exit is not None:
+                    break
                 turns += 1
                 assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
                 if state.next_actor == "worker":
@@ -221,12 +353,45 @@ class LifecycleRunner:
                 else:
                     self._reviewer_turn(state)
                 state = load_lifecycle_state(self.repo) or state
+                if self._terminal_exit is not None:
+                    break
         except GitProtocolError:
             return RunOutcome(
                 exit_code=ExitCode.GIT_PROTOCOL_ERROR,
                 state=load_lifecycle_state(self.repo),
             )
+        except ProtectionViolationError as exc:
+            return RunOutcome(
+                exit_code=exc.exit_code,
+                state=load_lifecycle_state(self.repo),
+                message=str(exc),
+            )
+        except ReviewMutationError as exc:
+            return RunOutcome(
+                exit_code=exc.exit_code,
+                state=load_lifecycle_state(self.repo),
+                message=str(exc),
+            )
+        if self._terminal_exit is not None:
+            return RunOutcome(
+                exit_code=self._terminal_exit,
+                state=state,
+                message=self._terminal_message,
+            )
         return RunOutcome(exit_code=ExitCode.LIMIT_REACHED, state=state)
+
+
+def _check_idempotent_completion(repo: Path, config: AutoLoopConfig) -> RunOutcome | None:
+    record = load_completion_record(repo)
+    if record is None:
+        return None
+    assert_completion_inputs_unchanged(repo, config, record)
+    state = load_lifecycle_state(repo)
+    return RunOutcome(
+        exit_code=ExitCode.COMPLETE,
+        state=state,
+        message=IDEMPOTENT_COMPLETE_MESSAGE,
+    )
 
 
 def run_lifecycle(
@@ -235,5 +400,8 @@ def run_lifecycle(
     invoker: ProviderInvoker,
 ) -> RunOutcome:
     config = ensure_run_prerequisites(repo)
+    idempotent = _check_idempotent_completion(repo, config)
+    if idempotent is not None:
+        return idempotent
     runner = LifecycleRunner(repo, config, options, invoker)
     return runner.run()

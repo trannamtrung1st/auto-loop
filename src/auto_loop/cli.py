@@ -126,7 +126,9 @@ def run_cmd(
     except GitProtocolError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(ExitCode.GIT_PROTOCOL_ERROR)) from exc
-    if not quiet:
+    if outcome.message:
+        typer.echo(outcome.message)
+    elif not quiet:
         typer.echo(f"Lifecycle finished with exit code {int(outcome.exit_code)}")
     raise typer.Exit(code=int(outcome.exit_code))
 
