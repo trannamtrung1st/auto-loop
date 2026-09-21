@@ -15,3 +15,24 @@ models:
   planner: auto
   worker: auto
   reviewer: auto
+
+run:
+  max_turns: 100
+  max_runtime_minutes: 480
+  agent_timeout_seconds: 3600
+  agent_idle_timeout_seconds: 300
+  provider_retries: 2
+  protocol_retries: 1
+  max_consecutive_worker_no_progress: 3
+
+context:
+  version: 1
+  shared:
+    resources:
+      - path: README.md
+        purpose: Sample overview for all roles
+
+logging:
+  console: normal
+  retain_raw_streams: true
+  max_run_history: 20

@@ -31,32 +31,11 @@ def _read_template(relative: str) -> str:
     return package.joinpath(relative).read_text(encoding="utf-8")
 
 
-def _starter_manifest_text(*, workspace: str, task_source: str, artifacts_root: str) -> str:
-    return (
-        "# Auto Loop run manifest (version 2).\n"
-        "# Pass this file to the CLI: auto-loop run PATH/TO/THIS.yaml\n"
-        "#\n"
-        "# workspace is resolved relative to this file's directory.\n"
-        "# All other paths are resolved relative to workspace.\n"
-        "\n"
-        "version: 2\n"
-        f"workspace: {workspace}\n"
-        "\n"
-        "task:\n"
-        f"  source: {task_source}\n"
-        "\n"
-        "artifacts:\n"
-        f"  root: {artifacts_root}\n"
-        "\n"
-        "models:\n"
-        "  planner: auto\n"
-        "  worker: auto\n"
-        "  reviewer: auto\n"
-        "\n"
-        "run:\n"
-        "  max_turns: 100\n"
-        "  max_runtime_minutes: 480\n"
-    )
+def _render_template(relative: str, **placeholders: str) -> str:
+    text = _read_template(relative)
+    for key, value in placeholders.items():
+        text = text.replace(f"{{{{{key}}}}}", value)
+    return text
 
 
 def _workspace_rel_from_yaml(yaml_path: Path) -> str:
@@ -72,7 +51,17 @@ def _workspace_rel_from_yaml(yaml_path: Path) -> str:
         return posix_rel(os.path.relpath(cwd, yaml_dir))
 
 
-def run_init(target: Path, *, force: bool = False) -> InitResult:
+def _default_init_paths(path: Path) -> tuple[str, str, str]:
+    workspace_rel = _workspace_rel_from_yaml(path)
+    workspace = path.parent.resolve() if workspace_rel == "." else (path.parent / workspace_rel).resolve()
+    proposal = path.parent / "proposal.md"
+    task_rel = workspace_relative(workspace, proposal) or "proposal.md"
+    artifact_dir = path.parent / "auto-loop"
+    artifact_rel = workspace_relative(workspace, artifact_dir) or ".ai/auto-loop"
+    return workspace_rel, task_rel, artifact_rel
+
+
+def run_init(target: Path, *, force: bool = False, full: bool = False) -> InitResult:
     """Create a starter v2 run YAML at `target`. Does not create runtime state or a task."""
     path = resolve_cli_path(target)
     if path.exists() and path.is_dir():
@@ -86,19 +75,12 @@ def run_init(target: Path, *, force: bool = False) -> InitResult:
         )
         return result
 
-    workspace_rel = _workspace_rel_from_yaml(path)
-    workspace = (path.parent / workspace_rel).resolve() if workspace_rel != "." else path.parent.resolve()
-    if workspace_rel == ".":
-        workspace = path.parent.resolve()
-
-    proposal = path.parent / "proposal.md"
-    task_rel = workspace_relative(workspace, proposal) or "proposal.md"
-    artifact_dir = path.parent / "auto-loop"
-    artifact_rel = workspace_relative(workspace, artifact_dir) or ".ai/auto-loop"
-
+    workspace_rel, task_rel, artifact_rel = _default_init_paths(path)
+    template_name = "run.full.yaml" if full else "run.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        _starter_manifest_text(
+        _render_template(
+            template_name,
             workspace=workspace_rel,
             task_source=task_rel,
             artifacts_root=artifact_rel,
@@ -106,18 +88,34 @@ def run_init(target: Path, *, force: bool = False) -> InitResult:
         encoding="utf-8",
     )
     result.created.append(str(path))
-    result.message = (
-        "Created Auto Loop run config.\n"
-        "\n"
-        f"Config: {path}\n"
-        f"Suggested task file: {proposal}\n"
-        "\n"
-        "Next:\n"
-        f"  auto-loop doctor {path}\n"
-        f"  auto-loop run {path}\n"
-        "\n"
-        "This command did not create a task file or runtime state."
-    )
+    if full:
+        result.message = (
+            "Created full Auto Loop run config reference.\n"
+            "\n"
+            f"Config: {path}\n"
+            f"Suggested task file: {path.parent / 'proposal.md'}\n"
+            "\n"
+            "Next:\n"
+            f"  auto-loop doctor {path}\n"
+            f"  auto-loop run {path}\n"
+            "\n"
+            "This command did not create a task file or runtime state."
+        )
+    else:
+        result.message = (
+            "Created Auto Loop run config.\n"
+            "\n"
+            f"Config: {path}\n"
+            f"Suggested task file: {path.parent / 'proposal.md'}\n"
+            "\n"
+            "Next:\n"
+            f"  auto-loop doctor {path}\n"
+            f"  auto-loop run {path}\n"
+            "\n"
+            "For every supported setting, run: auto-loop init PATH --full\n"
+            "\n"
+            "This command did not create a task file or runtime state."
+        )
     return result
 
 
@@ -157,7 +155,8 @@ def bootstrap_workspace(
         proposal.write_text(text, encoding="utf-8")
     manifest_path = ai_dir / "run.yaml"
     manifest_path.write_text(
-        _starter_manifest_text(
+        _render_template(
+            "run.yaml",
             workspace="..",
             task_source=".ai/proposal.md",
             artifacts_root=".ai/auto-loop",

@@ -89,10 +89,17 @@ def init_cmd(
         bool,
         typer.Option("--force", help="Overwrite the target YAML if it already exists."),
     ] = False,
+    full: Annotated[
+        bool,
+        typer.Option(
+            "--full",
+            help="Write the fully-commented reference manifest with every public setting.",
+        ),
+    ] = False,
 ) -> None:
     """Write a starter v2 run YAML. Does not create runtime state or a task file."""
     try:
-        result = run_init(run_config, force=force)
+        result = run_init(run_config, force=force, full=full)
     except InitError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(exc.exit_code)) from exc

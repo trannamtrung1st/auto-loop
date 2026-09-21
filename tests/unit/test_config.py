@@ -34,6 +34,7 @@ def test_default_config_round_trip():
     assert reloaded.version == cfg.version
     assert reloaded.task.source == cfg.task.source
     assert reloaded.agents["reviewer"].mode == "ask"
+    assert "limits" not in yaml.safe_load(dump_config(cfg))
 
 
 def test_unknown_config_version_rejected():
@@ -55,7 +56,7 @@ def test_invalid_instruction_mode_rejected():
 
 def test_impossible_limits_rejected():
     data = default_config().model_dump(mode="json")
-    data["limits"]["max_turns"] = 0
+    data["run"]["max_turns"] = 0
     with pytest.raises(ConfigurationError):
         parse_config_dict(data)
 

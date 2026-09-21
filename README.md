@@ -83,6 +83,14 @@ auto-loop status .ai/run.yaml
 
 `init` is optional. It only writes a starter run YAML; it does not create a task, runtime state, or generated agent files. Package defaults are enough to start.
 
+For every supported public setting with defaults and comments:
+
+```bash
+auto-loop init .ai/run.yaml --full
+```
+
+See also the packaged reference template (`run.full.yaml` inside the wheel) and the section [Full configuration example](#full-configuration-example) below.
+
 A maintained example is [`samples/kanban-board`](samples/kanban-board):
 
 ```bash
@@ -136,6 +144,21 @@ Operational flags such as `--verbose` / `--quiet` and `logs --follow` remain. Mo
 
 On a new run Auto Loop copies the task source into `<artifacts.root>/task.md` and freezes a resolved snapshot at `<artifacts.root>/runtime/config.resolved.yaml`. Editing the source YAML or proposal does not change an **active** lifecycle. After a **terminal** run, `auto-loop run RUN_CONFIG` again archives the prior artifacts and starts a fresh lifecycle from the current YAML and task file.
 
+## Full configuration example
+
+Auto Loop v2 uses **one public field per setting** in the run YAML:
+
+- **`models.*`** — planner, worker, and reviewer model selection (do not duplicate under `agents.*.model`).
+- **`run.*`** — turns, runtime, timeouts, retries, and no-progress limits (do not use a separate top-level `limits` section).
+
+Generate a fully-commented reference manifest in your repo:
+
+```bash
+auto-loop init .ai/run.yaml --full
+```
+
+The same template ships inside the package as `auto_loop/templates/run.full.yaml`. The concise starter is `run.yaml` (what default `auto-loop init` writes). [`samples/kanban-board/.ai/run.yaml`](samples/kanban-board/.ai/run.yaml) shows a readable real-world manifest without listing every optional section.
+
 ## Stable exit codes
 
 | Code | Name | Meaning |
@@ -169,8 +192,8 @@ On a new run Auto Loop copies the task source into `<artifacts.root>/task.md` an
 - Session mismatch on resume exits with **`SESSION_ERROR`**; the controller does not silently replace ids.
 - Resolved model is stored per session. Changing models in the source YAML applies only to a future lifecycle.
 - **Inflight** markers detect interrupted turns; the next `resume` continues the same session slot with a reconciliation prompt.
-- **Protocol repair** re-prompts the same session when work succeeded but `AUTO_LOOP_RESULT` was missing/invalid, within `limits.protocol_retries`.
-- **Provider retries** (`limits.provider_retries`) retry infrastructure failures without rotating session ids.
+- **Protocol repair** re-prompts the same session when work succeeded but `AUTO_LOOP_RESULT` was missing/invalid, within `run.protocol_retries`.
+- **Provider retries** (`run.provider_retries`) retry infrastructure failures without rotating session ids.
 
 ## Instruction layering
 

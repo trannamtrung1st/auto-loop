@@ -43,7 +43,7 @@ def _result_line(text: str, session_id: str = "sess-1") -> str:
 
 def _runner(repo: Path, provider: SequenceProvider) -> LifecycleRunner:
     config = default_config()
-    config.limits.provider_retries = 2
+    config.run.provider_retries = 2
     return LifecycleRunner(
         repo,
         config,

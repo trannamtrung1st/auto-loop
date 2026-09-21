@@ -22,7 +22,7 @@ def test_subprocess_provider_single_attempt_returns_partial_stream(tmp_path: Pat
     """Inner provider must not retry; controller owns resume."""
     calls: list[list[str]] = []
     config = default_config()
-    config.limits.provider_retries = 5
+    config.run.provider_retries = 5
     provider = SubprocessCursorProvider(config)
     counter = tmp_path / "counter"
     monkeypatch.setenv("AUTO_LOOP_CURSOR_RETRY_COUNTER", str(counter))
@@ -66,7 +66,7 @@ def test_lifecycle_runner_retries_subprocess_with_resume(tmp_path: Path, monkeyp
     monkeypatch.setenv("AUTO_LOOP_CURSOR_RETRY_COUNTER", str(counter))
 
     config = default_config()
-    config.limits.provider_retries = 2
+    config.run.provider_retries = 2
     options = RunOptions(
         "auto",
         "auto",

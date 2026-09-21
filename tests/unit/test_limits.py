@@ -5,7 +5,7 @@ from auto_loop.lifecycle import create_lifecycle
 from auto_loop.limits import update_worker_no_progress
 def test_worker_no_progress_triggers_on_repeated_key():
     config = default_config()
-    config.limits.max_consecutive_worker_no_progress = 3
+    config.run.max_consecutive_worker_no_progress = 3
     state = create_lifecycle("abc123")
     key = "same-key"
     assert not update_worker_no_progress(state, config, key)

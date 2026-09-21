@@ -33,6 +33,7 @@ def test_wheel_contains_templates_and_license(tmp_path: Path):
         names = zf.namelist()
     assert any(n.endswith("auto_loop/templates/task.md") for n in names)
     assert any(n.endswith("auto_loop/templates/run.yaml") for n in names)
+    assert any(n.endswith("auto_loop/templates/run.full.yaml") for n in names)
     assert any(n.endswith("auto_loop/templates/agents/planner.md") for n in names)
     assert any(n.endswith("auto_loop/templates/protocol/shared.md") for n in names)
     assert any(n.endswith("auto_loop/templates/instructions/shared.md") for n in names)

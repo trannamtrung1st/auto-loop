@@ -47,7 +47,7 @@ def test_protocol_repair_exhaustion_returns_protocol_error(tmp_path: Path, monke
     from auto_loop.loop import run_lifecycle as core_run_lifecycle
 
     cfg = frozen_config(repo)
-    cfg = cfg.model_copy(update={"limits": cfg.limits.model_copy(update={"protocol_retries": 0})})
+    cfg = cfg.model_copy(update={"run": cfg.run.model_copy(update={"protocol_retries": 0})})
     source = bootstrapped_manifest(repo)
     monkeypatch.setattr("auto_loop.loop.ensure_run_prerequisites", lambda _repo, _config: None)
     provider = ScriptedProvider()

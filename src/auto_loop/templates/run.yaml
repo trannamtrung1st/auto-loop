@@ -5,13 +5,13 @@
 # All other paths are resolved relative to workspace.
 
 version: 2
-workspace: ..
+workspace: {{workspace}}
 
 task:
-  source: .ai/proposal.md
+  source: {{task_source}}
 
 artifacts:
-  root: .ai/auto-loop
+  root: {{artifacts_root}}
 
 models:
   planner: auto
