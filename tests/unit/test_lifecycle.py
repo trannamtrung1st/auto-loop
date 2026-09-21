@@ -264,8 +264,8 @@ def test_migrate_v1_active_batch_review_while_waiting_on_reviewer():
             "scope": "batch",
             "target": "W01",
             "summary": "batch",
-            "approved_base_commit": "aaa",
-            "current_candidate_head": "bbb",
+            "base_commit": "aaa",
+            "head_commit": "bbb",
         },
         "started_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z",
@@ -276,9 +276,42 @@ def test_migrate_v1_active_batch_review_while_waiting_on_reviewer():
     assert state.active_review is not None
     assert state.active_review.cycle_id.startswith("review-")
     assert state.active_review.scope == "batch"
+    assert state.active_review.session_purpose == "reviewer"
     assert state.active_review.has_git_target
     assert state.active_review.git_base == "aaa"
     assert state.active_review.git_head == "bbb"
+    assert state.active_review.approved_base_commit == "aaa"
+    assert state.active_review.current_candidate_head == "bbb"
+
+
+def test_migrate_v1_execution_plan_review_uses_reviewer_slot():
+    data = {
+        "schema_version": 1,
+        "lifecycle_id": "old",
+        "status": "running",
+        "turn": 6,
+        "next_actor": "reviewer",
+        "plan_approved": True,
+        "initial_base_commit": "aaa",
+        "last_approved_commit": "bbb",
+        "sessions": {
+            "worker": {"session_id": "w1", "model": "auto"},
+            "reviewer": {"session_id": "r1", "model": "auto"},
+        },
+        "active_review": {
+            "scope": "plan",
+            "target": "plan-update",
+            "summary": "worker amended plan",
+        },
+        "started_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    migrated = migrate_lifecycle_data(data)
+    state = LifecycleState.model_validate(migrated)
+    assert state.active_review is not None
+    assert state.active_review.session_purpose == "reviewer"
+    assert state.active_review.scope == "plan"
+    assert any(t.id == "plan" for t in state.active_review.targets)
 
 
 def test_migrate_v1_unmigratable_active_review_routes_to_worker():

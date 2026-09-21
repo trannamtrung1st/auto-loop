@@ -74,4 +74,4 @@ If Cursor is missing, unauthenticated, quota-blocked, or unsupported, the gate s
 python -m pytest -q
 ```
 
-runs the full offline suite (237 passed, 1 skipped live smoke) without live Cursor. Packaging smoke: `python -m pytest tests/unit/test_packaging.py -q`.
+runs the full offline suite (254 passed, 1 skipped live smoke) without live Cursor. Packaging smoke: `python -m pytest tests/unit/test_packaging.py -q`.

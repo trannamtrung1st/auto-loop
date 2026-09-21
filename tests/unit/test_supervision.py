@@ -70,6 +70,18 @@ def test_classify_missing_result():
     assert classified.failure == ProviderFailureKind.MISSING_RESULT
 
 
+def test_classify_session_mismatch_is_not_truncated():
+    from auto_loop.providers.cursor import SessionError
+
+    outcome = supervise_stream(
+        iter_lines_from_list([json.dumps({"type": "system", "session_id": "other"})]),
+        wall_timeout_seconds=10,
+        idle_timeout_seconds=10,
+    )
+    with pytest.raises(SessionError):
+        classify_stream_outcome(outcome, expected_session_id="expected-sess")
+
+
 def test_classify_success():
     outcome = supervise_stream(
         iter_lines_from_list([_result_line()]),

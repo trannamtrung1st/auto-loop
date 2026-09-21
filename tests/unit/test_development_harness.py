@@ -66,11 +66,13 @@ def test_no_packaged_harness_copy():
 
 
 def test_runtime_templates_do_not_embed_repo_development_skills():
+    contributor_skill_names = ("auto-loop-develop", "auto-loop-review")
     templates = _REPO / "src" / "auto_loop" / "templates"
     for path in templates.rglob("*.md"):
         text = path.read_text(encoding="utf-8")
-        assert "auto-loop-develop" not in text
-        assert ".agents/skills/auto-loop-lifecycle" not in text
+        for name in contributor_skill_names:
+            assert name not in text
+        assert ".agents/skills/" not in text
 
 
 def test_readme_points_contributors_to_root_harness():

@@ -18,10 +18,12 @@ python -m pytest -q
 Result (representative run on Python 3.14):
 
 ```text
-237 passed, 1 skipped in ~65s
+254 passed, 1 skipped in ~63s
 ```
 
 The single skip is the opt-in live Cursor smoke test when `AUTO_LOOP_LIVE_CURSOR` is unset (see below).
+
+Session identity on provider retry is covered by `tests/unit/test_session_identity_retry.py` (scripted provider) and `tests/unit/test_subprocess_session_retry.py` (real `run_subprocess_streaming` + controller `--resume`).
 
 ## Packaging / install smoke
 

@@ -281,9 +281,10 @@ def _migrate_v1_active_review(
         migrated["review_cycle_seq"] = seq
         cycle_id = f"review-{seq:04d}"
     round_no = int(raw.get("round") or 1)
-    purpose: SessionSlot = "plan_reviewer" if scope == "plan" else "reviewer"
+    # v1 approved lifecycles only had worker + execution reviewer slots.
+    purpose: SessionSlot = "reviewer"
     targets: list[dict[str, Any]] = []
-    base = raw.get("approved_base_commit")
+    base = raw.get("approved_base_commit") or raw.get("base_commit")
     head = raw.get("current_candidate_head") or raw.get("head_commit")
     if base and head:
         targets.append(

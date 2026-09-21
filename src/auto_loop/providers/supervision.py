@@ -13,7 +13,11 @@ from typing import TypeVar
 
 from auto_loop.exits import ExitCode
 from auto_loop.process import terminate_process_tree
-from auto_loop.providers.cursor import CursorStreamParseResult, parse_cursor_stream
+from auto_loop.providers.cursor import (
+    CursorStreamParseResult,
+    SessionError,
+    parse_cursor_stream,
+)
 
 
 class ProviderFailureKind(StrEnum):
@@ -104,6 +108,8 @@ def classify_stream_outcome(
         return outcome
     try:
         parsed = parse_cursor_stream(outcome.lines, expected_session_id=expected_session_id)
+    except SessionError:
+        raise
     except Exception:
         outcome.failure = ProviderFailureKind.TRUNCATED
         return outcome
