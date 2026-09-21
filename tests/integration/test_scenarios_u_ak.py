@@ -6,11 +6,11 @@ import os
 import subprocess
 from pathlib import Path
 
-from auto_loop.config import load_config_from_repo
+from tests.repo_utils import frozen_config
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.lifecycle import InflightMarker, utc_now
-from auto_loop.loop import run_lifecycle
+from tests.integration.scenario_harness import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import build_run_options
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
@@ -213,7 +213,7 @@ def test_scenario_X_three_model_selections(tmp_path: Path):
 
 def test_scenario_Y_option_role_override_precedence(tmp_path: Path):
     repo = make_repo(tmp_path)
-    loaded = load_config_from_repo(repo)
+    loaded = frozen_config(repo)
     options = build_run_options(
         loaded,
         model="GLOBAL",

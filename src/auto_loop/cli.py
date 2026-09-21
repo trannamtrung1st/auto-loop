@@ -17,7 +17,7 @@ from auto_loop.loop import run_lifecycle
 from auto_loop.providers.subprocess_cursor import SubprocessCursorProvider
 from auto_loop.run_options import build_run_options
 from auto_loop.logs_view import render_logs, stream_follow_logs
-from auto_loop.manifest import load_run_manifest
+from auto_loop.manifest import load_run_manifest, resolve_operational_source
 from auto_loop.run_inputs import RunInputError, goal_summary, prepare_repo_for_run
 from auto_loop.run_prerequisites import RunPreconditionError
 from auto_loop.status_report import build_status_report
@@ -56,6 +56,13 @@ def _exit_config(message: str) -> None:
 def _load_manifest(run_config: Path):
     try:
         return load_run_manifest(run_config)
+    except ConfigurationError as exc:
+        _exit_config(str(exc))
+
+
+def _resolve_operational(run_config: Path):
+    try:
+        return resolve_operational_source(run_config)
     except ConfigurationError as exc:
         _exit_config(str(exc))
 
@@ -133,6 +140,7 @@ def _run_prepared(
             options,
             SubprocessCursorProvider(prepared.config),
             config=prepared.config,
+            artifact_root=prepared.artifact_root,
         )
     except (RunPreconditionError, RunInputError, ConfigurationError) as exc:
         typer.echo(str(exc), err=True)
@@ -177,7 +185,7 @@ def status_cmd(
     run_config: ConfigArgument,
 ) -> None:
     """Summarize the current run for the workspace located by the manifest."""
-    source = _load_manifest(run_config)
+    source = _resolve_operational(run_config)
     try:
         typer.echo(build_status_report(source))
     except Exception as exc:
@@ -200,7 +208,7 @@ def logs_cmd(
     raw: Annotated[bool, typer.Option("--raw")] = False,
 ) -> None:
     """View per-turn provider logs."""
-    source = _load_manifest(run_config)
+    source = _resolve_operational(run_config)
     try:
         if follow:
             stream_follow_logs(
@@ -232,7 +240,7 @@ def stop_cmd(
     run_config: ConfigArgument,
 ) -> None:
     """Gracefully stop the active lifecycle located by the manifest."""
-    source = _load_manifest(run_config)
+    source = _resolve_operational(run_config)
     try:
         message = request_remote_stop(source.workspace, artifact_root=source.artifact_root)
     except StopError as exc:

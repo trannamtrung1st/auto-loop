@@ -9,7 +9,7 @@ from pathlib import Path
 
 from auto_loop.exits import ExitCode
 from auto_loop.lifecycle import InflightMarker, LifecycleStatus, utc_now
-from auto_loop.loop import run_lifecycle
+from tests.integration.scenario_harness import run_lifecycle
 from auto_loop.providers.fake_cursor import FakeBehavior
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state

@@ -6,6 +6,17 @@ import subprocess
 from pathlib import Path
 
 from auto_loop.init_cmd import bootstrap_workspace, run_init
+from auto_loop.manifest import load_run_manifest
+from auto_loop.config import AutoLoopConfig, load_frozen_config
+
+
+def bootstrapped_manifest(repo: Path):
+    return load_run_manifest(repo / ".ai" / "run.yaml")
+
+
+def frozen_config(repo: Path) -> AutoLoopConfig:
+    source = bootstrapped_manifest(repo)
+    return load_frozen_config(source.artifact_root) or source.config
 
 
 def git(repo: Path, *args: str) -> None:

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from auto_loop.context_manifest import ContextDocument
 from auto_loop.exits import ExitCode
-from auto_loop.paths import DEFAULT_ARTIFACTS_ROOT, posix_rel
+from auto_loop.paths import DEFAULT_ARTIFACTS_ROOT, artifact_root_path, posix_rel
 
 CONFIG_VERSION = 2
 
@@ -251,7 +251,8 @@ def resolved_config_snapshot_path(artifact_root: Path) -> Path:
 def write_resolved_config(workspace: Path, config: AutoLoopConfig) -> None:
     """Write the immutable run snapshot used on resume."""
     text = dump_config(config)
-    path = resolved_config_snapshot_path(workspace / config.artifacts_root)
+    root = artifact_root_path(workspace, config.artifacts.root).resolve()
+    path = resolved_config_snapshot_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
@@ -270,22 +271,9 @@ def load_resolved_config_optional(artifact_root: Path) -> AutoLoopConfig | None:
     return load_config(path)
 
 
-def load_config_from_repo(repo: Path) -> AutoLoopConfig:
-    """Load frozen snapshot or bootstrapped `.ai/run.yaml` (tests/helpers only)."""
-    from auto_loop.manifest import load_run_manifest
-    from auto_loop.paths import auto_loop_root
-
-    frozen = load_resolved_config_optional(auto_loop_root(repo))
-    if frozen is not None:
-        return frozen
-    manifest = repo / ".ai" / "run.yaml"
-    if manifest.is_file():
-        return load_run_manifest(manifest).config
-    raise ConfigurationError(
-        "No Auto Loop configuration found.\n\n"
-        "Pass a version 2 run YAML to the CLI, for example:\n"
-        "  auto-loop run .ai/run.yaml"
-    )
+def load_frozen_config(artifact_root: Path) -> AutoLoopConfig | None:
+    """Load the resolved snapshot at an artifact root, if present."""
+    return load_resolved_config_optional(artifact_root)
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any]:

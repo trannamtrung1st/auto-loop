@@ -16,7 +16,7 @@ from auto_loop.context_manifest import validate_context
 from auto_loop.exits import ExitCode
 from auto_loop.init_cmd import materialize_artifact_layout, reset_run_scoped_workspace
 from auto_loop.manifest import RunManifestSource, derive_protection
-from auto_loop.paths import PathContainmentError, assert_contained, posix_rel
+from auto_loop.paths import PathContainmentError, assert_contained, posix_rel, resolved_artifact_root
 
 
 class RunInputError(Exception):
@@ -59,12 +59,34 @@ class PreparedRun:
     artifact_root: Path
 
 
-def _artifact_root_for(repo: Path, config: AutoLoopConfig | None = None) -> Path:
-    if config is not None:
-        return (repo / config.artifacts_root).resolve()
-    from auto_loop.paths import auto_loop_root
+def _artifact_root_for(repo: Path, config: AutoLoopConfig) -> Path:
+    return resolved_artifact_root(repo, config.artifacts.root)
 
-    return auto_loop_root(repo)
+
+def load_matching_blocked_record(repo: Path, artifact_root: Path | None = None):
+    from auto_loop.runtime import load_lifecycle_state
+    from auto_loop.terminal_records import load_blocked_record
+
+    state = load_lifecycle_state(repo, artifact_root)
+    record = load_blocked_record(repo, artifact_root)
+    if record is None or state is None:
+        return None
+    if record.lifecycle_id != state.lifecycle_id:
+        return None
+    return record
+
+
+def load_matching_completion_record(repo: Path, artifact_root: Path | None = None):
+    from auto_loop.runtime import load_lifecycle_state
+    from auto_loop.terminal_records import load_completion_record
+
+    state = load_lifecycle_state(repo, artifact_root)
+    record = load_completion_record(repo, artifact_root)
+    if record is None or state is None:
+        return None
+    if record.lifecycle_id != state.lifecycle_id:
+        return None
+    return record
 
 
 def has_lifecycle_state(repo: Path, artifact_root: Path | None = None) -> bool:
@@ -74,11 +96,9 @@ def has_lifecycle_state(repo: Path, artifact_root: Path | None = None) -> bool:
 
 
 def has_terminal_record(repo: Path, artifact_root: Path | None = None) -> bool:
-    from auto_loop.terminal_records import load_blocked_record, load_completion_record
-
     return (
-        load_completion_record(repo, artifact_root) is not None
-        or load_blocked_record(repo, artifact_root) is not None
+        load_matching_completion_record(repo, artifact_root) is not None
+        or load_matching_blocked_record(repo, artifact_root) is not None
     )
 
 
@@ -122,7 +142,7 @@ def _assert_archive_paths_contained(repo: Path, config: AutoLoopConfig) -> None:
     from auto_loop.runtime import state_path
     from auto_loop.terminal_records import blocked_path, completion_path
 
-    artifact_root = repo / config.artifacts_root
+    artifact_root = _artifact_root_for(repo, config)
     candidates: list[Path] = [
         repo / config.plan_file,
         repo / config.task_file,
@@ -165,7 +185,7 @@ def clear_prior_run_for_new_goal(
     from auto_loop.runtime import state_path
     from auto_loop.terminal_records import blocked_path, completion_path
 
-    root = artifact_root if artifact_root is not None else (repo / config.artifacts_root)
+    root = artifact_root if artifact_root is not None else _artifact_root_for(repo, config)
     label = _prior_run_archive_label(repo, root)
     archive_dir = root / "runtime" / "archives" / label
 
@@ -196,15 +216,14 @@ def clear_prior_run_for_new_goal(
 
 def _prior_run_archive_label(repo: Path, artifact_root: Path) -> str:
     from auto_loop.runtime import load_lifecycle_state
-    from auto_loop.terminal_records import load_blocked_record, load_completion_record
 
     state = load_lifecycle_state(repo, artifact_root)
     if state is not None:
         return state.lifecycle_id
-    record = load_completion_record(repo, artifact_root)
+    record = load_matching_completion_record(repo, artifact_root)
     if record is not None:
         return record.lifecycle_id
-    blocked = load_blocked_record(repo, artifact_root)
+    blocked = load_matching_blocked_record(repo, artifact_root)
     if blocked is not None:
         return blocked.lifecycle_id
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -292,12 +311,6 @@ def prepare_repo_for_run(
     config_label = _config_label(source)
 
     has_lifecycle = has_lifecycle_state(repo, artifact_root)
-    if resume and not has_lifecycle:
-        raise RunInputError(NO_RESUME_MESSAGE.format(config=config_label))
-
-    if not resume and has_active_lifecycle(repo, artifact_root):
-        raise RunInputError(EXISTING_RUN_MESSAGE.format(config=config_label))
-
     if resume and has_lifecycle:
         frozen = load_resolved_config_optional(artifact_root)
         if frozen is None:
@@ -322,6 +335,12 @@ def prepare_repo_for_run(
             artifact_root=artifact_root,
         )
 
+    if not resume and has_active_lifecycle(repo, artifact_root):
+        raise RunInputError(EXISTING_RUN_MESSAGE.format(config=config_label))
+
+    if resume:
+        raise RunInputError(NO_RESUME_MESSAGE.format(config=config_label))
+
     goal_text = validate_manifest_inputs(source)
     frozen_config = derive_protection(source)
 
@@ -343,18 +362,3 @@ def prepare_repo_for_run(
         workspace=repo,
         artifact_root=artifact_root,
     )
-
-
-def prepare_from_workspace_default(repo: Path, inputs: RunInputs | None = None) -> PreparedRun:
-    """Test helper: load `.ai/run.yaml` from a bootstrapped workspace."""
-    from auto_loop.manifest import load_run_manifest
-
-    inputs = inputs or RunInputs()
-    manifest_path = repo / ".ai" / "run.yaml"
-    if not manifest_path.is_file():
-        raise RunInputError(
-            "No run config was supplied and no bootstrapped `.ai/run.yaml` exists."
-        )
-    source = load_run_manifest(manifest_path)
-    resume = inputs.resume_only or has_lifecycle_state(repo, source.artifact_root)
-    return prepare_repo_for_run(source, resume=resume)

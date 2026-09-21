@@ -3,7 +3,7 @@
 import subprocess
 from pathlib import Path
 
-from auto_loop.config import load_config_from_repo
+from tests.repo_utils import frozen_config
 from auto_loop.events import append_event, load_events
 from auto_loop.init_cmd import bootstrap_workspace
 
@@ -21,7 +21,7 @@ def _repo(tmp_path: Path) -> Path:
 
 def test_events_append_in_order(tmp_path: Path):
     repo = _repo(tmp_path)
-    config = load_config_from_repo(repo)
+    config = frozen_config(repo)
     append_event(repo, config, {"type": "lifecycle_started", "lifecycle_id": "lc-1"})
     append_event(repo, config, {"type": "turn_started", "turn": 1, "actor": "worker"})
     events = load_events(repo, config)

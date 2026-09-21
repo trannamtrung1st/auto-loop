@@ -14,10 +14,10 @@ from auto_loop.live_smoke import (
     live_smoke_gate,
     prepare_smoke_repository,
 )
-from auto_loop.loop import run_lifecycle
+from tests.integration.scenario_harness import run_lifecycle
 from auto_loop.providers.subprocess_cursor import SubprocessCursorProvider
 from auto_loop.run_options import RunOptions
-from auto_loop.config import load_config_from_repo
+from tests.repo_utils import frozen_config
 
 
 def test_live_cursor_smoke_skipped_by_default(monkeypatch):
@@ -35,7 +35,7 @@ def test_live_cursor_smoke_lifecycle(tmp_path: Path):
 
     repo = tmp_path / "smoke-repo"
     prepare_smoke_repository(repo)
-    config = load_config_from_repo(repo)
+    config = frozen_config(repo)
     options = RunOptions(
         config.agents["worker"].model,
         config.agents["reviewer"].model,

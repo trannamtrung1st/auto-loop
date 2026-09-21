@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from auto_loop.config import load_config_from_repo
+from tests.repo_utils import frozen_config
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.models import ActivePathTarget
 from auto_loop.review_targets import sha256_file
@@ -39,7 +39,7 @@ def _repo(tmp_path: Path) -> Path:
 
 def test_protected_file_mutation_detected(tmp_path: Path):
     repo = _repo(tmp_path)
-    config = load_config_from_repo(repo)
+    config = frozen_config(repo)
     baseline = capture_protected_baseline(repo, config)
     task = repo / ".ai/auto-loop" / "task.md"
     task.write_text(task.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")

@@ -11,7 +11,7 @@ from auto_loop.manifest import RunManifestSource
 from auto_loop.paths import workspace_relative
 from auto_loop.product_state import is_product_tree_clean, product_excludes
 from auto_loop.runtime import load_lifecycle_state
-from auto_loop.terminal_records import load_completion_record
+from auto_loop.run_inputs import load_matching_completion_record
 
 
 def _redact_session_id(session_id: str | None) -> str:
@@ -94,7 +94,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
     frozen = load_resolved_config_optional(artifact_root)
     config = frozen or source.config
     now = now or datetime.now(timezone.utc)
-    completion = load_completion_record(repo, artifact_root)
+    completion = load_matching_completion_record(repo, artifact_root)
     plan_rel = config.plan_file
     reviews_rel = config.reviews_dir
     config_rel = _config_label(source)

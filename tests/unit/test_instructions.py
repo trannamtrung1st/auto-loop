@@ -3,7 +3,7 @@
 import subprocess
 from pathlib import Path
 
-from auto_loop.config import load_config_from_repo
+from tests.repo_utils import frozen_config
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.instructions import compose_role_instructions, load_protocol_contract
 
@@ -25,7 +25,7 @@ def _repo(tmp_path: Path) -> Path:
 def test_protocol_present_on_first_invocation(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
-    config = load_config_from_repo(repo)
+    config = frozen_config(repo)
     planner = compose_role_instructions(repo, config, "planner", first_invocation=True)
     worker = compose_role_instructions(repo, config, "worker", first_invocation=True)
     reviewer = compose_role_instructions(repo, config, "reviewer", first_invocation=True)
@@ -42,7 +42,7 @@ def test_protocol_present_on_first_invocation(tmp_path: Path):
 def test_resume_turn_omits_instruction_stack(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
-    config = load_config_from_repo(repo)
+    config = frozen_config(repo)
     assert compose_role_instructions(repo, config, "worker", first_invocation=False) == ""
 
 
@@ -50,7 +50,7 @@ def test_replace_role_omits_playbook_only(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
     (repo / "shared-extra.md").write_text("ADVISORY_SHARED_BODY\n", encoding="utf-8")
-    config = load_config_from_repo(repo)
+    config = frozen_config(repo)
     config.instructions.worker.mode = "replace_role"
     config.instructions.shared.files.append("shared-extra.md")
     worker = compose_role_instructions(repo, config, "worker", first_invocation=True)
@@ -62,7 +62,7 @@ def test_replace_role_omits_playbook_only(tmp_path: Path):
 def test_doctor_reports_missing_configured_custom_instruction(tmp_path: Path, monkeypatch):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
-    config = load_config_from_repo(repo)
+    config = frozen_config(repo)
     config.instructions.worker.files.append("docs/extra-worker.md")
     from auto_loop.doctor import run_doctor
     from auto_loop.manifest import load_run_manifest

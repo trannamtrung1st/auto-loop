@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from auto_loop.cli import app
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.lifecycle import create_lifecycle
-from auto_loop.loop import run_lifecycle
+from tests.integration.scenario_harness import run_lifecycle
 from auto_loop.manifest import load_run_manifest
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_inputs import prepare_repo_for_run
@@ -293,3 +294,137 @@ def test_artifact_containment_rejects_escape(tmp_path: Path):
     assert result.exit_code == int(ExitCode.CONFIG_ERROR)
     assert "artifacts.root" in (result.stderr + result.stdout)
     assert not (outside / "runtime").exists()
+
+
+def test_operational_commands_survive_corrupt_manifest_fields(tmp_path: Path, monkeypatch):
+    repo = git_repo(tmp_path)
+    yaml_path = _write_manifest(repo, goal="Active goal")
+    prepare_repo_for_run(load_run_manifest(yaml_path))
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state, artifact_root=repo / ".ai" / "auto-loop")
+    yaml_path.write_text(
+        "version: 2\nworkspace: ..\ntask:\n  source: /no/such/file.md\n"
+        "artifacts:\n  root: .ai/auto-loop\nrun:\n  max_turns: not-a-number\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(*a, **k):
+        return subprocess.CompletedProcess(a[0], 0, stdout="--resume stream-json ask", stderr="")
+
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+
+    status = runner.invoke(app, ["status", str(yaml_path)])
+    assert status.exit_code == 0
+    assert "lifecycle:" in status.stdout
+
+    logs = runner.invoke(app, ["logs", str(yaml_path)])
+    assert logs.exit_code == 0
+
+
+def test_blocked_idempotent_before_missing_context_resources(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    yaml_path = _write_manifest(
+        repo,
+        extra="context:\n  shared:\n    resources:\n      - README.md\n",
+        goal="Blocked goal",
+    )
+    (repo / "README.md").write_text("docs\n", encoding="utf-8")
+    source = load_run_manifest(yaml_path)
+    prepare_repo_for_run(source)
+    state = create_lifecycle(head_commit(repo))
+    from auto_loop.lifecycle import LifecycleStatus
+    from auto_loop.terminal_records import BlockedRecord, save_blocked_record
+    from datetime import datetime, timezone
+
+    state.status = LifecycleStatus.BLOCKED
+    save_lifecycle_state(repo, state, artifact_root=source.artifact_root)
+    save_blocked_record(
+        repo,
+        BlockedRecord(
+            blocked_at=datetime.now(timezone.utc),
+            lifecycle_id=state.lifecycle_id,
+            turn=state.turn,
+            worker_session_id="w",
+            reviewer_session_id="r",
+            summary="external blocker",
+        ),
+        artifact_root=source.artifact_root,
+    )
+    (repo / "README.md").unlink()
+    outcome = run_lifecycle(repo, run_opts(1), ScriptedProvider())
+    assert outcome.exit_code == ExitCode.BLOCKED
+
+
+def test_stale_terminal_record_does_not_mark_active_run_terminal(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    yaml_path = _write_manifest(repo, goal="Second run")
+    source = load_run_manifest(yaml_path)
+    prepare_repo_for_run(source)
+    state_b = create_lifecycle(head_commit(repo), lifecycle_id="lifecycle-b")
+    save_lifecycle_state(repo, state_b, artifact_root=source.artifact_root)
+    from auto_loop.terminal_records import CompletionRecord, save_completion_record
+    from datetime import datetime, timezone
+
+    save_completion_record(
+        repo,
+        CompletionRecord(
+            completed_at=datetime.now(timezone.utc),
+            lifecycle_id="lifecycle-a",
+            turn=1,
+            worker_session_id="w",
+            reviewer_session_id="r",
+            initial_base_commit=head_commit(repo),
+            final_commit=head_commit(repo),
+            last_approved_commit=head_commit(repo),
+            final_review_file=".ai/auto-loop/reviews/0001-final.md",
+            task_sha256="abc",
+        ),
+        artifact_root=source.artifact_root,
+    )
+    from auto_loop.run_inputs import has_active_lifecycle, has_terminal_record
+
+    assert has_active_lifecycle(repo, source.artifact_root)
+    assert not has_terminal_record(repo, source.artifact_root)
+
+
+def test_absolute_in_workspace_artifact_root_excluded_from_product_tree(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    state_dir = repo / ".state" / "auto-loop"
+    yaml_path = repo / "run.yaml"
+    yaml_path.write_text(
+        f"version: 2\nworkspace: .\ntask:\n  source: proposal.md\n"
+        f"artifacts:\n  root: {state_dir.resolve()}\n",
+        encoding="utf-8",
+    )
+    (repo / "proposal.md").write_text("goal\n", encoding="utf-8")
+    source = load_run_manifest(yaml_path)
+    assert source.config.artifacts.root == ".state/auto-loop"
+    prepared = prepare_repo_for_run(source)
+    from auto_loop.product_state import is_product_tree_clean, product_excludes
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "plan.md").write_text("plan\n", encoding="utf-8")
+    assert is_product_tree_clean(repo, excludes=product_excludes(prepared.config))
+
+
+def test_symlink_in_workspace_artifact_root_excluded_from_product_tree(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    state_dir = repo / ".state" / "auto-loop"
+    state_dir.mkdir(parents=True)
+    link = repo / "loop-state"
+    link.symlink_to(state_dir, target_is_directory=True)
+    yaml_path = repo / "run.yaml"
+    yaml_path.write_text(
+        "version: 2\nworkspace: .\ntask:\n  source: proposal.md\n"
+        "artifacts:\n  root: loop-state\n",
+        encoding="utf-8",
+    )
+    (repo / "proposal.md").write_text("goal\n", encoding="utf-8")
+    source = load_run_manifest(yaml_path)
+    assert source.config.artifacts.root == ".state/auto-loop"
+    prepared = prepare_repo_for_run(source)
+    from auto_loop.product_state import is_product_tree_clean, product_excludes
+
+    (state_dir / "plan.md").write_text("plan\n", encoding="utf-8")
+    assert is_product_tree_clean(repo, excludes=product_excludes(prepared.config))

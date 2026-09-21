@@ -8,9 +8,61 @@ from pathlib import Path
 
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
-from auto_loop.loop import run_lifecycle
+from auto_loop.loop import run_lifecycle as _core_run_lifecycle
+from auto_loop.manifest import load_run_manifest, resolve_operational_source
 from auto_loop.providers.scripted import ScriptedProvider
+from auto_loop.run_inputs import (
+    has_active_lifecycle,
+    has_lifecycle_state,
+    has_terminal_record,
+    prepare_repo_for_run,
+)
 from auto_loop.run_options import RunOptions
+from auto_loop.config import AutoLoopConfig
+
+
+def bootstrapped_manifest_path(repo: Path) -> Path:
+    return repo / ".ai" / "run.yaml"
+
+
+def run_lifecycle(
+    repo: Path,
+    options: RunOptions,
+    provider: ScriptedProvider,
+    *,
+    config: AutoLoopConfig | None = None,
+    artifact_root: Path | None = None,
+):
+    """Integration helper: prepare from the bootstrapped manifest unless config is supplied."""
+    if config is not None:
+        from auto_loop.paths import resolved_artifact_root
+
+        root = artifact_root or resolved_artifact_root(repo, config.artifacts_root)
+        return _core_run_lifecycle(repo, options, provider, config=config, artifact_root=root)
+
+    manifest_path = bootstrapped_manifest_path(repo)
+    operational = resolve_operational_source(manifest_path)
+    if has_active_lifecycle(operational.workspace, operational.artifact_root):
+        prepared = prepare_repo_for_run(operational, resume=True)
+    elif not has_lifecycle_state(operational.workspace, operational.artifact_root):
+        prepared = prepare_repo_for_run(load_run_manifest(manifest_path), resume=False)
+    elif has_terminal_record(operational.workspace, operational.artifact_root):
+        return _core_run_lifecycle(
+            operational.workspace,
+            options,
+            provider,
+            config=operational.config,
+            artifact_root=operational.artifact_root,
+        )
+    else:
+        prepared = prepare_repo_for_run(operational, resume=True)
+    return _core_run_lifecycle(
+        prepared.workspace,
+        options,
+        provider,
+        config=prepared.config,
+        artifact_root=prepared.artifact_root,
+    )
 
 
 def git(repo: Path, *args: str) -> None:

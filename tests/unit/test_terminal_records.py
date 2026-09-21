@@ -4,7 +4,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from auto_loop.config import load_config_from_repo
+from tests.repo_utils import frozen_config
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.terminal_records import (
@@ -23,7 +23,7 @@ def test_completion_still_valid_tracks_task_hash(tmp_path: Path):
     subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True, capture_output=True)
     bootstrap_workspace(repo, minimal=True)
-    config = load_config_from_repo(repo)
+    config = frozen_config(repo)
     task_hash, plan_hash = task_and_plan_hashes(repo, config)
     head = head_commit(repo)
     record = CompletionRecord(

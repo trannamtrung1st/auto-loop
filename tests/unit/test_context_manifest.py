@@ -121,7 +121,7 @@ def test_manifest_appended_on_resume_turn(tmp_path: Path):
 def test_bootstrapped_context_defaults_empty(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
-    from auto_loop.config import load_config_from_repo
+    from tests.repo_utils import frozen_config
 
-    doc = load_config_from_repo(repo).context
+    doc = frozen_config(repo).context
     assert doc.shared.resources == []

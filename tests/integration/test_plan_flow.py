@@ -5,7 +5,7 @@ from pathlib import Path
 
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
-from auto_loop.loop import run_lifecycle
+from tests.integration.scenario_harness import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import RunOptions
 from auto_loop.run_prerequisites import ensure_run_prerequisites
@@ -186,7 +186,10 @@ def test_bootstrap_satisfies_run_prerequisites_without_generated_files(tmp_path:
     _git(repo, "config", "user.name", "T")
     _git(repo, "commit", "--allow-empty", "-m", "init")
     bootstrap_workspace(repo)
-    config = ensure_run_prerequisites(repo)
+    from tests.repo_utils import frozen_config
+
+    config = frozen_config(repo)
+    ensure_run_prerequisites(repo, config)
     assert config.agents["planner"].role_file == ""
     assert not (repo / ".ai" / "auto-loop" / "agents").exists()
     assert not (repo / ".ai" / "auto-loop" / "instructions").exists()

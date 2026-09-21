@@ -84,7 +84,8 @@ from auto_loop.events import append_event
 from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
 from auto_loop.turn_logs import TurnLogWriter, prune_run_history
-from auto_loop.run_inputs import RunInputs
+from auto_loop.run_inputs import RunInputs, load_matching_blocked_record, load_matching_completion_record
+from auto_loop.paths import resolved_artifact_root
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 from auto_loop.terminal_records import (
@@ -93,8 +94,6 @@ from auto_loop.terminal_records import (
     IDEMPOTENT_BLOCKED_MESSAGE,
     IDEMPOTENT_COMPLETE_MESSAGE,
     assert_completion_inputs_unchanged,
-    load_blocked_record,
-    load_completion_record,
     save_blocked_record,
     save_completion_record,
     task_and_plan_hashes,
@@ -133,7 +132,7 @@ class LifecycleRunner:
     ) -> None:
         self.repo = repo
         self.config = config
-        self.artifact_root = (repo / config.artifacts_root).resolve()
+        self.artifact_root = resolved_artifact_root(repo, config.artifacts.root)
         self.options = options
         self.invoker = invoker
         self._initial_lifecycle_id = initial_lifecycle_id
@@ -1179,7 +1178,7 @@ class LifecycleRunner:
 
 
 def _check_idempotent_blocked(repo: Path, artifact_root: Path | None = None) -> RunOutcome | None:
-    record = load_blocked_record(repo, artifact_root)
+    record = load_matching_blocked_record(repo, artifact_root)
     if record is None:
         return None
     state = load_lifecycle_state(repo, artifact_root)
@@ -1197,7 +1196,7 @@ def _check_idempotent_completion(
     config: AutoLoopConfig,
     artifact_root: Path | None = None,
 ) -> RunOutcome | None:
-    record = load_completion_record(repo, artifact_root)
+    record = load_matching_completion_record(repo, artifact_root)
     if record is None:
         return None
     assert_completion_inputs_unchanged(repo, config, record)
@@ -1214,19 +1213,20 @@ def run_lifecycle(
     options: RunOptions,
     invoker: ProviderInvoker,
     *,
+    config: AutoLoopConfig,
+    artifact_root: Path,
     inputs: RunInputs | None = None,
-    config: AutoLoopConfig | None = None,
 ) -> RunOutcome:
     from auto_loop.locking import acquire_workspace_lock
 
-    config = ensure_run_prerequisites(repo, inputs, config=config)
-    artifact_root = (repo / config.artifacts_root).resolve()
+    del inputs
     idempotent_blocked = _check_idempotent_blocked(repo, artifact_root)
     if idempotent_blocked is not None:
         return idempotent_blocked
     idempotent = _check_idempotent_completion(repo, config, artifact_root)
     if idempotent is not None:
         return idempotent
+    ensure_run_prerequisites(repo, config)
     existing = load_lifecycle_state(repo, artifact_root)
     lifecycle_id = existing.lifecycle_id if existing else new_lifecycle_id()
     lock = acquire_workspace_lock(repo, lifecycle_id, artifact_root)

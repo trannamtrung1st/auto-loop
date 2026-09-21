@@ -8,7 +8,7 @@ from pathlib import Path
 
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
-from auto_loop.loop import run_lifecycle
+from tests.integration.scenario_harness import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.terminal_records import load_completion_record

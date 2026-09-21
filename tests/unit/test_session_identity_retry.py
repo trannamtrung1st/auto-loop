@@ -37,9 +37,11 @@ class FlakyScriptedProvider(ScriptedProvider):
 
 
 def _bump_provider_retries(repo: Path, retries: int = 2) -> None:
-    from auto_loop.config import load_config_from_repo, write_resolved_config
+    from auto_loop.config import write_resolved_config
 
-    cfg = load_config_from_repo(repo)
+    from tests.repo_utils import frozen_config
+
+    cfg = frozen_config(repo)
     cfg = cfg.model_copy(update={"limits": cfg.limits.model_copy(update={"provider_retries": retries})})
     write_resolved_config(repo, cfg)
 

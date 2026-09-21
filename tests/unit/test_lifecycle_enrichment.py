@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from auto_loop.config import dump_config, load_config_from_repo
+from auto_loop.config import dump_config
+from tests.repo_utils import frozen_config
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
     LEGACY_V1_PLAN_TARGET_PATH,
@@ -86,7 +87,7 @@ def test_reload_does_not_retarget_v2_plan_when_frozen_artifact_root_changes(tmp_
     state = _execution_plan_review_state(repo, _plan_target(digest, ".ai/auto-loop/plan.md"))
     save_lifecycle_state(repo, state)
 
-    cfg = load_config_from_repo(repo)
+    cfg = frozen_config(repo)
     cfg = cfg.model_copy(update={"artifacts": cfg.artifacts.model_copy(update={"root": ".ai/other-loop"})})
     snapshot = repo / ".ai/auto-loop" / "runtime" / "config.resolved.yaml"
     snapshot.write_text(dump_config(cfg), encoding="utf-8")

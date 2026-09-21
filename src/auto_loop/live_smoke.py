@@ -7,12 +7,11 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from auto_loop.config import load_config_from_repo
+from auto_loop.manifest import load_run_manifest, resolve_operational_source
 from auto_loop.doctor import run_doctor
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
-from auto_loop.manifest import load_run_manifest
 from auto_loop.providers.cursor import resolve_cursor_binary
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.terminal_records import load_completion_record
@@ -132,7 +131,7 @@ def section_45_check_notes(repo: Path) -> list[str]:
     state = load_lifecycle_state(repo)
     if state is None:
         return ["missing lifecycle state"]
-    config = load_config_from_repo(repo)
+    config = resolve_operational_source(repo / ".ai" / "run.yaml").config
     from auto_loop.events import load_events
 
     events = load_events(repo, config)
@@ -252,7 +251,7 @@ def collect_smoke_evidence(repo: Path, exit_code: ExitCode) -> SmokeEvidence:
     notes: list[str] = []
     state = load_lifecycle_state(repo)
     record = load_completion_record(repo)
-    config = load_config_from_repo(repo)
+    config = resolve_operational_source(repo / ".ai" / "run.yaml").config
     reviews = sorted((repo / config.reviews_dir).glob("*.md"))
     worker_id = state.sessions["worker"].session_id if state else None
     reviewer_id = state.sessions["reviewer"].session_id if state else None

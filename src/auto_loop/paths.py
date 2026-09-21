@@ -75,5 +75,31 @@ def workspace_relative(workspace: Path, path: Path) -> str | None:
     return posix_rel(str(rel))
 
 
+def canonical_artifacts_root_setting(workspace: Path, artifact_root: Path) -> str:
+    """Return a workspace-relative posix path suitable for config and Git excludes."""
+    rel = workspace_relative(workspace, artifact_root)
+    if rel is None:
+        raise PathContainmentError(
+            f"artifacts.root must resolve inside the configured workspace: {artifact_root}"
+        )
+    return rel
+
+
+def configured_artifacts_root_rel(workspace: Path, root_raw: str) -> str | None:
+    """Return the workspace-relative path Git uses for the configured setting (symlink-aware)."""
+    raw = root_raw.strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return workspace_relative(workspace, path)
+    return posix_rel(raw)
+
+
+def resolved_artifact_root(workspace: Path, artifacts_root: str) -> Path:
+    """Resolve and normalize the configured artifact root directory."""
+    return artifact_root_path(workspace, artifacts_root).resolve()
+
+
 class PathContainmentError(ValueError):
     """A configured path escaped the workspace."""
