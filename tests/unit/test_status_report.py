@@ -5,6 +5,7 @@ from pathlib import Path
 
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import create_lifecycle
+from auto_loop.manifest import load_run_manifest
 from auto_loop.runtime import save_lifecycle_state
 from auto_loop.status_report import build_status_report
 
@@ -27,7 +28,7 @@ def test_status_reports_core_fields(tmp_path: Path):
     state.sessions["worker"].session_id = "worker-session-uuid-0001"
     state.sessions["reviewer"].session_id = "reviewer-session-uuid-0002"
     save_lifecycle_state(repo, state)
-    report = build_status_report(repo)
+    report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
     assert "status: running" in report
     assert "next session: planner" in report
     assert "planner session:" in report

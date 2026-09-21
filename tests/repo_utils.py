@@ -34,7 +34,7 @@ def initialized_repo(
     return repo
 
 
-def user_init_repo(tmp_path: Path, *, name: str = "repo", minimal: bool = False) -> Path:
+def user_init_repo(tmp_path: Path, *, name: str = "repo") -> Path:
     repo = git_repo(tmp_path, name)
-    run_init(repo, minimal=minimal)
+    run_init(repo / ".ai" / "run.yaml")
     return repo

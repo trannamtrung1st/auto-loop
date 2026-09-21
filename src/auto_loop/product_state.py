@@ -1,14 +1,19 @@
-"""Product working tree status excluding .auto-loop control state."""
+"""Product working tree status excluding Auto Loop control state."""
 
 from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from auto_loop.git import GitProtocolError
+from auto_loop.paths import DEFAULT_ARTIFACTS_ROOT, posix_rel
 
-DEFAULT_PRODUCT_EXCLUDES = (".auto-loop/", "auto-loop.yaml")
+if TYPE_CHECKING:
+    from auto_loop.config import AutoLoopConfig
+
+DEFAULT_PRODUCT_EXCLUDES = (f"{DEFAULT_ARTIFACTS_ROOT}/", f"{DEFAULT_ARTIFACTS_ROOT}/**")
 
 
 @dataclass(frozen=True)
@@ -19,6 +24,16 @@ class ProductChange:
 
 def _normalize_path(path: str) -> str:
     return path.replace("\\", "/")
+
+
+def product_excludes(config: AutoLoopConfig) -> tuple[str, ...]:
+    root = posix_rel(config.artifacts_root)
+    items = [f"{root}/", f"{root}/**"]
+    for extra in (*config.protection.product_exclude, *config.protection.protected_files):
+        normalized = extra.replace("\\", "/").rstrip("/")
+        if normalized and normalized not in items:
+            items.append(normalized)
+    return tuple(items)
 
 
 def is_control_path(path: str, excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES) -> bool:

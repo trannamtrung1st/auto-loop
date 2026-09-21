@@ -33,8 +33,8 @@ def _init_repo(tmp_path: Path) -> Path:
 
 def test_product_tree_allows_auto_loop_changes(tmp_path: Path):
     repo = _init_repo(tmp_path)
-    control = repo / ".auto-loop"
-    control.mkdir()
+    control = repo / ".ai/auto-loop"
+    control.mkdir(parents=True)
     (control / "plan.md").write_text("plan\n", encoding="utf-8")
     assert is_product_tree_clean(repo)
     assert list_product_changes(repo) == []

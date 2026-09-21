@@ -1,37 +1,16 @@
-"""Initialize user-owned Auto Loop files and materialize tool-managed state."""
+"""Optional starter run-manifest generator. Not required to start a run."""
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
-import yaml
-
-from auto_loop.config import (
-    USER_CONFIG_FILENAME,
-    AutoLoopConfig,
-    ConfigurationError,
-    InstructionRoleSettings,
-    InstructionSettings,
-    load_config_from_repo,
-    user_config_path,
-    write_resolved_config,
-)
+from auto_loop.config import write_resolved_config
 from auto_loop.exits import ExitCode
-from auto_loop.paths import auto_loop_root
-
-RUNTIME_GITIGNORE_ENTRY = ".auto-loop/runtime/"
-
-INIT_FORCE_BLOCKED_MESSAGE = """Cannot re-initialize while a run is in progress.
-
-Your existing run was not reset.
-
-Resume it:
-  auto-loop resume
-
-Inspect it:
-  auto-loop status"""
+from auto_loop.manifest import RunManifestSource, load_run_manifest
+from auto_loop.paths import posix_rel, resolve_cli_path, workspace_relative
 
 
 class InitError(Exception):
@@ -44,8 +23,6 @@ class InitError(Exception):
 class InitResult:
     created: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
-    migrated: bool = False
-    deprecated_inputs: list[str] = field(default_factory=list)
     message: str = ""
 
 
@@ -54,158 +31,113 @@ def _read_template(relative: str) -> str:
     return package.joinpath(relative).read_text(encoding="utf-8")
 
 
-def _write_text(
-    path: Path,
-    content: str,
-    *,
-    force: bool,
-    result: InitResult,
-    rel: str,
-) -> None:
-    if path.exists() and not force:
-        result.skipped.append(rel)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    result.created.append(rel)
-
-
-def _ensure_dir(path: Path, result: InitResult, rel: str) -> None:
-    if path.exists():
-        result.skipped.append(rel)
-        return
-    path.mkdir(parents=True, exist_ok=True)
-    result.created.append(rel)
-
-
-def _user_config_yaml(minimal: bool) -> str:
-    if not minimal:
-        return _read_template("auto-loop.yaml")
-    data = {
-        "models": {"planner": "auto", "worker": "auto", "reviewer": "auto"},
-        "instructions": {
-            "shared": {"mode": "extend", "files": []},
-            "planner": {"mode": "extend", "files": []},
-            "worker": {"mode": "extend", "files": []},
-            "reviewer": {"mode": "extend", "files": []},
-        },
-    }
-    header = (
-        "# User-owned Auto Loop configuration.\n"
-        "# Tool-managed state lives under .auto-loop/ and is created on `auto-loop run`.\n\n"
+def _starter_manifest_text(*, workspace: str, task_source: str, artifacts_root: str) -> str:
+    return (
+        "# Auto Loop run manifest (version 2).\n"
+        "# Pass this file to the CLI: auto-loop run PATH/TO/THIS.yaml\n"
+        "#\n"
+        "# workspace is resolved relative to this file's directory.\n"
+        "# All other paths are resolved relative to workspace.\n"
+        "\n"
+        "version: 2\n"
+        f"workspace: {workspace}\n"
+        "\n"
+        "task:\n"
+        f"  source: {task_source}\n"
+        "\n"
+        "artifacts:\n"
+        f"  root: {artifacts_root}\n"
+        "\n"
+        "models:\n"
+        "  planner: auto\n"
+        "  worker: auto\n"
+        "  reviewer: auto\n"
+        "\n"
+        "run:\n"
+        "  max_turns: 100\n"
+        "  max_runtime_minutes: 480\n"
     )
-    return header + yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
 
 
-def ensure_runtime_gitignore(repo: Path, result: InitResult | None = None) -> bool:
-    """Append runtime ignore rules to .gitignore. Returns True when a write happened."""
-    path = repo / ".gitignore"
-    rel = ".gitignore"
-    marker = RUNTIME_GITIGNORE_ENTRY
-    if path.is_file():
-        text = path.read_text(encoding="utf-8")
-        existing = {line.strip() for line in text.splitlines()}
-        if marker in existing or ".auto-loop/runtime" in existing:
-            if result is not None:
-                result.skipped.append(rel)
-            return False
-        prefix = "" if text.endswith("\n") or text == "" else "\n"
-        path.write_text(
-            f"{text}{prefix}\n# Auto Loop ephemeral runtime state\n{marker}\n",
-            encoding="utf-8",
-        )
-    else:
-        path.write_text(
-            f"# Auto Loop ephemeral runtime state\n{marker}\n",
-            encoding="utf-8",
-        )
-    if result is not None:
-        result.created.append(rel)
-    return True
+def _workspace_rel_from_yaml(yaml_path: Path) -> str:
+    yaml_dir = yaml_path.parent.resolve()
+    cwd = Path.cwd().resolve()
+    try:
+        rel = cwd.relative_to(yaml_dir)
+        text = posix_rel(str(rel))
+        return text if text else "."
+    except ValueError:
+        import os
+
+        return posix_rel(os.path.relpath(cwd, yaml_dir))
 
 
-def materialize_control_workspace(
-    repo: Path,
-    *,
-    force: bool = False,
-    minimal: bool = False,
-) -> InitResult:
-    """Create tool-managed .auto-loop templates. Does not write user-owned files."""
-    if not minimal:
-        try:
-            config = load_config_from_repo(repo)
-            if not config.instructions.worker.files:
-                minimal = True
-        except ConfigurationError:
-            pass
-    root = auto_loop_root(repo)
+def run_init(target: Path, *, force: bool = False) -> InitResult:
+    """Create a starter v2 run YAML at `target`. Does not create runtime state or a task."""
+    path = resolve_cli_path(target)
+    if path.exists() and path.is_dir():
+        path = path / "run.yaml"
     result = InitResult()
-    planner_tpl = "agents/planner.minimal.md" if minimal else "agents/planner.md"
-    worker_tpl = "agents/worker.minimal.md" if minimal else "agents/worker.md"
-    reviewer_tpl = "agents/reviewer.minimal.md" if minimal else "agents/reviewer.md"
-    _write_text(
-        root / "context.yaml",
-        _read_template("context.default.yaml"),
-        force=force,
-        result=result,
-        rel=".auto-loop/context.yaml",
+    if path.exists() and not force:
+        result.skipped.append(str(path))
+        result.message = (
+            f"Run config already exists: {path}\n\n"
+            "Pass --force to overwrite. This command does not create runtime state."
+        )
+        return result
+
+    workspace_rel = _workspace_rel_from_yaml(path)
+    workspace = (path.parent / workspace_rel).resolve() if workspace_rel != "." else path.parent.resolve()
+    if workspace_rel == ".":
+        workspace = path.parent.resolve()
+
+    proposal = path.parent / "proposal.md"
+    task_rel = workspace_relative(workspace, proposal) or "proposal.md"
+    artifact_dir = path.parent / "auto-loop"
+    artifact_rel = workspace_relative(workspace, artifact_dir) or ".ai/auto-loop"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _starter_manifest_text(
+            workspace=workspace_rel,
+            task_source=task_rel,
+            artifacts_root=artifact_rel,
+        ),
+        encoding="utf-8",
     )
-    _write_text(
-        root / "plan.md",
-        _read_template("plan.md"),
-        force=force,
-        result=result,
-        rel=".auto-loop/plan.md",
+    result.created.append(str(path))
+    result.message = (
+        "Created Auto Loop run config.\n"
+        "\n"
+        f"Config: {path}\n"
+        f"Suggested task file: {proposal}\n"
+        "\n"
+        "Next:\n"
+        f"  auto-loop doctor {path}\n"
+        f"  auto-loop run {path}\n"
+        "\n"
+        "This command did not create a task file or runtime state."
     )
-    _write_text(
-        root / "agents" / "planner.md",
-        _read_template(planner_tpl),
-        force=force,
-        result=result,
-        rel=".auto-loop/agents/planner.md",
-    )
-    _write_text(
-        root / "agents" / "worker.md",
-        _read_template(worker_tpl),
-        force=force,
-        result=result,
-        rel=".auto-loop/agents/worker.md",
-    )
-    _write_text(
-        root / "agents" / "reviewer.md",
-        _read_template(reviewer_tpl),
-        force=force,
-        result=result,
-        rel=".auto-loop/agents/reviewer.md",
-    )
-    if not minimal:
-        for name in ("shared.md", "planner.md", "worker.md", "reviewer.md"):
-            _write_text(
-                root / "instructions" / name,
-                _read_template(f"instructions/{name}"),
-                force=force,
-                result=result,
-                rel=f".auto-loop/instructions/{name}",
-            )
-        _ensure_dir(root / "resources", result, ".auto-loop/resources/")
-    _ensure_dir(root / "reviews", result, ".auto-loop/reviews/")
-    _ensure_dir(root / "runtime", result, ".auto-loop/runtime/")
     return result
 
 
-def reset_run_scoped_workspace(
-    repo: Path,
-    *,
-    config: AutoLoopConfig,
-    minimal: bool = False,
-) -> None:
-    """Regenerate plan and default context only. Preserves customized agents/instructions."""
-    context_path = repo / config.context_file
-    plan_path = repo / config.plan_file
-    context_path.parent.mkdir(parents=True, exist_ok=True)
+def materialize_artifact_layout(source: RunManifestSource, *, plan_text: str | None = None) -> None:
+    """Create artifact directories lazily. Does not write agent or instruction files."""
+    root = source.artifact_root
+    (root / "reviews").mkdir(parents=True, exist_ok=True)
+    (root / "runtime").mkdir(parents=True, exist_ok=True)
+    plan_path = root / "plan.md"
+    if not plan_path.exists():
+        plan_path.write_text(plan_text or _read_template("plan.md"), encoding="utf-8")
+
+
+def reset_run_scoped_workspace(source: RunManifestSource) -> None:
+    """Regenerate the plan for a new lifecycle. Preserves runtime archives."""
+    plan_path = source.artifact_root / "plan.md"
     plan_path.parent.mkdir(parents=True, exist_ok=True)
-    context_path.write_text(_read_template("context.default.yaml"), encoding="utf-8")
     plan_path.write_text(_read_template("plan.md"), encoding="utf-8")
+    (source.artifact_root / "reviews").mkdir(parents=True, exist_ok=True)
+    (source.artifact_root / "runtime").mkdir(parents=True, exist_ok=True)
 
 
 def bootstrap_workspace(
@@ -215,102 +147,47 @@ def bootstrap_workspace(
     minimal: bool = False,
     goal: str = "Test task",
 ) -> InitResult:
-    """Init + materialize + snapshot a goal. Intended for tests and fixtures."""
-    result = run_init(repo, force=force, minimal=minimal)
-    materialized = materialize_control_workspace(repo, force=force, minimal=minimal)
-    result.created.extend(materialized.created)
-    result.skipped.extend(materialized.skipped)
-    config = load_config_from_repo(repo)
-    if minimal:
-        config.instructions = InstructionSettings(
-            shared=InstructionRoleSettings(files=[]),
-            planner=InstructionRoleSettings(files=[]),
-            worker=InstructionRoleSettings(files=[]),
-            reviewer=InstructionRoleSettings(files=[]),
-        )
-    write_resolved_config(repo, config)
-    task_path = repo / config.task_file
-    if force or not task_path.is_file() or task_path.read_text(encoding="utf-8").strip() == "":
-        task_path.parent.mkdir(parents=True, exist_ok=True)
+    """Create a v2 manifest, proposal, and frozen run snapshot. Intended for tests."""
+    del force, minimal
+    ai_dir = repo / ".ai"
+    ai_dir.mkdir(parents=True, exist_ok=True)
+    proposal = ai_dir / "proposal.md"
+    if not proposal.is_file() or not proposal.read_text(encoding="utf-8").strip():
         text = goal if goal.endswith("\n") else f"{goal}\n"
-        task_path.write_text(text, encoding="utf-8")
-        if ".auto-loop/task.md" not in result.created:
-            result.created.append(".auto-loop/task.md")
-    return result
+        proposal.write_text(text, encoding="utf-8")
+    manifest_path = ai_dir / "run.yaml"
+    manifest_path.write_text(
+        _starter_manifest_text(
+            workspace="..",
+            task_source=".ai/proposal.md",
+            artifacts_root=".ai/auto-loop",
+        ),
+        encoding="utf-8",
+    )
+    from auto_loop.run_inputs import prepare_repo_for_run
+
+    prepared = prepare_repo_for_run(load_run_manifest(manifest_path), resume=False)
+    write_resolved_config(prepared.workspace, prepared.config)
+    _commit_user_owned_inputs(repo)
+    return InitResult(created=[".ai/run.yaml", ".ai/proposal.md"], message="bootstrapped")
 
 
-def _render_init_message(result: InitResult) -> str:
-    lines = [
-        "Auto Loop initialized.",
-        "",
-        f"Config: {USER_CONFIG_FILENAME}",
-        "",
-        "Next:",
-        '  auto-loop run "Describe what you want to build"',
-        "",
-        "Or:",
-        "  auto-loop run --goal-file goal.md",
-        "",
-        ".auto-loop/ is tool-managed state and will be created when a run starts.",
-        "You normally do not need to edit that directory.",
-        "",
-        "Consider ignoring ephemeral runtime state in Git:",
-        "  .auto-loop/runtime/",
-    ]
-    if result.migrated:
-        deprecated = "\n".join(f"  {item}" for item in result.deprecated_inputs) or "  (none)"
-        lines = [
-            "Legacy Auto Loop layout detected.",
-            "",
-            "Created:",
-            f"  {USER_CONFIG_FILENAME}",
-            "",
-            "Existing run state under .auto-loop/ was preserved.",
-            "",
-            "Deprecated user inputs:",
-            deprecated,
-            "",
-            "Future runs should use:",
-            "  auto-loop run --goal-file goal.md",
-            "",
-            *lines[4:],
-        ]
-    return "\n".join(lines)
-
-
-def run_init(repo: Path, *, force: bool = False, minimal: bool = False) -> InitResult:
-    """Create user-owned auto-loop.yaml and ignore rules. Do not create a goal."""
-    from auto_loop.migrate_cmd import migrate_legacy_layout
-    from auto_loop.run_inputs import has_active_lifecycle
-
-    if force and auto_loop_root(repo).is_dir() and has_active_lifecycle(repo):
-        raise InitError(INIT_FORCE_BLOCKED_MESSAGE)
-
-    result = InitResult()
-    migrated = migrate_legacy_layout(repo, force=force)
-    if migrated.migrated:
-        result.migrated = True
-        result.deprecated_inputs = list(migrated.deprecated_inputs)
-        result.created.extend(migrated.created)
-        result.skipped.extend(migrated.skipped)
-    else:
-        config_file = user_config_path(repo)
-        if config_file.exists() and not force:
-            result.skipped.append(USER_CONFIG_FILENAME)
-        else:
-            _write_text(
-                config_file,
-                _user_config_yaml(minimal),
-                force=True,
-                result=result,
-                rel=USER_CONFIG_FILENAME,
-            )
-
-    if force and auto_loop_root(repo).is_dir():
-        materialized = materialize_control_workspace(repo, force=True, minimal=minimal)
-        result.created.extend(materialized.created)
-        result.skipped.extend(materialized.skipped)
-        write_resolved_config(repo, load_config_from_repo(repo))
-
-    result.message = _render_init_message(result)
-    return result
+def _commit_user_owned_inputs(repo: Path) -> None:
+    """Commit the user-owned manifest and task so tests start with a clean product tree."""
+    if not (repo / ".git").exists():
+        return
+    subprocess.run(
+        ["git", "add", "--", ".ai/run.yaml", ".ai/proposal.md"],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+    )
+    staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo, capture_output=True)
+    if staged.returncode == 0:
+        return
+    subprocess.run(
+        ["git", "commit", "-m", "Add Auto Loop run inputs"],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+    )

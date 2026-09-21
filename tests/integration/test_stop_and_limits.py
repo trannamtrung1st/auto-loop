@@ -49,7 +49,7 @@ def test_protocol_repair_exhaustion_returns_protocol_error(tmp_path: Path, monke
     cfg.limits.protocol_retries = 0
     monkeypatch.setattr(
         "auto_loop.loop.ensure_run_prerequisites",
-        lambda _repo, _inputs=None: cfg,
+        lambda _repo, _inputs=None, **_kwargs: cfg,
     )
     provider = ScriptedProvider()
     provider.set_invalid_protocol_response("planner")

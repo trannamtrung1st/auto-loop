@@ -30,7 +30,7 @@ This matrix maps **acceptance criteria (§47)**, **architectural decisions (§48
 | V | Plan revision preserves planner and plan-reviewer sessions | `test_scenario_V_plan_revision_preserves_planning_sessions` |
 | W | Execution sessions are fresh and all four ids are distinct | `test_scenario_W_execution_sessions_are_fresh` |
 | X | Independent planner/worker/reviewer model selection | `test_scenario_X_three_model_selections` |
-| Y | CLI role override beats `--model` and config | `test_scenario_Y_cli_role_override_precedence` |
+| Y | `RunOptions` role override beats global override and config (harness/API; not CLI flags) | `test_scenario_Y_option_role_override_precedence` |
 | Z | Worker may update approved plan without protection violation | `test_scenario_Z_worker_updates_approved_plan` |
 | AA | Execution-phase plan review uses execution reviewer only | `test_scenario_AA_worker_requests_execution_phase_plan_review` |
 | AB | Preferred single amendable review-fix commit | `test_scenario_AB_preferred_single_revision_commit` |
@@ -50,7 +50,7 @@ Supporting integration coverage: `test_plan_flow.py`, `test_lifecycle_flows.py`,
 
 | Area | Requirement (summary) | Implementation | Verification |
 |------|----------------------|----------------|--------------|
-| Setup / CLI | `init`, `doctor`, `run`, `resume`, `migrate`; user-owned `auto-loop.yaml` + goal; frozen config on resume | `init_cmd.py`, `run_inputs.py`, `config.py`, `cli.py`, `loop.py` | `test_init.py`, `test_cli.py`, `test_ux_contract.py`, `test_config.py`, `test_doctor.py`, integration flows |
+| Setup / CLI | `init` (optional starter YAML), `doctor`, `run`, `resume`; explicit v2 run YAML + task source; frozen snapshot on resume | `init_cmd.py`, `run_inputs.py`, `config.py`, `cli.py`, `loop.py`, `manifest.py` | `test_init.py`, `test_cli.py`, `test_ux_contract.py`, `test_config.py`, `test_doctor.py`, integration flows |
 | Persistent sessions | Four slots: planner, plan_reviewer, worker, reviewer; resume; mismatch | `loop.py`, `providers/cursor.py`, `lifecycle.py` | Scenarios K–M, `test_fake_cursor.py`, `test_cursor_stream.py` |
 | Planning | Dedicated planner + plan-reviewer; retire after PASS | `loop.py`, `prompts.py` | Scenarios A–B, U–V, `test_plan_flow.py`, `test_retired_planning_slots_reject_resume_after_handoff` |
 | Batch | Clean tree; `last_approved..HEAD`; no rewrite | `git.py`, `loop.py` | Scenarios C–G, `test_git.py` |
@@ -74,7 +74,7 @@ Supporting integration coverage: `test_plan_flow.py`, `test_lifecycle_flows.py`,
 | 9–12 | Worker batches; commits before review; controller range; cumulative revise | `git.normalize_batch_range`, scenarios C–D |
 | 13–14 | Reviewer widened scope; PASS advances baseline | `prompts.build_reviewer_prompt`, scenario J |
 | 15–18 | Final HEAD check; holistic final; batch before re-final; reviewer `COMPLETE` | `loop._assert_final_complete_valid`, scenarios H–I |
-| 19–23 | `.auto-loop` control; no plan parsing; no session rotation; no auto controller commits; simple state machine | `paths.py`, `lifecycle.py`, `loop.py` |
+| 19–23 | Artifact-root control; no plan parsing; no session rotation; no auto controller commits; simple state machine | `paths.py`, `lifecycle.py`, `loop.py` |
 | 24–27 | Tool protocol; instruction composition; context paths; repository-root AGENTS/skills | `instructions.py`, `templates/protocol/*`, `AGENTS.md`, `.agents/skills/` |
 | 28 | No extra orchestration without invariant need | — (design stance) |
 

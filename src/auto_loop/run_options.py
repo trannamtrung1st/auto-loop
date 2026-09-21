@@ -18,7 +18,7 @@ class RunOptions:
     console_level: ConsoleLevel = "normal"
     planner_model: str = "auto"
     goal_summary: str | None = None
-    user_config_rel: str = "auto-loop.yaml"
+    user_config_rel: str = "run.yaml"
     resuming: bool = False
 
 
@@ -49,7 +49,7 @@ def build_run_options(
     verbose: bool = False,
     quiet: bool = False,
     goal_summary: str | None = None,
-    user_config_rel: str = "auto-loop.yaml",
+    user_config_rel: str = "run.yaml",
     resuming: bool = False,
 ) -> RunOptions:
     planner_cfg = config.agents.get("planner")

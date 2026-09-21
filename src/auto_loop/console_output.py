@@ -24,8 +24,9 @@ class RunConsole:
         lifecycle_id: str,
         *,
         goal_summary: str | None = None,
-        user_config_rel: str = "auto-loop.yaml",
+        user_config_rel: str = "run.yaml",
         resuming: bool = False,
+        artifact_root_rel: str = ".ai/auto-loop",
     ) -> None:
         if resuming:
             self._emit("Resuming Auto Loop", min_level="normal")
@@ -46,7 +47,7 @@ class RunConsole:
         self._emit("Worker    waiting", min_level="normal")
         self._emit("Reviewer  waiting", min_level="normal")
         self._emit("", min_level="normal")
-        self._emit("Generated state will be stored in .auto-loop/", min_level="normal")
+        self._emit(f"Generated state will be stored in {artifact_root_rel}/", min_level="normal")
         self._emit("You normally do not need to edit that directory.", min_level="normal")
         self._emit(f"Lifecycle {lifecycle_id} started", min_level="verbose")
 

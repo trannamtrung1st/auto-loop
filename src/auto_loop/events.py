@@ -11,7 +11,7 @@ from auto_loop.config import AutoLoopConfig
 
 
 def _event_path(repo: Path, config: AutoLoopConfig) -> Path:
-    return repo / config.logging.event_log
+    return repo / config.event_log
 
 
 def append_event(repo: Path, config: AutoLoopConfig, event: dict[str, Any]) -> None:

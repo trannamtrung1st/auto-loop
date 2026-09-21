@@ -97,7 +97,7 @@ class WorkerUpdatesPlanProvider(PromptCapturingProvider):
 
     def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
         if os.environ.get("AUTO_LOOP_FAKE_ROLE") == "worker":
-            plan = self.repo / ".auto-loop" / "plan.md"
+            plan = self.repo / ".ai/auto-loop" / "plan.md"
             plan.write_text(plan.read_text(encoding="utf-8") + "\nworker plan update\n", encoding="utf-8")
         return super().invoke(argv)
 
@@ -109,7 +109,7 @@ class ReviewerMutatesPlanProvider(ScriptedProvider):
 
     def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
         if os.environ.get("AUTO_LOOP_FAKE_ROLE") == "reviewer":
-            plan = self.repo / ".auto-loop" / "plan.md"
+            plan = self.repo / ".ai/auto-loop" / "plan.md"
             plan.write_text(plan.read_text(encoding="utf-8") + "\nreviewer plan edit\n", encoding="utf-8")
         return super().invoke(argv)
 
@@ -185,19 +185,20 @@ def test_scenario_W_execution_sessions_are_fresh(tmp_path: Path):
 
 def test_scenario_X_three_model_selections(tmp_path: Path):
     repo = make_repo(tmp_path)
-    cfg = load_config_from_repo(repo)
-    cfg.agents["planner"] = cfg.agents["planner"].model_copy(update={"model": "P_MODEL"})
-    cfg.agents["worker"] = cfg.agents["worker"].model_copy(update={"model": "W_MODEL"})
-    cfg.agents["reviewer"] = cfg.agents["reviewer"].model_copy(update={"model": "R_MODEL"})
-    (repo / "auto-loop.yaml").write_text(
-        "models:\n  planner: P_MODEL\n  worker: W_MODEL\n  reviewer: R_MODEL\n",
+    yaml_path = repo / ".ai" / "run.yaml"
+    yaml_path.write_text(
+        yaml_path.read_text(encoding="utf-8")
+        + "\nmodels:\n  planner: P_MODEL\n  worker: W_MODEL\n  reviewer: R_MODEL\n",
         encoding="utf-8",
     )
-    loaded = load_config_from_repo(repo)
+    from auto_loop.manifest import load_run_manifest
+    from auto_loop.run_inputs import prepare_repo_for_run
+
+    loaded = prepare_repo_for_run(load_run_manifest(yaml_path)).config
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
-    run_lifecycle(repo, build_run_options(loaded, max_turns=2), provider)
+    run_lifecycle(repo, build_run_options(loaded, max_turns=2), provider, config=loaded)
     baseline_before = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload(baseline_before, head))
@@ -210,16 +211,8 @@ def test_scenario_X_three_model_selections(tmp_path: Path):
     assert by_role["reviewer"] == "R_MODEL"
 
 
-def test_scenario_Y_cli_role_override_precedence(tmp_path: Path):
+def test_scenario_Y_option_role_override_precedence(tmp_path: Path):
     repo = make_repo(tmp_path)
-    cfg = load_config_from_repo(repo)
-    cfg.agents["planner"] = cfg.agents["planner"].model_copy(update={"model": "P_CFG"})
-    cfg.agents["worker"] = cfg.agents["worker"].model_copy(update={"model": "W_CFG"})
-    cfg.agents["reviewer"] = cfg.agents["reviewer"].model_copy(update={"model": "R_CFG"})
-    (repo / "auto-loop.yaml").write_text(
-        "models:\n  planner: P_MODEL\n  worker: W_MODEL\n  reviewer: R_MODEL\n",
-        encoding="utf-8",
-    )
     loaded = load_config_from_repo(repo)
     options = build_run_options(
         loaded,
@@ -230,7 +223,7 @@ def test_scenario_Y_cli_role_override_precedence(tmp_path: Path):
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
-    run_lifecycle(repo, options, provider)
+    run_lifecycle(repo, options, provider, config=loaded)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload(baseline, head))
@@ -258,7 +251,7 @@ def test_scenario_Z_worker_updates_approved_plan(tmp_path: Path):
     final = load_lifecycle_state(repo)
     assert final.last_approved_commit == head
     assert final.current_plan_sha256 != initial_hash
-    assert "worker plan update" in (repo / ".auto-loop" / "plan.md").read_text(encoding="utf-8")
+    assert "worker plan update" in (repo / ".ai/auto-loop" / "plan.md").read_text(encoding="utf-8")
     assert provider.reviewer_prompts
     assert "plan changed since initial approval: yes" in provider.reviewer_prompts[-1]
 
@@ -269,7 +262,7 @@ def test_scenario_AA_worker_requests_execution_phase_plan_review(tmp_path: Path)
     approve_plan(repo, provider)
     plan_reviewer_id = load_lifecycle_state(repo).sessions["plan_reviewer"].session_id
     baseline = load_lifecycle_state(repo).last_approved_commit
-    plan = repo / ".auto-loop" / "plan.md"
+    plan = repo / ".ai/auto-loop" / "plan.md"
     plan.write_text(plan.read_text(encoding="utf-8") + "\nexecution update\n", encoding="utf-8")
     provider.set_response("worker", _plan_update_payload())
     provider.set_reviewer_revise("plan", "plan-update", slot="reviewer")
@@ -319,7 +312,7 @@ def test_scenario_AB_preferred_single_revision_commit(tmp_path: Path):
     ).split()
     assert history == [head_b, head_c2]
     assert load_lifecycle_state(repo).last_approved_commit == head_c2
-    reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
+    reviews = sorted((repo / ".ai/auto-loop" / "reviews").glob("*.md"))
     rounds = [
         line.split(":", 1)[1].strip()
         for path in reviews
@@ -387,7 +380,7 @@ def test_scenario_AE_gitignored_path_only_review(tmp_path: Path):
     run_lifecycle(repo, run_opts(2), provider)
     state = load_lifecycle_state(repo)
     assert state.last_approved_commit == approved
-    reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
+    reviews = sorted((repo / ".ai/auto-loop" / "reviews").glob("*.md"))
     text = reviews[-1].read_text(encoding="utf-8")
     assert "Fingerprint:" in text
     assert "build/report.html" in text

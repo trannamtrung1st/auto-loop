@@ -16,12 +16,16 @@ class RuntimeStateError(Exception):
     """Lifecycle state could not be loaded or saved."""
 
 
-def state_path(repo: Path) -> Path:
-    return auto_loop_root(repo) / "runtime" / "state.json"
+def state_path(repo: Path, artifact_root: Path | None = None) -> Path:
+    root = artifact_root if artifact_root is not None else auto_loop_root(repo)
+    return root / "runtime" / "state.json"
 
 
-def load_lifecycle_state(repo: Path) -> LifecycleState | None:
-    path = state_path(repo)
+def load_lifecycle_state(
+    repo: Path,
+    artifact_root: Path | None = None,
+) -> LifecycleState | None:
+    path = state_path(repo, artifact_root)
     if not path.is_file():
         return None
     try:
@@ -29,7 +33,7 @@ def load_lifecycle_state(repo: Path) -> LifecycleState | None:
         if not isinstance(data, dict):
             raise RuntimeStateError(f"Lifecycle state root must be an object: {path}")
         state = LifecycleState.model_validate(migrate_lifecycle_data(data))
-        return enrich_lifecycle_state(repo, state)
+        return enrich_lifecycle_state(repo, state, artifact_root=artifact_root)
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise RuntimeStateError(f"Invalid lifecycle state at {path}: {exc}") from exc
 
@@ -38,8 +42,9 @@ def save_lifecycle_state(
     repo: Path,
     state: LifecycleState,
     *,
+    artifact_root: Path | None = None,
     before_replace=None,
 ) -> None:
-    path = state_path(repo)
+    path = state_path(repo, artifact_root)
     payload = state.model_dump(mode="json")
     atomic_write_json(path, payload, before_replace=before_replace)

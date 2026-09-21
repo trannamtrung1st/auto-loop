@@ -108,7 +108,7 @@ def test_plan_revise_keeps_planner_session_and_unlocks_after_pass(tmp_path: Path
     assert state.plan_approved is True
     assert state.sessions["planner"].session_id is not None
     assert state.sessions["worker"].session_id is None
-    reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
+    reviews = sorted((repo / ".ai/auto-loop" / "reviews").glob("*.md"))
     assert len(reviews) == 2
 
 

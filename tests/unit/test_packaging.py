@@ -32,8 +32,10 @@ def test_wheel_contains_templates_and_license(tmp_path: Path):
     with zipfile.ZipFile(wheel) as zf:
         names = zf.namelist()
     assert any(n.endswith("auto_loop/templates/task.md") for n in names)
-    assert any(n.endswith("auto_loop/templates/auto-loop.yaml") for n in names)
+    assert any(n.endswith("auto_loop/templates/run.yaml") for n in names)
     assert any(n.endswith("auto_loop/templates/agents/planner.md") for n in names)
+    assert any(n.endswith("auto_loop/templates/protocol/shared.md") for n in names)
+    assert any(n.endswith("auto_loop/templates/instructions/shared.md") for n in names)
     assert not any("harness_resources" in n for n in names)
     assert not any(".agents/" in n or n.endswith("AGENTS.md") for n in names)
     assert any(n.endswith("LICENSE") or n.endswith("auto_loop-0.1.0.dist-info/LICENSE") for n in names)
@@ -88,14 +90,15 @@ def test_clean_venv_install_help_init_and_import(tmp_path: Path):
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
 
     init_result = subprocess.run(
-        [str(auto_loop), "init", str(repo)],
+        [str(auto_loop), "init", str(repo / ".ai" / "run.yaml")],
         capture_output=True,
         text=True,
+        cwd=repo,
     )
     assert init_result.returncode == 0, init_result.stderr or init_result.stdout
-    assert (repo / "auto-loop.yaml").is_file()
+    assert (repo / ".ai" / "run.yaml").is_file()
     assert not (repo / "task.md").exists()
-    assert not (repo / ".auto-loop" / "task.md").exists()
+    assert not (repo / ".ai" / "auto-loop" / "task.md").exists()
 
     uninstall = subprocess.run(
         [str(pip), "uninstall", "-y", "auto-loop"],

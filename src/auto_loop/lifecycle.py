@@ -404,19 +404,28 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
-def _configured_plan_file(repo: Path) -> str:
-    from auto_loop.config import ConfigurationError, load_resolved_config_from_repo
+def _configured_plan_file(repo: Path, artifact_root: Path | None = None) -> str:
+    from auto_loop.config import ConfigurationError, load_resolved_config_optional
+    from auto_loop.paths import DEFAULT_ARTIFACTS_ROOT, auto_loop_root
 
+    root = artifact_root if artifact_root is not None else auto_loop_root(repo)
     try:
-        return load_resolved_config_from_repo(repo).plan_file
+        frozen = load_resolved_config_optional(root)
+        if frozen is not None:
+            return frozen.plan_file
     except ConfigurationError:
-        return ".auto-loop/plan.md"
+        pass
+    return f"{DEFAULT_ARTIFACTS_ROOT}/plan.md"
 
 
-def resolve_plan_review_path(repo: Path, stored_path: str) -> str:
+def resolve_plan_review_path(
+    repo: Path,
+    stored_path: str,
+    artifact_root: Path | None = None,
+) -> str:
     """Map v1 migration sentinel plan targets to the workspace's configured plan file."""
     if stored_path == LEGACY_V1_PLAN_TARGET_PATH:
-        return _configured_plan_file(repo)
+        return _configured_plan_file(repo, artifact_root)
     return stored_path
 
 
@@ -429,7 +438,11 @@ def _legacy_plan_target_needs_enrichment(target: ActiveReviewTarget) -> bool:
     )
 
 
-def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
+def enrich_lifecycle_state(
+    repo: Path,
+    state: LifecycleState,
+    artifact_root: Path | None = None,
+) -> LifecycleState:
     """Repository-aware fixes for migration-incomplete active reviews only.
 
     Ordinary v2 targets with a persisted fingerprint are never recomputed or retargeted.
@@ -443,7 +456,7 @@ def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
     changed = False
     for target in review.targets:
         if _legacy_plan_target_needs_enrichment(target):
-            rel = resolve_plan_review_path(repo, target.path)
+            rel = resolve_plan_review_path(repo, target.path, artifact_root)
             try:
                 resolved = resolve_review_path(repo, rel)
             except Exception:

@@ -3,7 +3,7 @@
 import subprocess
 from pathlib import Path
 
-from auto_loop.config import dump_config, load_config_from_repo
+from auto_loop.config import load_config_from_repo
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.instructions import compose_role_instructions, load_protocol_contract
 
@@ -35,8 +35,8 @@ def test_protocol_present_on_first_invocation(tmp_path: Path):
     assert load_protocol_contract("worker")[:40] in worker
     assert "never declare the overall task" in worker.lower()
     assert "sole whole-task completion authority" in reviewer.lower()
-    assert ".auto-loop/agents/reviewer.md" not in worker
-    assert ".auto-loop/agents/worker.md" not in reviewer
+    assert ".ai/auto-loop/agents/reviewer.md" not in worker
+    assert ".ai/auto-loop/agents/worker.md" not in reviewer
 
 
 def test_resume_turn_omits_instruction_stack(tmp_path: Path):
@@ -49,8 +49,10 @@ def test_resume_turn_omits_instruction_stack(tmp_path: Path):
 def test_replace_role_omits_playbook_only(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
+    (repo / "shared-extra.md").write_text("ADVISORY_SHARED_BODY\n", encoding="utf-8")
     config = load_config_from_repo(repo)
     config.instructions.worker.mode = "replace_role"
+    config.instructions.shared.files.append("shared-extra.md")
     worker = compose_role_instructions(repo, config, "worker", first_invocation=True)
     assert "AUTO_LOOP_PROTOCOL" in worker
     assert "AUTO_LOOP_ROLE_PLAYBOOK" not in worker
@@ -62,16 +64,20 @@ def test_doctor_reports_missing_configured_custom_instruction(tmp_path: Path, mo
     bootstrap_workspace(repo)
     config = load_config_from_repo(repo)
     config.instructions.worker.files.append("docs/extra-worker.md")
-    (repo / "auto-loop.yaml").write_text(dump_config(config), encoding="utf-8")
-    import subprocess
-
     from auto_loop.doctor import run_doctor
+    from auto_loop.manifest import load_run_manifest
 
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
     monkeypatch.setattr(
         "auto_loop.doctor.subprocess.run",
         lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="--resume stream-json ask", stderr=""),
     )
-    report = run_doctor(repo)
+    yaml_path = repo / ".ai" / "run.yaml"
+    yaml_path.write_text(
+        yaml_path.read_text(encoding="utf-8")
+        + "\ninstructions:\n  worker:\n    files:\n      - docs/extra-worker.md\n",
+        encoding="utf-8",
+    )
+    report = run_doctor(load_run_manifest(yaml_path))
     assert not report.ok
     assert any("docs/extra-worker.md" in check.message for check in report.checks)

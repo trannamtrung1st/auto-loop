@@ -74,7 +74,7 @@ class WorkerMutatesTaskProvider(ScriptedProvider):
 
     def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
         if os.environ.get("AUTO_LOOP_FAKE_ROLE") in ("worker", "planner"):
-            task = self.repo / ".auto-loop" / "task.md"
+            task = self.repo / ".ai/auto-loop" / "task.md"
             task.write_text(task.read_text(encoding="utf-8") + "\nworker edit\n", encoding="utf-8")
         return super().invoke(argv)
 
@@ -224,7 +224,7 @@ def test_scenario_Q_reviewer_product_mutation_invalidates_verdict(tmp_path: Path
 
 def test_scenario_R_protected_task_mutation_stops_without_revert(tmp_path: Path):
     repo = make_repo(tmp_path)
-    task = repo / ".auto-loop" / "task.md"
+    task = repo / ".ai/auto-loop" / "task.md"
     before = task.read_text(encoding="utf-8")
     provider = WorkerMutatesTaskProvider(repo)
     provider.set_worker_plan_request()
@@ -244,7 +244,7 @@ def test_scenario_S_blocked_worker_reviewer_revise_resumes_worker(tmp_path: Path
     outcome = run_lifecycle(repo, run_opts(2), provider)
     state = load_lifecycle_state(repo)
     assert state.next_actor == "worker"
-    assert not (repo / ".auto-loop/runtime/blocked.json").is_file()
+    assert not (repo / ".ai/auto-loop/runtime/blocked.json").is_file()
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
 
 
@@ -256,7 +256,7 @@ def test_scenario_S_blocked_worker_reviewer_blocked_writes_record(tmp_path: Path
     provider.set_reviewer_blocked()
     outcome = run_lifecycle(repo, run_opts(2), provider)
     assert outcome.exit_code == ExitCode.BLOCKED
-    blocked = json.loads((repo / ".auto-loop/runtime/blocked.json").read_text(encoding="utf-8"))
+    blocked = json.loads((repo / ".ai/auto-loop/runtime/blocked.json").read_text(encoding="utf-8"))
     assert blocked["status"] == "blocked"
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from auto_loop.paths import auto_loop_root, resolve_repository_path
+from auto_loop.paths import DEFAULT_ARTIFACTS_ROOT, auto_loop_root, resolve_repository_path
 
 
 def test_resolve_repository_path_defaults_to_cwd(tmp_path: Path, monkeypatch):
@@ -24,4 +24,4 @@ def test_resolve_repository_path_missing_raises(tmp_path: Path):
 
 def test_auto_loop_root():
     repo = Path("/tmp/repo")
-    assert auto_loop_root(repo) == Path("/tmp/repo/.auto-loop")
+    assert auto_loop_root(repo) == (repo / DEFAULT_ARTIFACTS_ROOT).resolve()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from auto_loop.config import load_config_from_repo, write_resolved_config
+from auto_loop.config import dump_config, load_config_from_repo
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
     LEGACY_V1_PLAN_TARGET_PATH,
@@ -21,7 +21,7 @@ from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state, state_
 from tests.unit.test_lifecycle import _repo
 
 
-def _plan_target(fingerprint: str, path: str = ".auto-loop/plan.md") -> ActivePathTarget:
+def _plan_target(fingerprint: str, path: str = ".ai/auto-loop/plan.md") -> ActivePathTarget:
     return ActivePathTarget(
         id="plan",
         path=path,
@@ -60,7 +60,7 @@ def _execution_plan_review_state(repo: Path, plan_target: ActivePathTarget) -> L
 def test_reload_preserves_v2_plan_fingerprint_after_plan_changes(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
-    plan_path = repo / ".auto-loop" / "plan.md"
+    plan_path = repo / ".ai/auto-loop" / "plan.md"
     f1, _ = fingerprint_path(plan_path)
     state = _execution_plan_review_state(repo, _plan_target(f1))
     save_lifecycle_state(repo, state)
@@ -78,24 +78,23 @@ def test_reload_preserves_v2_plan_fingerprint_after_plan_changes(tmp_path: Path)
     assert violations
 
 
-def test_reload_does_not_retarget_v2_plan_when_config_plan_file_changes(tmp_path: Path):
+def test_reload_does_not_retarget_v2_plan_when_frozen_artifact_root_changes(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
-    plan_path = repo / ".auto-loop" / "plan.md"
+    plan_path = repo / ".ai/auto-loop" / "plan.md"
     digest, _ = fingerprint_path(plan_path)
-    state = _execution_plan_review_state(repo, _plan_target(digest, ".auto-loop/plan.md"))
+    state = _execution_plan_review_state(repo, _plan_target(digest, ".ai/auto-loop/plan.md"))
     save_lifecycle_state(repo, state)
 
-    custom = ".auto-loop/design.md"
-    (repo / ".auto-loop" / "design.md").write_text("# other plan\n", encoding="utf-8")
     cfg = load_config_from_repo(repo)
-    cfg.plan_file = custom
-    write_resolved_config(repo, cfg)
+    cfg = cfg.model_copy(update={"artifacts": cfg.artifacts.model_copy(update={"root": ".ai/other-loop"})})
+    snapshot = repo / ".ai/auto-loop" / "runtime" / "config.resolved.yaml"
+    snapshot.write_text(dump_config(cfg), encoding="utf-8")
 
     loaded = load_lifecycle_state(repo)
     assert loaded is not None
     stored = next(t for t in loaded.active_review.targets if t.id == "plan")
-    assert stored.path == ".auto-loop/plan.md"
+    assert stored.path == ".ai/auto-loop/plan.md"
     assert stored.fingerprint == digest
 
 

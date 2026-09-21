@@ -5,7 +5,7 @@ from pathlib import Path
 
 from auto_loop.config import load_config_from_repo
 from auto_loop.events import append_event, load_events
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -15,7 +15,7 @@ def _repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
-    run_init(repo, minimal=True)
+    bootstrap_workspace(repo)
     return repo
 
 

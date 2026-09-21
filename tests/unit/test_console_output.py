@@ -26,19 +26,19 @@ def test_start_banner_mentions_goal_and_tool_managed_state():
     console.lifecycle_started(
         "lc-1",
         goal_summary="Build a kanban board",
-        user_config_rel="auto-loop.yaml",
+        user_config_rel=".ai/run.yaml",
         resuming=False,
     )
     text = stream.getvalue()
     assert "Starting Auto Loop" in text
     assert "Goal: Build a kanban board" in text
-    assert "Config: auto-loop.yaml" in text
-    assert ".auto-loop/" in text
+    assert "Config: .ai/run.yaml" in text
+    assert ".ai/auto-loop/" in text
     assert "lc-1" not in text
 
 
 def test_plan_ready_points_at_generated_plan():
     stream = StringIO()
     console = RunConsole("normal", stream=stream)
-    console.plan_ready(".auto-loop/plan.md")
-    assert "Plan ready: .auto-loop/plan.md" in stream.getvalue()
+    console.plan_ready(".ai/auto-loop/plan.md")
+    assert "Plan ready: .ai/auto-loop/plan.md" in stream.getvalue()

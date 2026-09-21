@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from auto_loop.exits import ExitCode
-from auto_loop.init_cmd import run_init
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.locking import (
     ConcurrentRunError,
     acquire_workspace_lock,
@@ -15,6 +15,8 @@ from auto_loop.locking import (
     load_workspace_lock,
     lock_path,
 )
+
+
 def _git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -22,7 +24,7 @@ def _git_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True, capture_output=True)
-    run_init(repo, minimal=True)
+    bootstrap_workspace(repo)
     return repo
 
 

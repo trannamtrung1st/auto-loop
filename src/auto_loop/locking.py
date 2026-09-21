@@ -34,12 +34,15 @@ class WorkspaceLockRecord(BaseModel):
     lifecycle_id: str
 
 
-def lock_path(repo: Path) -> Path:
-    return auto_loop_root(repo) / "runtime" / "lock.json"
+def lock_path(repo: Path, artifact_root: Path | None = None) -> Path:
+    root = artifact_root if artifact_root is not None else auto_loop_root(repo)
+    return root / "runtime" / "lock.json"
 
 
-def load_workspace_lock(repo: Path) -> WorkspaceLockRecord | None:
-    path = lock_path(repo)
+def load_workspace_lock(
+    repo: Path, artifact_root: Path | None = None
+) -> WorkspaceLockRecord | None:
+    path = lock_path(repo, artifact_root)
     if not path.is_file():
         return None
     try:
@@ -72,14 +75,15 @@ def lock_owner_is_live(record: WorkspaceLockRecord) -> bool:
 class WorkspaceLockHandle:
     repo: Path
     record: WorkspaceLockRecord
+    artifact_root: Path | None = None
     released: bool = False
 
     def release(self) -> None:
         if self.released:
             return
-        path = lock_path(self.repo)
+        path = lock_path(self.repo, self.artifact_root)
         try:
-            current = load_workspace_lock(self.repo)
+            current = load_workspace_lock(self.repo, self.artifact_root)
         except LockError:
             current = None
         if current and current.pid == self.record.pid and current.hostname == self.record.hostname:
@@ -87,9 +91,13 @@ class WorkspaceLockHandle:
         self.released = True
 
 
-def acquire_workspace_lock(repo: Path, lifecycle_id: str) -> WorkspaceLockHandle:
-    path = lock_path(repo)
-    existing = load_workspace_lock(repo)
+def acquire_workspace_lock(
+    repo: Path,
+    lifecycle_id: str,
+    artifact_root: Path | None = None,
+) -> WorkspaceLockHandle:
+    path = lock_path(repo, artifact_root)
+    existing = load_workspace_lock(repo, artifact_root)
     if existing is not None and lock_owner_is_live(existing):
         raise ConcurrentRunError(
             f"Another auto-loop controller owns this workspace "
@@ -102,13 +110,15 @@ def acquire_workspace_lock(repo: Path, lifecycle_id: str) -> WorkspaceLockHandle
         lifecycle_id=lifecycle_id,
     )
     atomic_write_json(path, record.model_dump(mode="json"))
-    return WorkspaceLockHandle(repo=repo, record=record)
+    return WorkspaceLockHandle(repo=repo, record=record, artifact_root=artifact_root)
 
 
-def describe_lock_status(repo: Path) -> tuple[str, str]:
+def describe_lock_status(
+    repo: Path, artifact_root: Path | None = None
+) -> tuple[str, str]:
     """Return (severity, message) for doctor: ok, warning, or error."""
     try:
-        record = load_workspace_lock(repo)
+        record = load_workspace_lock(repo, artifact_root)
     except LockError as exc:
         return ("error", str(exc))
     if record is None:

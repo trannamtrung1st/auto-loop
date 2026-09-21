@@ -32,24 +32,29 @@ def stream_follow_logs(
     write: WriteChunk | None = None,
     follow_max_seconds: float | None = None,
     follow_idle_seconds: float = 1.0,
+    artifact_root: Path | None = None,
 ) -> None:
     """Write turn log bytes to ``write`` as they appear (proposal §35 logs --follow)."""
     emit = write or _default_stdout_write
-    state = load_lifecycle_state(repo)
+    state = load_lifecycle_state(repo, artifact_root)
     if state is None:
         emit("No lifecycle state; no turn logs available.")
         return
     lifecycle_id = state.lifecycle_id
-    selected = turn if turn is not None else latest_turn_with_logs(repo, lifecycle_id)
+    selected = turn if turn is not None else latest_turn_with_logs(repo, lifecycle_id, artifact_root)
     if selected is None:
         emit("No turn logs recorded yet.")
         return
 
-    role = role_with_log_for_turn(repo, lifecycle_id, selected, raw=raw)
+    role = role_with_log_for_turn(
+        repo, lifecycle_id, selected, raw=raw, artifact_root=artifact_root
+    )
     if role is None:
         emit(f"No turn logs recorded for turn {selected}.")
         return
-    jsonl_path, log_path = turn_log_paths(repo, lifecycle_id, selected, role)
+    jsonl_path, log_path = turn_log_paths(
+        repo, lifecycle_id, selected, role, artifact_root
+    )
     target = jsonl_path if raw else log_path
     if not target.is_file():
         emit(f"Waiting for {target.name}...")
@@ -70,7 +75,7 @@ def stream_follow_logs(
                     last_size = len(text)
                     grew = True
                     last_growth = time.monotonic()
-            current = load_lifecycle_state(repo)
+            current = load_lifecycle_state(repo, artifact_root)
             terminal = current is None or current.status != LifecycleStatus.RUNNING
             if terminal and not grew and time.monotonic() - last_growth >= follow_idle_seconds:
                 break
@@ -89,12 +94,13 @@ def render_logs(
     follow: bool = False,
     follow_max_seconds: float | None = None,
     follow_idle_seconds: float = 1.0,
+    artifact_root: Path | None = None,
 ) -> str:
-    state = load_lifecycle_state(repo)
+    state = load_lifecycle_state(repo, artifact_root)
     if state is None:
         return "No lifecycle state; no turn logs available."
     lifecycle_id = state.lifecycle_id
-    selected = turn if turn is not None else latest_turn_with_logs(repo, lifecycle_id)
+    selected = turn if turn is not None else latest_turn_with_logs(repo, lifecycle_id, artifact_root)
     if selected is None:
         return "No turn logs recorded yet."
 
@@ -113,7 +119,8 @@ def render_logs(
             write=capture,
             follow_max_seconds=follow_max_seconds,
             follow_idle_seconds=follow_idle_seconds,
+            artifact_root=artifact_root,
         )
         return buffer.getvalue().rstrip("\n") if buffer.tell() else buffer.getvalue()
 
-    return read_turn_logs(repo, lifecycle_id, selected, raw=raw)
+    return read_turn_logs(repo, lifecycle_id, selected, raw=raw, artifact_root=artifact_root)

@@ -18,7 +18,7 @@ python -m pytest -q
 Result (representative run on Python 3.14):
 
 ```text
-285 passed, 1 skipped in ~65s
+282 passed, 1 skipped in ~75s
 ```
 
 The single skip is the opt-in live Cursor smoke test when `AUTO_LOOP_LIVE_CURSOR` is unset (see below).
@@ -47,7 +47,7 @@ Result: succeeds; templates present in wheel and packaged harness absent (`test_
 
 ## Static analysis
 
-`ruff` is configured under `[tool.ruff]` in `pyproject.toml` but is **not** part of the `[project.optional-dependencies].dev` extra (dev installs only pytest and pytest-cov). Ruff was **not** executed in this environment. Optional: `pip install ruff && ruff check src tests`.
+`ruff check src tests` is part of GitHub Actions CI. Local run on this change: **All checks passed.**
 
 ## Live Cursor smoke (§45)
 

@@ -8,9 +8,9 @@ You have your own persistent planning session. You do not implement product chan
 
 ## Sources of truth
 
-1. `.auto-loop/task.md` is authoritative.
+1. The lifecycle task snapshot (`task.md`, path provided in the turn prompt) is authoritative.
 2. Current repository state is ground truth for feasibility.
-3. `.auto-loop/plan.md` is your working output.
+3. The plan file (`plan.md`, path provided in the turn prompt) is your working output.
 4. Plan review artifacts contain independent reviewer findings.
 5. Session memory is useful but may be stale.
 
@@ -24,7 +24,7 @@ Inspect the repository enough to understand:
 - likely implementation batches;
 - risks and acceptance coverage.
 
-Write/update `.auto-loop/plan.md`.
+Write/update the plan file.
 
 Do not modify product implementation files.
 Do not create product commits.

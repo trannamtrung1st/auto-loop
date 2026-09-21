@@ -35,11 +35,11 @@ def test_completion_still_valid_tracks_task_hash(tmp_path: Path):
         initial_base_commit=head,
         final_commit=head,
         last_approved_commit=head,
-        final_review_file=".auto-loop/reviews/0001-final.md",
+        final_review_file=".ai/auto-loop/reviews/0001-final.md",
         task_sha256=task_hash,
         plan_sha256=plan_hash,
     )
     save_completion_record(repo, record)
     assert completion_still_valid(repo, config, record)
-    (repo / ".auto-loop/task.md").write_text("changed\n", encoding="utf-8")
+    (repo / ".ai/auto-loop/task.md").write_text("changed\n", encoding="utf-8")
     assert not completion_still_valid(repo, config, record)

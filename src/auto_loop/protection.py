@@ -10,7 +10,7 @@ from auto_loop.config import AutoLoopConfig
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.models import ActiveReviewTarget
-from auto_loop.product_state import list_product_changes
+from auto_loop.product_state import DEFAULT_PRODUCT_EXCLUDES, list_product_changes, product_excludes
 from auto_loop.review_targets import verify_path_targets_unchanged, sha256_file
 
 
@@ -126,8 +126,15 @@ def assert_protected_unchanged(
         raise ProtectionViolationError(violations)
 
 
-def capture_product_fingerprint(repo: Path) -> ProductFingerprint:
-    changes = list_product_changes(repo)
+def capture_product_fingerprint(
+    repo: Path,
+    *,
+    excludes: tuple[str, ...] | None = None,
+    config: AutoLoopConfig | None = None,
+) -> ProductFingerprint:
+    if excludes is None:
+        excludes = product_excludes(config) if config is not None else DEFAULT_PRODUCT_EXCLUDES
+    changes = list_product_changes(repo, excludes=excludes)
     return ProductFingerprint(
         head=head_commit(repo),
         changes=tuple(sorted((change.path, change.status) for change in changes)),
@@ -160,10 +167,12 @@ def capture_review_snapshot(
     *,
     plan_path: Path,
     targets: list[ActiveReviewTarget] | None = None,
+    excludes: tuple[str, ...] | None = None,
+    config: AutoLoopConfig | None = None,
 ) -> ReviewSnapshot:
     plan_hash = sha256_file(plan_path) if plan_path.is_file() else None
     return ReviewSnapshot(
-        product=capture_product_fingerprint(repo),
+        product=capture_product_fingerprint(repo, excludes=excludes, config=config),
         plan_sha256=plan_hash,
         path_target_ids=tuple(t.id for t in (targets or []) if t.kind == "path"),
     )
@@ -175,8 +184,10 @@ def assert_review_snapshot_unchanged(
     plan_path: Path,
     before: ReviewSnapshot,
     targets: list[ActiveReviewTarget] | None = None,
+    excludes: tuple[str, ...] | None = None,
+    config: AutoLoopConfig | None = None,
 ) -> None:
-    after_product = capture_product_fingerprint(repo)
+    after_product = capture_product_fingerprint(repo, excludes=excludes, config=config)
     details = diff_product_fingerprints(before.product, after_product)
     after_plan = sha256_file(plan_path) if plan_path.is_file() else None
     if before.plan_sha256 != after_plan:

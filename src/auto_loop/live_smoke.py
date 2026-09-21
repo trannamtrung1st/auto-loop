@@ -12,6 +12,7 @@ from auto_loop.doctor import run_doctor
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
+from auto_loop.manifest import load_run_manifest
 from auto_loop.providers.cursor import resolve_cursor_binary
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.terminal_records import load_completion_record
@@ -58,6 +59,10 @@ def live_smoke_gate() -> LiveSmokeGate:
     return LiveSmokeGate(True, "")
 
 
+def run_doctor_for_repo(repo: Path):
+    return run_doctor(load_run_manifest(repo / ".ai" / "run.yaml"))
+
+
 def prepare_smoke_repository(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
@@ -72,7 +77,7 @@ def prepare_smoke_repository(repo: Path) -> None:
     subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init smoke project"], cwd=repo, check=True, capture_output=True)
     bootstrap_workspace(repo, goal=SMOKE_TASK)
-    (repo / ".auto-loop" / "plan.md").write_text(SMOKE_PLAN, encoding="utf-8")
+    (repo / ".ai" / "auto-loop" / "plan.md").write_text(SMOKE_PLAN, encoding="utf-8")
 
 
 def _review_field(text: str, label: str) -> str | None:
@@ -109,7 +114,7 @@ def _product_commit_count(repo: Path, base: str) -> int:
             f"{base}..HEAD",
             "--",
             ".",
-            ":(exclude).auto-loop",
+            ":(exclude).ai/auto-loop",
         ],
         cwd=repo,
         capture_output=True,
@@ -131,7 +136,7 @@ def section_45_check_notes(repo: Path) -> list[str]:
     from auto_loop.events import load_events
 
     events = load_events(repo, config)
-    reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
+    reviews = sorted((repo / config.reviews_dir).glob("*.md"))
     worker_ids: set[str] = set()
     reviewer_ids: set[str] = set()
     for path in reviews:
@@ -247,7 +252,8 @@ def collect_smoke_evidence(repo: Path, exit_code: ExitCode) -> SmokeEvidence:
     notes: list[str] = []
     state = load_lifecycle_state(repo)
     record = load_completion_record(repo)
-    reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
+    config = load_config_from_repo(repo)
+    reviews = sorted((repo / config.reviews_dir).glob("*.md"))
     worker_id = state.sessions["worker"].session_id if state else None
     reviewer_id = state.sessions["reviewer"].session_id if state else None
     if worker_id and reviewer_id and worker_id == reviewer_id:
@@ -260,7 +266,7 @@ def collect_smoke_evidence(repo: Path, exit_code: ExitCode) -> SmokeEvidence:
         completion_ok = record.final_commit == head_commit(repo)
     elif int(exit_code) == int(ExitCode.COMPLETE):
         notes.append("COMPLETE exit but no completion.json")
-    doctor_ok = run_doctor(repo).ok
+    doctor_ok = run_doctor_for_repo(repo).ok
     notes.extend(section_45_check_notes(repo))
     return SmokeEvidence(
         worker_session_id=worker_id,

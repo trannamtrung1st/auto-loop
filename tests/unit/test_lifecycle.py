@@ -54,15 +54,15 @@ def test_create_lifecycle_sets_baselines_to_head(tmp_path: Path):
 def test_worker_prompt_includes_durable_facts():
     state = create_lifecycle("abc123")
     ctx = TurnContext(
-        task_path=".auto-loop/task.md",
-        plan_path=".auto-loop/plan.md",
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
         latest_review_path=None,
         head_commit="abc123",
         product_clean=True,
         interrupted=True,
     )
     prompt = build_worker_prompt(state, ctx)
-    assert ".auto-loop/task.md" in prompt
+    assert ".ai/auto-loop/task.md" in prompt
     assert "last approved product commit: abc123" in prompt
     assert "interrupted" in prompt.lower()
     assert "AUTO_LOOP_RESULT" in prompt
@@ -72,9 +72,9 @@ def test_reviewer_batch_and_final_prompts():
     state = create_lifecycle("base")
     state.plan_approved = True
     ctx = TurnContext(
-        task_path=".auto-loop/task.md",
-        plan_path=".auto-loop/plan.md",
-        latest_review_path=".auto-loop/reviews/0001-plan.md",
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=".ai/auto-loop/reviews/0001-plan.md",
         head_commit="head",
         product_clean=True,
     )
@@ -288,7 +288,7 @@ def test_migrate_v1_active_batch_review_while_waiting_on_reviewer():
 def test_load_lifecycle_enriches_migrated_plan_target_fingerprint(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
-    plan_path = repo / ".auto-loop" / "plan.md"
+    plan_path = repo / ".ai/auto-loop" / "plan.md"
     digest, _ = fingerprint_path(plan_path)
     from auto_loop.git import head_commit
 
@@ -317,7 +317,7 @@ def test_load_lifecycle_enriches_migrated_plan_target_fingerprint(tmp_path: Path
     loaded = load_lifecycle_state(repo)
     assert loaded is not None
     plan = next(t for t in loaded.active_review.targets if t.id == "plan")
-    assert plan.path == ".auto-loop/plan.md"
+    assert plan.path == ".ai/auto-loop/plan.md"
     assert plan.fingerprint == digest
 
 

@@ -1,4 +1,4 @@
-"""CLI registration and PATH argument tests."""
+"""CLI registration and explicit run-config argument tests."""
 
 from pathlib import Path
 
@@ -6,6 +6,8 @@ from rich.text import Text
 from typer.testing import CliRunner
 
 from auto_loop.cli import app
+from auto_loop.exits import ExitCode
+from tests.repo_utils import git_repo
 
 runner = CliRunner()
 
@@ -13,8 +15,9 @@ runner = CliRunner()
 def test_help_exposes_all_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for name in ("init", "doctor", "run", "status", "logs", "stop", "resume", "migrate"):
+    for name in ("init", "doctor", "run", "status", "logs", "stop", "resume"):
         assert name in result.stdout
+    assert "migrate" not in result.stdout
     assert "resources" not in result.stdout
 
 
@@ -24,31 +27,24 @@ def test_version():
     assert "0.1.0" in result.stdout
 
 
-def test_init_accepts_path_argument(tmp_path: Path):
-    result = runner.invoke(app, ["init", str(tmp_path)])
+def test_init_accepts_yaml_path(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["init", str(tmp_path / ".ai" / "run.yaml")])
     assert result.exit_code == 0
+    assert (tmp_path / ".ai" / "run.yaml").is_file()
 
 
-def test_doctor_accepts_path_argument(tmp_path: Path):
-    result = runner.invoke(app, ["doctor", str(tmp_path)])
-    assert result.exit_code == 10
+def test_doctor_requires_run_config(tmp_path: Path):
+    result = runner.invoke(app, ["doctor", str(tmp_path / "missing.yaml")])
+    assert result.exit_code == int(ExitCode.CONFIG_ERROR)
 
 
-def test_run_accepts_path_and_flags(tmp_path: Path):
-    result = runner.invoke(
-        app,
-        [
-            "run",
-            str(tmp_path),
-            "--max-turns",
-            "5",
-            "--verbose",
-        ],
-    )
-    assert result.exit_code == 10
+def test_run_without_manifest_shows_usage():
+    result = runner.invoke(app, ["run"])
+    assert result.exit_code != 0
 
 
-def test_run_help_lists_model_and_limit_flags():
+def test_run_help_does_not_duplicate_config_flags():
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
     plain_output = Text.from_ansi(result.stdout).plain
@@ -59,30 +55,13 @@ def test_run_help_lists_model_and_limit_flags():
         "--reviewer-model",
         "--max-turns",
         "--max-runtime-minutes",
-        "--verbose",
-        "--quiet",
         "--goal-file",
         "--context",
         "--path",
     ):
-        assert flag in plain_output
-
-
-def test_run_minimal_init_fails_closed_before_provider(tmp_path: Path):
-    repo = tmp_path / "minimal"
-    repo.mkdir()
-    subprocess = __import__("subprocess")
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
-    from auto_loop.init_cmd import run_init
-
-    run_init(repo, minimal=True)
-    result = runner.invoke(app, ["run", "--path", str(repo), "Implement X"])
-    assert result.exit_code == 10
-    combined = result.stderr + result.stdout
-    assert "Missing instruction templates" in combined
+        assert flag not in plain_output
+    assert "--verbose" in plain_output
+    assert "--quiet" in plain_output
 
 
 def test_resources_command_removed():
@@ -90,35 +69,28 @@ def test_resources_command_removed():
     assert result.exit_code != 0
 
 
-def test_status_reports_idle_workspace(tmp_path: Path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess = __import__("subprocess")
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
-    from auto_loop.init_cmd import run_init
-
-    run_init(repo, minimal=True)
-    result = runner.invoke(app, ["status", str(repo)])
+def test_status_reports_idle_workspace(tmp_path: Path, monkeypatch):
+    repo = git_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    yaml_path = repo / ".ai" / "run.yaml"
+    runner.invoke(app, ["init", str(yaml_path)])
+    (repo / ".ai" / "proposal.md").write_text("Idle goal\n", encoding="utf-8")
+    result = runner.invoke(app, ["status", str(yaml_path)])
     assert result.exit_code == 0
     assert "status: idle" in result.stdout or "status: running" in result.stdout
 
 
-def test_logs_cli_accepts_path_and_turn(tmp_path: Path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess = __import__("subprocess")
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    from auto_loop.init_cmd import run_init
-
-    run_init(repo, minimal=True)
-    result = runner.invoke(app, ["logs", str(repo), "--turn", "1"])
+def test_logs_cli_accepts_config_and_turn(tmp_path: Path, monkeypatch):
+    repo = git_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    yaml_path = repo / ".ai" / "run.yaml"
+    runner.invoke(app, ["init", str(yaml_path)])
+    (repo / ".ai" / "proposal.md").write_text("Logs goal\n", encoding="utf-8")
+    result = runner.invoke(app, ["logs", str(yaml_path), "--turn", "1"])
     assert result.exit_code == 0
 
 
-def test_invalid_repository_path_exits_config_error(tmp_path: Path):
-    missing = tmp_path / "missing"
+def test_invalid_config_path_exits_config_error(tmp_path: Path):
+    missing = tmp_path / "missing.yaml"
     result = runner.invoke(app, ["status", str(missing)])
-    assert result.exit_code == 10
+    assert result.exit_code == int(ExitCode.CONFIG_ERROR)

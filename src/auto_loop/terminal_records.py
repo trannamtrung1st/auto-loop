@@ -14,7 +14,7 @@ from auto_loop.config import AutoLoopConfig
 from auto_loop.git import head_commit
 from auto_loop.atomic_io import atomic_write_json
 from auto_loop.paths import auto_loop_root
-from auto_loop.product_state import is_product_tree_clean
+from auto_loop.product_state import is_product_tree_clean, product_excludes
 from auto_loop.run_prerequisites import RunPreconditionError
 
 
@@ -62,16 +62,20 @@ class BlockedRecord(BaseModel):
     review_file: str | None = None
 
 
-def completion_path(repo: Path) -> Path:
-    return auto_loop_root(repo) / "runtime" / "completion.json"
+def completion_path(repo: Path, artifact_root: Path | None = None) -> Path:
+    root = artifact_root if artifact_root is not None else auto_loop_root(repo)
+    return root / "runtime" / "completion.json"
 
 
-def blocked_path(repo: Path) -> Path:
-    return auto_loop_root(repo) / "runtime" / "blocked.json"
+def blocked_path(repo: Path, artifact_root: Path | None = None) -> Path:
+    root = artifact_root if artifact_root is not None else auto_loop_root(repo)
+    return root / "runtime" / "blocked.json"
 
 
-def load_completion_record(repo: Path) -> CompletionRecord | None:
-    path = completion_path(repo)
+def load_completion_record(
+    repo: Path, artifact_root: Path | None = None
+) -> CompletionRecord | None:
+    path = completion_path(repo, artifact_root)
     if not path.is_file():
         return None
     try:
@@ -81,20 +85,30 @@ def load_completion_record(repo: Path) -> CompletionRecord | None:
         raise TerminalRecordError(f"Invalid completion record at {path}: {exc}") from exc
 
 
-def save_completion_record(repo: Path, record: CompletionRecord) -> Path:
-    path = completion_path(repo)
+def save_completion_record(
+    repo: Path,
+    record: CompletionRecord,
+    artifact_root: Path | None = None,
+) -> Path:
+    path = completion_path(repo, artifact_root)
     atomic_write_json(path, record.model_dump(mode="json"))
     return path
 
 
-def save_blocked_record(repo: Path, record: BlockedRecord) -> Path:
-    path = blocked_path(repo)
+def save_blocked_record(
+    repo: Path,
+    record: BlockedRecord,
+    artifact_root: Path | None = None,
+) -> Path:
+    path = blocked_path(repo, artifact_root)
     atomic_write_json(path, record.model_dump(mode="json"))
     return path
 
 
-def load_blocked_record(repo: Path) -> BlockedRecord | None:
-    path = blocked_path(repo)
+def load_blocked_record(
+    repo: Path, artifact_root: Path | None = None
+) -> BlockedRecord | None:
+    path = blocked_path(repo, artifact_root)
     if not path.is_file():
         return None
     try:
@@ -118,7 +132,7 @@ def completion_still_valid(repo: Path, config: AutoLoopConfig, record: Completio
     head = head_commit(repo)
     if head != record.final_commit:
         return False
-    if not is_product_tree_clean(repo):
+    if not is_product_tree_clean(repo, excludes=product_excludes(config)):
         return False
     task_hash, plan_hash = task_and_plan_hashes(repo, config)
     if task_hash != record.task_sha256:
@@ -142,5 +156,5 @@ IDEMPOTENT_COMPLETE_MESSAGE = (
 )
 
 IDEMPOTENT_BLOCKED_MESSAGE = (
-    "This lifecycle is blocked. Supply a new goal to start a fresh run, or inspect status for details."
+    "This lifecycle is blocked. Start a new run with an updated task source, or inspect status for details."
 )

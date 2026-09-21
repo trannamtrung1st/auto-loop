@@ -1,10 +1,10 @@
 # Samples
 
-Runnable Auto Loop example projects. Copy a sample out of this repository (or run `bootstrap.sh` in a disposable clone) so Auto Loop does not treat the auto-loop source tree as the product.
+Runnable Auto Loop example projects. Copy a sample out of this repository so Auto Loop does not treat the auto-loop source tree as the product.
 
 Each sample follows the user-facing contract:
 
-- `goal.md` — optional goal file
-- `auto-loop.yaml` — user-owned config
-- no duplicate root `task.md` / `context.yaml`
-- no checked-in `.auto-loop/` runtime state
+- `.ai/run.yaml` — explicit run manifest
+- `.ai/proposal.md` — task/goal document
+- no root `auto-loop.yaml` / `context.yaml`
+- no checked-in generated artifact state

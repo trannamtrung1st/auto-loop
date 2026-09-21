@@ -3,14 +3,12 @@
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.loop import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import RunOptions
-from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
+from auto_loop.run_prerequisites import ensure_run_prerequisites
 from auto_loop.runtime import load_lifecycle_state
 
 
@@ -42,7 +40,7 @@ def test_plan_review_pass_marks_plan_approved(tmp_path: Path):
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.plan_approved is True
-    assert list((repo / ".auto-loop" / "reviews").glob("*.md"))
+    assert list((repo / ".ai/auto-loop" / "reviews").glob("*.md"))
 
 
 def test_batch_pass_advances_baseline(tmp_path: Path):
@@ -176,17 +174,19 @@ def test_path_only_batch_does_not_advance_baseline(tmp_path: Path):
     )
     state = load_lifecycle_state(repo)
     assert state.last_approved_commit == approved
-    reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
+    reviews = sorted((repo / ".ai/auto-loop" / "reviews").glob("*.md"))
     assert any("generated" in path.read_text(encoding="utf-8") for path in reviews)
 
 
-def test_minimal_init_blocks_run(tmp_path: Path):
+def test_bootstrap_satisfies_run_prerequisites_without_generated_files(tmp_path: Path):
     repo = tmp_path / "minimal"
     repo.mkdir()
     _git(repo, "init")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "T")
     _git(repo, "commit", "--allow-empty", "-m", "init")
-    bootstrap_workspace(repo, minimal=True)
-    with pytest.raises(RunPreconditionError):
-        ensure_run_prerequisites(repo)
+    bootstrap_workspace(repo)
+    config = ensure_run_prerequisites(repo)
+    assert config.agents["planner"].role_file == ""
+    assert not (repo / ".ai" / "auto-loop" / "agents").exists()
+    assert not (repo / ".ai" / "auto-loop" / "instructions").exists()

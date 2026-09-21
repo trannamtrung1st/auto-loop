@@ -23,9 +23,9 @@ def _init_repo(tmp_path: Path) -> Path:
 
 
 def test_is_control_path():
-    assert is_control_path(".auto-loop/plan.md")
-    assert is_control_path(".auto-loop/runtime/state.json")
-    assert is_control_path("auto-loop.yaml")
+    assert is_control_path(".ai/auto-loop/plan.md")
+    assert is_control_path(".ai/auto-loop/runtime/state.json")
+    assert not is_control_path("auto-loop.yaml")
     assert not is_control_path("src/main.py")
 
 

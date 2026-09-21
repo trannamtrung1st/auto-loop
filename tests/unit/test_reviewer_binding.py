@@ -128,7 +128,7 @@ def test_planning_review_cycle_reuses_pending_revision(tmp_path: Path):
         scope="plan",
         target="plan",
         round=2,
-        finding_review_file=".auto-loop/reviews/x.md",
+        finding_review_file=".ai/auto-loop/reviews/x.md",
     )
     cycle_id, round_no = runner._planning_review_cycle(state, "plan")
     assert cycle_id == "review-0003"

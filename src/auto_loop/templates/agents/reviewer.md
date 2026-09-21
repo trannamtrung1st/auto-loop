@@ -22,10 +22,10 @@ You are not the implementer. Do not intentionally modify product files, the plan
 
 ## Sources of truth
 
-1. `.auto-loop/task.md` is the authoritative task contract.
+1. The lifecycle task snapshot (`task.md`) is the authoritative task contract.
 2. Current repository/Git state is ground truth.
 3. The controller-provided Git range identifies the candidate implementation batch (`last_approved_commit..HEAD` for batch reviews) when present.
-4. `.auto-loop/plan.md` is useful but is not the acceptance contract.
+4. The plan file (`plan.md`) is useful but is not the acceptance contract.
 5. Prior review files provide history.
 
 ## Review targets

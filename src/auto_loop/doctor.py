@@ -1,4 +1,4 @@
-"""Workspace and provider diagnostics."""
+"""Workspace and provider diagnostics for an explicit run manifest."""
 
 from __future__ import annotations
 
@@ -8,29 +8,17 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from auto_loop.config import (
-    AutoLoopConfig,
-    USER_CONFIG_FILENAME,
-    ConfigurationError,
-    load_config_from_repo,
-    user_config_path,
-)
+from auto_loop.config import AutoLoopConfig, ConfigurationError
 from auto_loop.git import is_git_repository
-from auto_loop.paths import auto_loop_root
-from auto_loop.product_state import is_product_tree_clean
-from auto_loop.context_manifest import validate_context_file
+from auto_loop.product_state import is_product_tree_clean, product_excludes
+from auto_loop.context_manifest import validate_context
 from auto_loop.instructions import validate_custom_instruction_files
 from auto_loop.lifecycle import session_consistency_errors
+from auto_loop.manifest import RunManifestSource
 from auto_loop.providers.cursor import resolve_cursor_binary
 from auto_loop.locking import describe_lock_status
 from auto_loop.runtime import RuntimeStateError, load_lifecycle_state
-
-DEFAULT_INSTRUCTION_PATHS = (
-    ".auto-loop/instructions/shared.md",
-    ".auto-loop/instructions/planner.md",
-    ".auto-loop/instructions/worker.md",
-    ".auto-loop/instructions/reviewer.md",
-)
+from auto_loop.run_inputs import validate_task_source
 
 
 class Severity(StrEnum):
@@ -69,114 +57,101 @@ class DoctorReport:
         return "\n".join(lines)
 
 
-def _path_readable(repo: Path, rel: str) -> bool:
-    path = repo / rel
+def _path_readable(path: Path) -> bool:
     return path.is_file() and os.access(path, os.R_OK)
 
 
-def _check_workspace_layout(repo: Path, report: DoctorReport) -> AutoLoopConfig | None:
-    root = auto_loop_root(repo)
-    user_path = user_config_path(repo)
-    snapshot_path = root / "config.yaml"
-    if not user_path.is_file() and not snapshot_path.is_file():
-        report.add(
-            "workspace",
-            Severity.ERROR,
-            f"Missing {USER_CONFIG_FILENAME}; run `auto-loop init`",
-        )
-        return None
-
+def _artifact_ignored(workspace: Path, artifact_root: Path) -> bool:
+    gitignore = workspace / ".gitignore"
+    if not gitignore.is_file():
+        return False
     try:
-        config = load_config_from_repo(repo)
-    except ConfigurationError as exc:
-        report.add("config", Severity.ERROR, f"Invalid configuration: {exc}")
-        return None
+        rel = artifact_root.resolve().relative_to(workspace.resolve())
+    except ValueError:
+        return True
+    rel_text = str(rel).replace("\\", "/")
+    prefixes = {rel_text, f"{rel_text}/", f"{rel_text}/**", str(rel_text).split("/")[0] + "/"}
+    existing = {line.strip().rstrip("/") for line in gitignore.read_text(encoding="utf-8").splitlines()}
+    for item in existing:
+        cleaned = item.rstrip("/")
+        if cleaned in prefixes or rel_text.startswith(cleaned.rstrip("*").rstrip("/") + "/"):
+            return True
+        if item in {rel_text, f"{rel_text}/", f"{rel_text}/**"}:
+            return True
+    return False
 
-    report.add("config", Severity.OK, "Configuration loaded and validated")
-    if not root.is_dir():
+
+def _check_manifest(source: RunManifestSource, report: DoctorReport) -> AutoLoopConfig:
+    report.add("config", Severity.OK, f"Run config loaded: {source.path}")
+    report.add("workspace", Severity.OK, f"Workspace: {source.workspace}")
+    report.add(
+        "artifacts",
+        Severity.OK,
+        f"Artifact root is contained in workspace: {source.artifact_root}",
+    )
+    if not _artifact_ignored(source.workspace, source.artifact_root):
         report.add(
-            "workspace",
+            "artifacts:gitignore",
             Severity.WARNING,
-            "No tool-managed state yet; `.auto-loop/` will be created on `auto-loop run`. "
-            "You normally do not need to edit that directory.",
+            "Artifact root is inside the repository and is not listed in .gitignore",
         )
-    else:
-        report.add("workspace", Severity.OK, ".auto-loop/ is present (tool-managed state)")
-    return config
+    return source.config
 
 
-def _check_role_and_task_files(
-    repo: Path,
+def _check_task_source(source: RunManifestSource, report: DoctorReport) -> None:
+    try:
+        validate_task_source(source)
+    except Exception as exc:
+        report.add("task", Severity.ERROR, str(exc))
+        return
+    report.add("task", Severity.OK, f"Task source is readable: {source.task_source}")
+
+
+def _check_role_and_runtime_files(
+    source: RunManifestSource,
     config: AutoLoopConfig,
     report: DoctorReport,
     *,
-    require_task: bool,
+    require_task_snapshot: bool,
 ) -> None:
-    for label, rel in (
-        ("task", config.task_file),
-        ("plan", config.plan_file),
-        ("context", config.context_file),
-        ("planner agent", config.agents["planner"].role_file),
-        ("worker agent", config.agents["worker"].role_file),
-        ("reviewer agent", config.agents["reviewer"].role_file),
-    ):
-        if _path_readable(repo, rel):
-            report.add(f"file:{label}", Severity.OK, f"{rel} is readable")
-        elif label == "task" and not require_task:
-            report.add(
-                f"file:{label}",
-                Severity.WARNING,
-                "No run goal snapshot yet; provide one with `auto-loop run` or `--goal-file`",
-            )
-        elif "planner" in label:
-            report.add(
-                f"file:{label}",
-                Severity.ERROR,
-                f"Missing or unreadable {rel}; run auto-loop init to create missing planner templates",
-            )
-        else:
-            report.add(f"file:{label}", Severity.ERROR, f"Missing or unreadable {rel}")
+    task_snapshot = source.artifact_root / "task.md"
+    plan = source.artifact_root / "plan.md"
+    if _path_readable(task_snapshot):
+        report.add("file:task-snapshot", Severity.OK, f"{config.task_file} is readable")
+    elif require_task_snapshot:
+        report.add("file:task-snapshot", Severity.ERROR, f"Missing task snapshot {config.task_file}")
+    else:
+        report.add(
+            "file:task-snapshot",
+            Severity.WARNING,
+            "No task snapshot yet; it is created when a run starts",
+        )
+    if _path_readable(plan):
+        report.add("file:plan", Severity.OK, f"{config.plan_file} is readable")
+    elif source.artifact_root.is_dir():
+        report.add("file:plan", Severity.WARNING, f"No plan file yet at {config.plan_file}")
+    for role in ("planner", "worker", "reviewer"):
+        role_file = config.agents[role].role_file
+        if role_file:
+            if _path_readable(source.workspace / role_file):
+                report.add(f"file:{role} agent", Severity.OK, f"{role_file} is readable")
+            else:
+                report.add(
+                    f"file:{role} agent",
+                    Severity.ERROR,
+                    f"Configured role file missing or unreadable: {role_file}",
+                )
 
 
-def _check_instruction_composition(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
+def _check_instruction_composition(
+    repo: Path, config: AutoLoopConfig, report: DoctorReport
+) -> None:
     errors = validate_custom_instruction_files(repo, config)
     if errors:
         for message in errors:
             report.add("instructions:composition", Severity.ERROR, message)
     else:
         report.add("instructions:composition", Severity.OK, "Instruction composition paths are valid")
-
-
-def _check_instruction_templates(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
-    configured = (
-        list(config.instructions.shared.files)
-        + list(config.instructions.planner.files)
-        + list(config.instructions.worker.files)
-        + list(config.instructions.reviewer.files)
-    )
-    if configured:
-        for rel in configured:
-            if _path_readable(repo, rel):
-                report.add("instructions", Severity.OK, f"{rel} is readable")
-            else:
-                report.add(
-                    "instructions",
-                    Severity.ERROR,
-                    f"Configured instruction file missing or unreadable: {rel}",
-                )
-        return
-
-    missing = [rel for rel in DEFAULT_INSTRUCTION_PATHS if not _path_readable(repo, rel)]
-    if missing:
-        report.add(
-            "instructions",
-            Severity.ERROR,
-            "Default instruction templates are missing (common after `auto-loop init --minimal`). "
-            "Rerun `auto-loop init` without --minimal or create: "
-            + ", ".join(missing),
-        )
-    else:
-        report.add("instructions", Severity.OK, "Instruction templates present")
 
 
 def _check_git(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
@@ -186,18 +161,19 @@ def _check_git(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None
         report.add("git", Severity.ERROR, "Target path is not a Git repository")
         return
     report.add("git", Severity.OK, "Git repository detected")
-    if config.git.require_clean_product_start and not is_product_tree_clean(repo):
+    excludes = product_excludes(config)
+    if config.git.require_clean_product_start and not is_product_tree_clean(repo, excludes=excludes):
         report.add(
             "git",
             Severity.WARNING,
-            "Product working tree has uncommitted changes outside .auto-loop",
+            "Product working tree has uncommitted changes outside the artifact root",
         )
     else:
         report.add("git", Severity.OK, "Product working tree is clean")
 
 
-def _check_runtime_writable(repo: Path, report: DoctorReport) -> None:
-    runtime = auto_loop_root(repo) / "runtime"
+def _check_runtime_writable(artifact_root: Path, report: DoctorReport) -> None:
+    runtime = artifact_root / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     probe = runtime / ".doctor-write-test"
     try:
@@ -263,20 +239,16 @@ def _check_cursor_cli(config: AutoLoopConfig, report: DoctorReport) -> None:
 
 
 def _check_context_manifest(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
-    result = validate_context_file(repo, repo / config.context_file)
-    if result.document is None:
-        for issue in result.issues:
-            report.add("context", Severity.ERROR, issue.message)
-        return
+    result = validate_context(repo, config.context)
     for issue in result.issues:
         severity = Severity.ERROR if issue.severity == "error" else Severity.WARNING
         report.add("context", severity, issue.message)
     if result.ok_for_run:
-        report.add("context", Severity.OK, "context.yaml schema and resource paths validated")
+        report.add("context", Severity.OK, "Context resource paths validated")
 
 
-def _check_workspace_lock(repo: Path, report: DoctorReport) -> None:
-    severity, message = describe_lock_status(repo)
+def _check_workspace_lock(repo: Path, artifact_root: Path, report: DoctorReport) -> None:
+    severity, message = describe_lock_status(repo, artifact_root)
     if severity == "error":
         report.add("lock", Severity.ERROR, message)
     elif severity == "warning":
@@ -285,9 +257,9 @@ def _check_workspace_lock(repo: Path, report: DoctorReport) -> None:
         report.add("lock", Severity.OK, message)
 
 
-def _check_lifecycle_sessions(repo: Path, report: DoctorReport) -> None:
+def _check_lifecycle_sessions(repo: Path, artifact_root: Path, report: DoctorReport) -> None:
     try:
-        state = load_lifecycle_state(repo)
+        state = load_lifecycle_state(repo, artifact_root)
     except RuntimeStateError as exc:
         report.add("lifecycle", Severity.ERROR, str(exc))
         return
@@ -302,26 +274,28 @@ def _check_lifecycle_sessions(repo: Path, report: DoctorReport) -> None:
         report.add("lifecycle", Severity.OK, "Stored session metadata is consistent")
 
 
-def run_doctor(repo: Path, *, verbose: bool = False) -> DoctorReport:
+def run_doctor(source: RunManifestSource, *, verbose: bool = False) -> DoctorReport:
+    del verbose
     report = DoctorReport()
-    config = _check_workspace_layout(repo, report)
-    if config is None:
+    try:
+        config = _check_manifest(source, report)
+    except ConfigurationError as exc:
+        report.add("config", Severity.ERROR, str(exc))
         return report
-    root = auto_loop_root(repo)
-    _check_git(repo, config, report)
+    _check_task_source(source, report)
+    _check_git(source.workspace, config, report)
     _check_cursor_cli(config, report)
-    if not root.is_dir():
-        return report
+    _check_context_manifest(source.workspace, config, report)
+    _check_instruction_composition(source.workspace, config, report)
     state = None
     try:
-        state = load_lifecycle_state(repo)
+        state = load_lifecycle_state(source.workspace, source.artifact_root)
     except RuntimeStateError:
         state = None
-    _check_role_and_task_files(repo, config, report, require_task=state is not None)
-    _check_instruction_templates(repo, config, report)
-    _check_instruction_composition(repo, config, report)
-    _check_context_manifest(repo, config, report)
-    _check_runtime_writable(repo, report)
-    _check_workspace_lock(repo, report)
-    _check_lifecycle_sessions(repo, report)
+    _check_role_and_runtime_files(
+        source, config, report, require_task_snapshot=state is not None
+    )
+    _check_runtime_writable(source.artifact_root, report)
+    _check_workspace_lock(source.workspace, source.artifact_root, report)
+    _check_lifecycle_sessions(source.workspace, source.artifact_root, report)
     return report

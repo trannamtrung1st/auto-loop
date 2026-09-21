@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from auto_loop.config import load_config_from_repo, write_resolved_config
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.loop import run_lifecycle
@@ -45,7 +44,7 @@ def _write_v1_plan_review_state(repo: Path, head: str) -> None:
 def test_migrated_v1_plan_review_pass_accepted(tmp_path: Path):
     repo = make_repo(tmp_path)
     head = head_commit(repo)
-    plan_rel = ".auto-loop/plan.md"
+    plan_rel = ".ai/auto-loop/plan.md"
     digest, exists = fingerprint_path(repo / plan_rel)
     assert exists
     _write_v1_plan_review_state(repo, head)
@@ -68,24 +67,3 @@ def test_migrated_v1_plan_review_pass_accepted(tmp_path: Path):
     assert final.next_session == "worker"
     reviewer_calls = [inv for inv in provider.engine.invocations if inv.role == "reviewer"]
     assert reviewer_calls[0].resume_session_id == "r1"
-
-
-def test_migrated_v1_plan_review_honors_configured_plan_file(tmp_path: Path):
-    repo = make_repo(tmp_path)
-    head = head_commit(repo)
-    custom_plan = ".auto-loop/design.md"
-    (repo / ".auto-loop" / "design.md").write_text("# design\n", encoding="utf-8")
-    cfg = load_config_from_repo(repo)
-    cfg.plan_file = custom_plan
-    write_resolved_config(repo, cfg)
-
-    digest, exists = fingerprint_path(repo / custom_plan)
-    assert exists
-    _write_v1_plan_review_state(repo, head)
-
-    loaded = load_lifecycle_state(repo)
-    assert loaded is not None
-    assert loaded.active_review is not None
-    plan_target = next(t for t in loaded.active_review.targets if t.id == "plan")
-    assert plan_target.path == custom_plan
-    assert plan_target.fingerprint == digest

@@ -98,12 +98,13 @@ def normalize_batch_range(
     worker_base_commit: str | None = None,
     worker_head_commit: str | None = None,
     allow_empty: bool = False,
+    excludes: tuple[str, ...] | None = None,
 ) -> NormalizedBatchRange:
     """Normalize worker batch review to authoritative last_approved..HEAD."""
-    from auto_loop.product_state import assert_clean_product_tree
+    from auto_loop.product_state import DEFAULT_PRODUCT_EXCLUDES, assert_clean_product_tree
 
     assert_approved_baseline_ancestry(repo, last_approved_commit)
-    assert_clean_product_tree(repo)
+    assert_clean_product_tree(repo, excludes=excludes or DEFAULT_PRODUCT_EXCLUDES)
 
     authoritative_base = resolve_commit(repo, last_approved_commit)
     authoritative_head = head_commit(repo)

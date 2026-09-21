@@ -37,8 +37,8 @@ pytest tests/integration/test_live_cursor_smoke.py -m live_cursor -v
 ## What it does
 
 1. Creates a temporary Git repo with a tiny `src/` layout.
-2. Runs `auto-loop init` and writes a deterministic **greet** goal/plan.
-3. Runs `auto-loop run` via `SubprocessCursorProvider` (real CLI, not the fake provider).
+2. Writes a v2 run YAML and deterministic **greet** proposal/plan under `.ai/`.
+3. Runs `auto-loop run .ai/run.yaml` via `SubprocessCursorProvider` (real CLI, not the fake provider).
 4. On `COMPLETE`, asserts every proposal §45 bullet from durable artifacts:
    - two distinct `session_created` roles and stable worker/reviewer session IDs across review files;
    - plan `PASS` recorded in events before any `baseline_advanced`;
@@ -55,9 +55,9 @@ Expect **many** agent turns (plan, implementation batch, possible revisions, fin
 
 ## Evidence and diagnosis
 
-- Per-turn logs: `.auto-loop/runtime/runs/<lifecycle_id>/` inside the temp repo (preserved until pytest tmp cleanup).
-- Events: `.auto-loop/runtime/events.jsonl`
-- Reviews: `.auto-loop/reviews/*.md`
+- Per-turn logs: `.ai/auto-loop/runtime/runs/<lifecycle_id>/` inside the temp repo (preserved until pytest tmp cleanup).
+- Events: `.ai/auto-loop/runtime/events.jsonl`
+- Reviews: `.ai/auto-loop/reviews/*.md`
 - On failure, pytest writes `smoke-evidence.json` next to the temp repo parent with session ids and notes.
 
 ## Cleanup
@@ -74,4 +74,4 @@ If Cursor is missing, unauthenticated, quota-blocked, or unsupported, the gate s
 python -m pytest -q
 ```
 
-runs the full offline suite (266 passed, 1 skipped live smoke) without live Cursor. Packaging smoke: `python -m pytest tests/unit/test_packaging.py -q`.
+runs the full offline suite (282 passed, 1 skipped live smoke) without live Cursor. Packaging smoke: `python -m pytest tests/unit/test_packaging.py -q`.

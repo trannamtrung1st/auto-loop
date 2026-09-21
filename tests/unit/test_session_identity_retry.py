@@ -37,11 +37,11 @@ class FlakyScriptedProvider(ScriptedProvider):
 
 
 def _bump_provider_retries(repo: Path, retries: int = 2) -> None:
-    from auto_loop.config import dump_config, load_config_from_repo
+    from auto_loop.config import load_config_from_repo, write_resolved_config
 
     cfg = load_config_from_repo(repo)
     cfg = cfg.model_copy(update={"limits": cfg.limits.model_copy(update={"provider_retries": retries})})
-    (repo / "auto-loop.yaml").write_text(dump_config(cfg), encoding="utf-8")
+    write_resolved_config(repo, cfg)
 
 
 def test_provider_retry_resumes_same_session_id(tmp_path: Path):

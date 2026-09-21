@@ -1,4 +1,4 @@
-"""Normalize user-facing run inputs into tool-managed .auto-loop state."""
+"""Normalize an explicit v2 run manifest into artifact-root runtime state."""
 
 from __future__ import annotations
 
@@ -9,51 +9,43 @@ from pathlib import Path
 
 from auto_loop.config import (
     AutoLoopConfig,
-    USER_CONFIG_FILENAME,
-    load_config_from_repo,
-    load_resolved_config_from_repo,
+    load_resolved_config_optional,
     write_resolved_config,
 )
-from auto_loop.context_manifest import validate_context_file
+from auto_loop.context_manifest import validate_context
 from auto_loop.exits import ExitCode
-from auto_loop.init_cmd import materialize_control_workspace, reset_run_scoped_workspace
-from auto_loop.paths import auto_loop_root
+from auto_loop.init_cmd import materialize_artifact_layout, reset_run_scoped_workspace
+from auto_loop.manifest import RunManifestSource, derive_protection
+from auto_loop.paths import PathContainmentError, assert_contained, posix_rel
 
 
 class RunInputError(Exception):
     exit_code = ExitCode.CONFIG_ERROR
 
 
-MISSING_GOAL_MESSAGE = """No goal was provided.
-
-Use one of:
-  auto-loop run "Describe the goal"
-  auto-loop run --goal-file goal.md"""
-
 EXISTING_RUN_MESSAGE = """A run is already in progress.
 
 Your existing run was not replaced.
 
 Resume it:
-  auto-loop resume
+  auto-loop resume {config}
 
 Inspect it:
-  auto-loop status"""
+  auto-loop status {config}"""
 
 NO_RESUME_MESSAGE = """No resumable Auto Loop run found.
 
 Start one:
-  auto-loop run "Describe the goal"
-  auto-loop run --goal-file goal.md"""
+  auto-loop run {config}"""
+
+MISSING_TASK_MESSAGE = """Task source is missing or empty: {path}
+
+The run manifest must point at a readable task file with non-whitespace content."""
 
 
 @dataclass(frozen=True)
 class RunInputs:
-    goal_text: str | None = None
-    goal_file: Path | None = None
-    context_file: Path | None = None
     resume_only: bool = False
-    minimal: bool = False
 
 
 @dataclass
@@ -62,31 +54,39 @@ class PreparedRun:
     goal_text: str
     is_resume: bool
     user_config_rel: str
+    source: RunManifestSource
+    workspace: Path
+    artifact_root: Path
 
 
-def has_lifecycle_state(repo: Path) -> bool:
+def _artifact_root_for(repo: Path, config: AutoLoopConfig | None = None) -> Path:
+    if config is not None:
+        return (repo / config.artifacts_root).resolve()
+    from auto_loop.paths import auto_loop_root
+
+    return auto_loop_root(repo)
+
+
+def has_lifecycle_state(repo: Path, artifact_root: Path | None = None) -> bool:
     from auto_loop.runtime import load_lifecycle_state
 
-    return load_lifecycle_state(repo) is not None
+    return load_lifecycle_state(repo, artifact_root) is not None
 
 
-def has_terminal_record(repo: Path) -> bool:
+def has_terminal_record(repo: Path, artifact_root: Path | None = None) -> bool:
     from auto_loop.terminal_records import load_blocked_record, load_completion_record
 
-    return load_completion_record(repo) is not None or load_blocked_record(repo) is not None
+    return (
+        load_completion_record(repo, artifact_root) is not None
+        or load_blocked_record(repo, artifact_root) is not None
+    )
 
 
-def has_active_lifecycle(repo: Path) -> bool:
+def has_active_lifecycle(repo: Path, artifact_root: Path | None = None) -> bool:
     """True when a lifecycle exists and has not reached a terminal completion/blocked record."""
-    if not has_lifecycle_state(repo):
+    if not has_lifecycle_state(repo, artifact_root):
         return False
-    return not has_terminal_record(repo)
-
-
-def _user_supplied_new_goal(inputs: RunInputs) -> bool:
-    if inputs.goal_text and inputs.goal_text.strip():
-        return True
-    return inputs.goal_file is not None
+    return not has_terminal_record(repo, artifact_root)
 
 
 def _archive_repo_file(
@@ -122,15 +122,15 @@ def _assert_archive_paths_contained(repo: Path, config: AutoLoopConfig) -> None:
     from auto_loop.runtime import state_path
     from auto_loop.terminal_records import blocked_path, completion_path
 
+    artifact_root = repo / config.artifacts_root
     candidates: list[Path] = [
         repo / config.plan_file,
-        repo / config.context_file,
         repo / config.task_file,
-        repo / config.logging.event_log,
-        state_path(repo),
-        completion_path(repo),
-        blocked_path(repo),
-        resolved_config_snapshot_path(repo),
+        repo / config.event_log,
+        state_path(repo, artifact_root),
+        completion_path(repo, artifact_root),
+        blocked_path(repo, artifact_root),
+        resolved_config_snapshot_path(artifact_root),
     ]
     reviews = repo / config.reviews_dir
     if reviews.is_dir():
@@ -148,22 +148,25 @@ def _assert_archive_paths_contained(repo: Path, config: AutoLoopConfig) -> None:
 
 
 def _assert_archive_dir_contained(repo: Path, archive_dir: Path) -> None:
-    repo_root = repo.resolve()
-    resolved_archive = archive_dir.resolve(strict=False)
     try:
-        resolved_archive.relative_to(repo_root)
-    except ValueError as exc:
-        raise RunInputError("Run archive path escapes workspace") from exc
+        assert_contained(repo, archive_dir, label="Run archive path")
+    except PathContainmentError as exc:
+        raise RunInputError(str(exc)) from exc
 
 
-def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
+def clear_prior_run_for_new_goal(
+    repo: Path,
+    *,
+    config: AutoLoopConfig,
+    artifact_root: Path | None = None,
+) -> None:
     """Archive run-scoped artifacts and remove terminal/lifecycle state for a fresh goal."""
     from auto_loop.config import resolved_config_snapshot_path
     from auto_loop.runtime import state_path
     from auto_loop.terminal_records import blocked_path, completion_path
 
-    label = _prior_run_archive_label(repo)
-    root = auto_loop_root(repo)
+    root = artifact_root if artifact_root is not None else (repo / config.artifacts_root)
+    label = _prior_run_archive_label(repo, root)
     archive_dir = root / "runtime" / "archives" / label
 
     _assert_archive_paths_contained(repo, config)
@@ -177,65 +180,42 @@ def clear_prior_run_for_new_goal(repo: Path, *, config: AutoLoopConfig) -> None:
             if path.is_file():
                 _archive_repo_file(repo, archive_dir, path, move=True)
 
-    for rel in (config.plan_file, config.context_file, config.task_file):
+    for rel in (config.plan_file, config.task_file):
         _archive_repo_file(repo, archive_dir, repo / rel)
 
-    _archive_repo_file(repo, archive_dir, repo / config.logging.event_log)
-
-    _archive_repo_file(repo, archive_dir, state_path(repo))
+    _archive_repo_file(repo, archive_dir, repo / config.event_log)
+    _archive_repo_file(repo, archive_dir, state_path(repo, root))
 
     for path in (
-        completion_path(repo),
-        blocked_path(repo),
-        resolved_config_snapshot_path(repo),
+        completion_path(repo, root),
+        blocked_path(repo, root),
+        resolved_config_snapshot_path(root),
     ):
         _archive_repo_file(repo, archive_dir, path)
 
 
-def _prior_run_archive_label(repo: Path) -> str:
+def _prior_run_archive_label(repo: Path, artifact_root: Path) -> str:
     from auto_loop.runtime import load_lifecycle_state
     from auto_loop.terminal_records import load_blocked_record, load_completion_record
 
-    state = load_lifecycle_state(repo)
+    state = load_lifecycle_state(repo, artifact_root)
     if state is not None:
         return state.lifecycle_id
-    record = load_completion_record(repo)
+    record = load_completion_record(repo, artifact_root)
     if record is not None:
         return record.lifecycle_id
-    blocked = load_blocked_record(repo)
+    blocked = load_blocked_record(repo, artifact_root)
     if blocked is not None:
         return blocked.lifecycle_id
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def resolve_optional_file(repo: Path, given: Path) -> Path:
-    if given.is_absolute():
-        return given
-    cwd_candidate = (Path.cwd() / given).resolve()
-    if cwd_candidate.exists():
-        return cwd_candidate
-    return (repo / given).resolve()
-
-
-def _read_text_file(path: Path, *, missing_message: str) -> str:
-    if not path.is_file():
-        raise RunInputError(missing_message)
-    return path.read_text(encoding="utf-8")
-
-
-def snapshot_goal(repo: Path, text: str, *, config: AutoLoopConfig) -> Path:
-    path = repo / config.task_file
+def snapshot_task(artifact_root: Path, text: str) -> Path:
+    path = artifact_root / "task.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = text if text.endswith("\n") else f"{text}\n"
     path.write_text(payload, encoding="utf-8")
     return path
-
-
-def snapshot_context(repo: Path, source: Path, *, config: AutoLoopConfig) -> Path:
-    dest = repo / config.context_file
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    return dest
 
 
 def goal_summary(text: str) -> str:
@@ -252,130 +232,129 @@ def goal_summary(text: str) -> str:
     return "(empty)"
 
 
-def _legacy_goal_text(repo: Path) -> str | None:
-    for rel in ("goal.md", "task.md"):
-        path = repo / rel
-        if path.is_file() and path.read_text(encoding="utf-8").strip():
-            return path.read_text(encoding="utf-8")
-    return None
-
-
-def _stored_goal_text(repo: Path, config: AutoLoopConfig) -> str | None:
-    path = repo / config.task_file
+def _stored_goal_text(artifact_root: Path) -> str | None:
+    path = artifact_root / "task.md"
     if path.is_file() and path.read_text(encoding="utf-8").strip():
         return path.read_text(encoding="utf-8")
     return None
 
 
-def _resolve_required_goal(repo: Path, inputs: RunInputs) -> str:
-    if inputs.goal_text and inputs.goal_text.strip():
-        return inputs.goal_text
-    if inputs.goal_file is not None:
-        goal_path = resolve_optional_file(repo, inputs.goal_file)
-        goal_text = _read_text_file(
-            goal_path,
-            missing_message=f"Goal file not found: {inputs.goal_file}",
-        )
-        if not goal_text.strip():
-            raise RunInputError(f"Goal file is empty: {inputs.goal_file}")
-        return goal_text
-    raise RunInputError(MISSING_GOAL_MESSAGE)
+def validate_task_source(source: RunManifestSource) -> str:
+    path = source.task_source
+    if not path.exists():
+        raise RunInputError(MISSING_TASK_MESSAGE.format(path=path))
+    if not path.is_file():
+        raise RunInputError(f"Task source is not a regular file: {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RunInputError(f"Task source is not readable: {path}") from exc
+    if not text.strip():
+        raise RunInputError(MISSING_TASK_MESSAGE.format(path=path))
+    return text
 
 
-def _validate_new_run_inputs(
-    repo: Path, inputs: RunInputs, _config: AutoLoopConfig
-) -> tuple[str, Path | None]:
-    """Validate goal and optional context before any destructive terminal-run reset."""
-    goal_text = _resolve_required_goal(repo, inputs)
-    context_path: Path | None = None
-    if inputs.context_file is not None:
-        context_path = resolve_optional_file(repo, inputs.context_file)
-        if not context_path.is_file():
-            raise RunInputError(f"Context file not found: {inputs.context_file}")
-        result = validate_context_file(repo, context_path)
-        if not result.ok_for_run:
-            messages = [issue.message for issue in result.issues if issue.severity == "error"]
-            raise RunInputError("; ".join(messages) or "Invalid context file")
-    return goal_text, context_path
+def validate_manifest_inputs(source: RunManifestSource) -> str:
+    """Validate task, context, and instructions before mutating run state."""
+    from auto_loop.instructions import validate_custom_instruction_files
+
+    goal_text = validate_task_source(source)
+    context = validate_context(source.workspace, source.config.context)
+    if not context.ok_for_run:
+        messages = [issue.message for issue in context.issues if issue.severity == "error"]
+        raise RunInputError("; ".join(messages) or "Invalid context resources")
+    instruction_errors = validate_custom_instruction_files(source.workspace, source.config)
+    if instruction_errors:
+        raise RunInputError("; ".join(instruction_errors))
+    return goal_text
 
 
-def prepare_repo_for_run(repo: Path, inputs: RunInputs | None = None) -> PreparedRun:
-    """Materialize tool-managed state and freeze the canonical goal for this run."""
-    inputs = inputs or RunInputs()
-    if not user_config_or_legacy_exists(repo):
-        raise RunInputError(
-            "No Auto Loop configuration found.\n\n"
-            f"Create one with:\n  auto-loop init\n\nExpected: {USER_CONFIG_FILENAME}"
-        )
+def _config_label(source: RunManifestSource) -> str:
+    rel = workspace_rel_or_absolute(source.workspace, source.path)
+    return rel
 
-    has_lifecycle = has_lifecycle_state(repo)
-    if inputs.resume_only and not has_lifecycle:
-        raise RunInputError(NO_RESUME_MESSAGE)
 
-    validated_goal: str | None = None
-    validated_context: Path | None = None
+def workspace_rel_or_absolute(workspace: Path, path: Path) -> str:
+    from auto_loop.paths import workspace_relative
 
-    if _user_supplied_new_goal(inputs) and not inputs.resume_only:
-        if has_active_lifecycle(repo):
-            raise RunInputError(EXISTING_RUN_MESSAGE)
-        new_config = load_config_from_repo(repo)
-        validated_goal, validated_context = _validate_new_run_inputs(repo, inputs, new_config)
-        if has_terminal_record(repo) or has_lifecycle:
-            prior_config = load_resolved_config_from_repo(repo)
-            clear_prior_run_for_new_goal(repo, config=prior_config)
-            reset_run_scoped_workspace(repo, config=new_config, minimal=inputs.minimal)
-            has_lifecycle = False
+    rel = workspace_relative(workspace, path)
+    return rel if rel is not None else str(path)
 
-    materialize_control_workspace(repo, minimal=inputs.minimal, force=False)
 
-    if has_lifecycle:
-        config = load_resolved_config_from_repo(repo)
-        stored = _stored_goal_text(repo, config)
+def prepare_repo_for_run(
+    source: RunManifestSource,
+    *,
+    resume: bool = False,
+) -> PreparedRun:
+    """Materialize artifact state and freeze config for a new run, or load a frozen snapshot."""
+    repo = source.workspace
+    artifact_root = source.artifact_root
+    config_label = _config_label(source)
+
+    has_lifecycle = has_lifecycle_state(repo, artifact_root)
+    if resume and not has_lifecycle:
+        raise RunInputError(NO_RESUME_MESSAGE.format(config=config_label))
+
+    if not resume and has_active_lifecycle(repo, artifact_root):
+        raise RunInputError(EXISTING_RUN_MESSAGE.format(config=config_label))
+
+    if resume and has_lifecycle:
+        frozen = load_resolved_config_optional(artifact_root)
+        if frozen is None:
+            raise RunInputError(
+                "A previous run exists but its resolved snapshot is missing. "
+                f"Inspect {posix_rel(str(artifact_root.relative_to(repo))) if artifact_root.is_relative_to(repo) else artifact_root} "
+                "or start a new run after the current lifecycle ends."
+            )
+        stored = _stored_goal_text(artifact_root)
         if not stored:
             raise RunInputError(
-                "A previous run exists but its stored goal snapshot is missing. "
-                "Inspect .auto-loop/ or start a new repository checkout."
+                "A previous run exists but its stored task snapshot is missing. "
+                "Inspect the artifact root or start a new repository checkout."
             )
         return PreparedRun(
-            config=config,
+            config=frozen,
             goal_text=stored,
             is_resume=True,
-            user_config_rel=(
-                USER_CONFIG_FILENAME if (repo / USER_CONFIG_FILENAME).is_file() else ".auto-loop/config.yaml"
-            ),
+            user_config_rel=config_label,
+            source=source,
+            workspace=repo,
+            artifact_root=artifact_root,
         )
 
-    config = load_config_from_repo(repo)
-    write_resolved_config(repo, config)
+    goal_text = validate_manifest_inputs(source)
+    frozen_config = derive_protection(source)
 
-    if validated_goal is not None:
-        goal_text = validated_goal
-    else:
-        goal_text = _legacy_goal_text(repo) or _stored_goal_text(repo, config)
+    if has_terminal_record(repo, artifact_root) or has_lifecycle:
+        prior = load_resolved_config_optional(artifact_root) or frozen_config
+        clear_prior_run_for_new_goal(repo, config=prior, artifact_root=artifact_root)
+        reset_run_scoped_workspace(source)
 
-    if not goal_text or not goal_text.strip():
-        raise RunInputError(MISSING_GOAL_MESSAGE)
+    materialize_artifact_layout(source)
+    snapshot_task(artifact_root, goal_text)
+    write_resolved_config(repo, frozen_config)
 
-    snapshot_goal(repo, goal_text, config=config)
-
-    if validated_context is not None:
-        snapshot_context(repo, validated_context, config=config)
-    elif inputs.context_file is not None:
-        _, validated_context = _validate_new_run_inputs(repo, inputs, config)
-        snapshot_context(repo, validated_context, config=config)
-
-    user_rel = (
-        USER_CONFIG_FILENAME if (repo / USER_CONFIG_FILENAME).is_file() else ".auto-loop/config.yaml"
-    )
     return PreparedRun(
-        config=load_config_from_repo(repo),
+        config=frozen_config,
         goal_text=goal_text,
         is_resume=False,
-        user_config_rel=user_rel,
+        user_config_rel=config_label,
+        source=source,
+        workspace=repo,
+        artifact_root=artifact_root,
     )
 
 
-def user_config_or_legacy_exists(repo: Path) -> bool:
-    return (repo / USER_CONFIG_FILENAME).is_file() or (
-        auto_loop_root(repo) / "config.yaml"
-    ).is_file()
+def prepare_from_workspace_default(repo: Path, inputs: RunInputs | None = None) -> PreparedRun:
+    """Test helper: load `.ai/run.yaml` from a bootstrapped workspace."""
+    from auto_loop.manifest import load_run_manifest
+
+    inputs = inputs or RunInputs()
+    manifest_path = repo / ".ai" / "run.yaml"
+    if not manifest_path.is_file():
+        raise RunInputError(
+            "No run config was supplied and no bootstrapped `.ai/run.yaml` exists."
+        )
+    source = load_run_manifest(manifest_path)
+    resume = inputs.resume_only or has_lifecycle_state(repo, source.artifact_root)
+    return prepare_repo_for_run(source, resume=resume)

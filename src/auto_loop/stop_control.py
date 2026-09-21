@@ -29,18 +29,24 @@ class ActiveRunRecord:
     provider_pid: int | None = None
 
 
-def active_run_path(repo: Path) -> Path:
-    return auto_loop_root(repo) / "runtime" / "active_run.json"
+def active_run_path(repo: Path, artifact_root: Path | None = None) -> Path:
+    root = artifact_root if artifact_root is not None else auto_loop_root(repo)
+    return root / "runtime" / "active_run.json"
 
 
-def register_active_run(repo: Path, lifecycle_id: str, provider_pid: int | None = None) -> None:
+def register_active_run(
+    repo: Path,
+    lifecycle_id: str,
+    provider_pid: int | None = None,
+    artifact_root: Path | None = None,
+) -> None:
     record = ActiveRunRecord(
         controller_pid=os.getpid(),
         lifecycle_id=lifecycle_id,
         provider_pid=provider_pid,
     )
     atomic_write_json(
-        active_run_path(repo),
+        active_run_path(repo, artifact_root),
         {
             "controller_pid": record.controller_pid,
             "lifecycle_id": record.lifecycle_id,
@@ -49,14 +55,14 @@ def register_active_run(repo: Path, lifecycle_id: str, provider_pid: int | None 
     )
 
 
-def clear_active_run(repo: Path) -> None:
-    path = active_run_path(repo)
+def clear_active_run(repo: Path, artifact_root: Path | None = None) -> None:
+    path = active_run_path(repo, artifact_root)
     if path.is_file():
         path.unlink()
 
 
-def load_active_run(repo: Path) -> ActiveRunRecord | None:
-    path = active_run_path(repo)
+def load_active_run(repo: Path, artifact_root: Path | None = None) -> ActiveRunRecord | None:
+    path = active_run_path(repo, artifact_root)
     if not path.is_file():
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -67,13 +73,17 @@ def load_active_run(repo: Path) -> ActiveRunRecord | None:
     )
 
 
-def persist_stopped_state(repo: Path, state: LifecycleState | None) -> None:
+def persist_stopped_state(
+    repo: Path,
+    state: LifecycleState | None,
+    artifact_root: Path | None = None,
+) -> None:
     if state is None:
         return
     state.status = LifecycleStatus.STOPPED
     state.inflight = None
     state.updated_at = utc_now()
-    save_lifecycle_state(repo, state)
+    save_lifecycle_state(repo, state, artifact_root=artifact_root)
 
 
 @dataclass
@@ -83,6 +93,7 @@ class RunStopController:
     repo: Path
     requested: bool = False
     active_provider_pid: int | None = None
+    artifact_root: Path | None = None
     _previous_handlers: dict[int, object] = None  # type: ignore[assignment]
 
     def set_active_provider(self, pid: int | None) -> None:
@@ -112,25 +123,30 @@ class RunStopController:
             terminate_process_tree(self.active_provider_pid)
 
 
-def request_remote_stop(repo: Path, *, wait_seconds: float = 2.0) -> str:
-    lock = load_workspace_lock(repo)
-    active = load_active_run(repo)
+def request_remote_stop(
+    repo: Path,
+    *,
+    wait_seconds: float = 2.0,
+    artifact_root: Path | None = None,
+) -> str:
+    lock = load_workspace_lock(repo, artifact_root)
+    active = load_active_run(repo, artifact_root)
     target_pid = None
     if active is not None and is_pid_alive(active.controller_pid):
         target_pid = active.controller_pid
     elif lock is not None and is_pid_alive(lock.pid):
         target_pid = lock.pid
     if target_pid is None:
-        state = load_lifecycle_state(repo)
+        state = load_lifecycle_state(repo, artifact_root)
         if state is not None and state.status == LifecycleStatus.RUNNING:
-            persist_stopped_state(repo, state)
+            persist_stopped_state(repo, state, artifact_root)
             return "No active controller process; lifecycle marked stopped."
         return "No active auto-loop controller found for this workspace."
 
     os.kill(target_pid, signal.SIGTERM)
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
-        state = load_lifecycle_state(repo)
+        state = load_lifecycle_state(repo, artifact_root)
         if state is not None and state.status == LifecycleStatus.STOPPED:
             return "Stop signal delivered; lifecycle is stopped."
         time.sleep(0.05)
@@ -140,7 +156,7 @@ def request_remote_stop(repo: Path, *, wait_seconds: float = 2.0) -> str:
     if is_pid_alive(target_pid):
         terminate_process_tree(target_pid)
 
-    state = load_lifecycle_state(repo)
+    state = load_lifecycle_state(repo, artifact_root)
     if state is not None and state.status != LifecycleStatus.STOPPED:
-        persist_stopped_state(repo, state)
+        persist_stopped_state(repo, state, artifact_root)
     return "Stop signal delivered; lifecycle marked stopped."

@@ -183,7 +183,7 @@ def test_worker_blocked_reviewer_revise_resumes_worker(tmp_path: Path):
     )
     state = load_lifecycle_state(repo)
     assert state.next_actor == "worker"
-    assert not (repo / ".auto-loop/runtime/blocked.json").is_file()
+    assert not (repo / ".ai/auto-loop/runtime/blocked.json").is_file()
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
 
 
@@ -205,7 +205,7 @@ def test_worker_blocked_reviewer_blocked_writes_record(tmp_path: Path):
         provider,
     )
     assert outcome.exit_code == ExitCode.BLOCKED
-    blocked = json.loads((repo / ".auto-loop/runtime/blocked.json").read_text(encoding="utf-8"))
+    blocked = json.loads((repo / ".ai/auto-loop/runtime/blocked.json").read_text(encoding="utf-8"))
     assert blocked["status"] == "blocked"
 
 
@@ -240,7 +240,7 @@ def test_completed_lifecycle_rejects_changed_task(tmp_path: Path):
         RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
         provider,
     )
-    (repo / ".auto-loop/task.md").write_text("changed task\n", encoding="utf-8")
+    (repo / ".ai/auto-loop/task.md").write_text("changed task\n", encoding="utf-8")
     with pytest.raises(RunPreconditionError):
         run_lifecycle(
             repo,

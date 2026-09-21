@@ -41,7 +41,7 @@ def test_protected_file_mutation_detected(tmp_path: Path):
     repo = _repo(tmp_path)
     config = load_config_from_repo(repo)
     baseline = capture_protected_baseline(repo, config)
-    task = repo / ".auto-loop" / "task.md"
+    task = repo / ".ai/auto-loop" / "task.md"
     task.write_text(task.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")
     with pytest.raises(ProtectionViolationError) as exc:
         assert_protected_unchanged(repo, config, baseline)
@@ -51,7 +51,7 @@ def test_protected_file_mutation_detected(tmp_path: Path):
 def test_auto_loop_plan_change_not_product_mutation(tmp_path: Path):
     repo = _repo(tmp_path)
     before = capture_product_fingerprint(repo)
-    plan = repo / ".auto-loop" / "plan.md"
+    plan = repo / ".ai/auto-loop" / "plan.md"
     plan.write_text(plan.read_text(encoding="utf-8") + "\nupdate\n", encoding="utf-8")
     after = capture_product_fingerprint(repo)
     assert before == after
@@ -83,7 +83,7 @@ def test_ignored_build_artifact_can_be_simulated_as_untracked_outside_auto_loop(
 
 def test_review_snapshot_detects_plan_mutation(tmp_path: Path):
     repo = _repo(tmp_path)
-    plan = repo / ".auto-loop" / "plan.md"
+    plan = repo / ".ai/auto-loop" / "plan.md"
     before = capture_review_snapshot(repo, plan_path=plan)
     plan.write_text(plan.read_text(encoding="utf-8") + "\nreviewer edit\n", encoding="utf-8")
     with pytest.raises(ReviewMutationError, match="plan.md"):
@@ -106,7 +106,7 @@ def test_review_snapshot_detects_path_target_mutation(tmp_path: Path):
         exists=True,
         git_classification="ignored",
     )
-    plan = repo / ".auto-loop" / "plan.md"
+    plan = repo / ".ai/auto-loop" / "plan.md"
     before = capture_review_snapshot(repo, plan_path=plan, targets=[target])
     report.write_text("mutated\n", encoding="utf-8")
     with pytest.raises(ReviewMutationError, match="path target"):

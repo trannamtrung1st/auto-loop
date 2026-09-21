@@ -4,7 +4,6 @@ import subprocess
 from pathlib import Path
 
 from auto_loop.config import default_config
-from auto_loop.init_cmd import run_init
 from auto_loop.turn_logs import TurnLogWriter, list_turn_numbers, prune_run_history, read_turn_logs
 
 
@@ -12,7 +11,6 @@ def _repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    run_init(repo, minimal=True)
     return repo
 
 
@@ -40,4 +38,4 @@ def test_prune_run_history_keeps_current_lifecycle(tmp_path: Path):
         TurnLogWriter(repo, config, lid, 1, "worker").jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         (TurnLogWriter(repo, config, lid, 1, "worker").jsonl_path).write_text("line\n")
     prune_run_history(repo, config, "current-run")
-    assert (repo / ".auto-loop/runtime/runs/current-run").is_dir()
+    assert (repo / ".ai/auto-loop/runtime/runs/current-run").is_dir()

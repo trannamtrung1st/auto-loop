@@ -1,4 +1,4 @@
-"""context.yaml validation and compact resource manifest rendering."""
+"""Context resource validation and compact resource manifest rendering."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from auto_loop.exits import ExitCode
 
@@ -23,8 +23,21 @@ class ContextError(Exception):
 
 class ManifestEntry(BaseModel):
     path: str
-    purpose: str
+    purpose: str = ""
     required: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_path_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {"path": value, "purpose": value, "required": True}
+        return value
+
+    @model_validator(mode="after")
+    def default_purpose(self) -> ManifestEntry:
+        if not self.purpose.strip():
+            object.__setattr__(self, "purpose", self.path)
+        return self
 
 
 class RoleManifestSection(BaseModel):
@@ -33,7 +46,7 @@ class RoleManifestSection(BaseModel):
 
 
 class ContextDocument(BaseModel):
-    version: Literal[1] = CONTEXT_VERSION
+    version: int = CONTEXT_VERSION
     shared: RoleManifestSection = Field(default_factory=RoleManifestSection)
     planner: RoleManifestSection = Field(default_factory=RoleManifestSection)
     worker: RoleManifestSection = Field(default_factory=RoleManifestSection)
@@ -61,21 +74,6 @@ class ContextValidationResult:
     @property
     def ok_for_run(self) -> bool:
         return self.document is not None and not any(i.severity == "error" for i in self.issues)
-
-
-def load_context_file(path: Path) -> ContextDocument:
-    if not path.is_file():
-        raise ContextError(f"Context file not found: {path}")
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise ContextError(f"Malformed context YAML: {exc}") from exc
-    if raw is None:
-        raw = {}
-    try:
-        return ContextDocument.model_validate(raw)
-    except ValidationError as exc:
-        raise ContextError(str(exc)) from exc
 
 
 def _resolve_workspace_path(repo: Path, rel: str) -> Path:
@@ -198,11 +196,3 @@ def render_resource_manifest(document: ContextDocument, role: RoleName) -> str:
         ]
     )
     return "\n".join(lines)
-
-
-def validate_context_file(repo: Path, context_path: Path) -> ContextValidationResult:
-    try:
-        document = load_context_file(context_path)
-    except ContextError as exc:
-        return ContextValidationResult(issues=[ValidationIssue("error", str(exc))])
-    return validate_context(repo, document)

@@ -72,7 +72,7 @@ def commit_file(repo: Path, rel: str, content: str, message: str) -> str:
 
 
 def latest_review_text(repo: Path) -> str:
-    reviews = sorted((repo / ".auto-loop" / "reviews").glob("*.md"))
+    reviews = sorted((repo / ".ai" / "auto-loop" / "reviews").glob("*.md"))
     assert reviews, "expected a review artifact"
     return reviews[-1].read_text(encoding="utf-8")
 

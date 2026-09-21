@@ -8,7 +8,7 @@ description: >-
 
 # auto-loop develop
 
-You are contributing to the **auto-loop** Python package in this repository — not running a target task lifecycle. Root `AGENTS.md` and this skill apply only here. Runtime agents on a user repo use `.auto-loop/` templates and `context.yaml`. The auto-loop controller does not package, install, inject, or explicitly load this contributor skill (Cursor may still discover repo guidance when this repository is the workspace).
+You are contributing to the **auto-loop** Python package in this repository — not running a target task lifecycle. Root `AGENTS.md` and this skill apply only here. Runtime agents on a user repo use the configured artifact root and the explicit run YAML. The auto-loop controller does not package, install, inject, or explicitly load this contributor skill (Cursor may still discover repo guidance when this repository is the workspace).
 
 ## Before you change code
 

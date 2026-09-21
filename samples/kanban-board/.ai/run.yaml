@@ -1,0 +1,17 @@
+# User-owned Auto Loop run manifest.
+# workspace is relative to this file's directory.
+# All other paths are relative to workspace.
+
+version: 2
+workspace: ..
+
+task:
+  source: .ai/proposal.md
+
+artifacts:
+  root: .ai/auto-loop
+
+models:
+  planner: auto
+  worker: auto
+  reviewer: auto

@@ -9,14 +9,22 @@ from pathlib import Path
 
 from auto_loop.atomic_io import atomic_write_text
 from auto_loop.config import AutoLoopConfig
+from auto_loop.paths import auto_loop_root
 
 
-def run_logs_dir(repo: Path, lifecycle_id: str) -> Path:
-    return repo / ".auto-loop" / "runtime" / "runs" / lifecycle_id
+def run_logs_dir(repo: Path, lifecycle_id: str, artifact_root: Path | None = None) -> Path:
+    root = artifact_root if artifact_root is not None else auto_loop_root(repo)
+    return root / "runtime" / "runs" / lifecycle_id
 
 
-def turn_log_paths(repo: Path, lifecycle_id: str, turn: int, role: str) -> tuple[Path, Path]:
-    base = run_logs_dir(repo, lifecycle_id) / f"turn-{turn:04d}-{role}"
+def turn_log_paths(
+    repo: Path,
+    lifecycle_id: str,
+    turn: int,
+    role: str,
+    artifact_root: Path | None = None,
+) -> tuple[Path, Path]:
+    base = run_logs_dir(repo, lifecycle_id, artifact_root) / f"turn-{turn:04d}-{role}"
     return base.with_suffix(".jsonl"), base.with_suffix(".log")
 
 
@@ -32,8 +40,9 @@ class TurnLogWriter:
     _readable: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        artifact_root = self.repo / self.config.artifacts_root
         self.jsonl_path, self.log_path = turn_log_paths(
-            self.repo, self.lifecycle_id, self.turn, self.role
+            self.repo, self.lifecycle_id, self.turn, self.role, artifact_root
         )
         self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -67,7 +76,7 @@ class TurnLogWriter:
 
 
 def prune_run_history(repo: Path, config: AutoLoopConfig, lifecycle_id: str) -> None:
-    runs_root = repo / ".auto-loop" / "runtime" / "runs"
+    runs_root = repo / config.artifacts_root / "runtime" / "runs"
     if not runs_root.is_dir():
         return
     entries = sorted(
@@ -82,8 +91,10 @@ def prune_run_history(repo: Path, config: AutoLoopConfig, lifecycle_id: str) -> 
         shutil.rmtree(victim, ignore_errors=True)
 
 
-def list_turn_numbers(repo: Path, lifecycle_id: str) -> list[int]:
-    run_dir = run_logs_dir(repo, lifecycle_id)
+def list_turn_numbers(
+    repo: Path, lifecycle_id: str, artifact_root: Path | None = None
+) -> list[int]:
+    run_dir = run_logs_dir(repo, lifecycle_id, artifact_root)
     if not run_dir.is_dir():
         return []
     turns: set[int] = set()
@@ -101,8 +112,9 @@ def read_turn_logs(
     *,
     raw: bool = False,
     role: str | None = None,
+    artifact_root: Path | None = None,
 ) -> str:
-    run_dir = run_logs_dir(repo, lifecycle_id)
+    run_dir = run_logs_dir(repo, lifecycle_id, artifact_root)
     if not run_dir.is_dir():
         return ""
     suffix = ".jsonl" if raw else ".log"
@@ -115,8 +127,10 @@ def read_turn_logs(
     return "\n\n".join(chunks).strip()
 
 
-def latest_turn_with_logs(repo: Path, lifecycle_id: str) -> int | None:
-    turns = list_turn_numbers(repo, lifecycle_id)
+def latest_turn_with_logs(
+    repo: Path, lifecycle_id: str, artifact_root: Path | None = None
+) -> int | None:
+    turns = list_turn_numbers(repo, lifecycle_id, artifact_root)
     return turns[-1] if turns else None
 
 
@@ -126,9 +140,10 @@ def role_with_log_for_turn(
     turn: int,
     *,
     raw: bool = False,
+    artifact_root: Path | None = None,
 ) -> str | None:
     """Return a role name that has a log file for ``turn`` (worker first)."""
-    run_dir = run_logs_dir(repo, lifecycle_id)
+    run_dir = run_logs_dir(repo, lifecycle_id, artifact_root)
     if not run_dir.is_dir():
         return None
     suffix = ".jsonl" if raw else ".log"

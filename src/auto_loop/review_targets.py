@@ -130,6 +130,7 @@ def normalize_work_targets(
     *,
     last_approved_commit: str,
     request: ReviewRequest,
+    excludes: tuple[str, ...] | None = None,
 ) -> tuple[list[ActiveReviewTarget], tuple[str, ...]]:
     path_requests = [t for t in request.targets if t.kind == "path"]
     seen_ids: set[str] = set()
@@ -147,6 +148,7 @@ def normalize_work_targets(
         worker_base_commit=request.base_commit,
         worker_head_commit=request.head_commit,
         allow_empty=allow_empty,
+        excludes=excludes,
     )
     if normalized.range.base != normalized.range.head:
         active.insert(

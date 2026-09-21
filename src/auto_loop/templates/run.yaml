@@ -1,0 +1,23 @@
+# Auto Loop run manifest (version 2).
+# Pass this file to the CLI: auto-loop run PATH/TO/THIS.yaml
+#
+# workspace is resolved relative to this file's directory.
+# All other paths are resolved relative to workspace.
+
+version: 2
+workspace: ..
+
+task:
+  source: .ai/proposal.md
+
+artifacts:
+  root: .ai/auto-loop
+
+models:
+  planner: auto
+  worker: auto
+  reviewer: auto
+
+run:
+  max_turns: 100
+  max_runtime_minutes: 480

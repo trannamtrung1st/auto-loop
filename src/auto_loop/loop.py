@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 from auto_loop.config import AutoLoopConfig
-from auto_loop.context_manifest import load_context_file, render_resource_manifest, validate_context
+from auto_loop.context_manifest import render_resource_manifest, validate_context
 from auto_loop.exits import ExitCode
 from auto_loop.git import (
     GitProtocolError,
@@ -39,7 +39,7 @@ from auto_loop.models import (
     Role,
     WorkerResult,
 )
-from auto_loop.product_state import assert_clean_product_tree, is_product_tree_clean
+from auto_loop.product_state import assert_clean_product_tree, is_product_tree_clean, product_excludes
 from auto_loop.prompts import TurnContext, build_planner_prompt, build_reviewer_prompt, build_worker_prompt
 from auto_loop.protocol import (
     ProtocolParseError,
@@ -105,7 +105,7 @@ INTERRUPTED_MESSAGE = """Run interrupted.
 
 Your state was saved.
 Resume with:
-  auto-loop resume"""
+  auto-loop resume RUN_CONFIG"""
 
 
 class ProviderInvoker(Protocol):
@@ -133,6 +133,7 @@ class LifecycleRunner:
     ) -> None:
         self.repo = repo
         self.config = config
+        self.artifact_root = (repo / config.artifacts_root).resolve()
         self.options = options
         self.invoker = invoker
         self._initial_lifecycle_id = initial_lifecycle_id
@@ -146,22 +147,31 @@ class LifecycleRunner:
         )
         self._console = RunConsole(console_level)
         self._run_started_mono = time.monotonic()
-        self._stop = RunStopController(repo)
+        self._stop = RunStopController(repo, artifact_root=self.artifact_root)
         self._limit_reason: str | None = None
 
+    def _excludes(self) -> tuple[str, ...]:
+        return product_excludes(self.config)
+
+    def _load_state(self) -> LifecycleState | None:
+        return load_lifecycle_state(self.repo, self.artifact_root)
+
+    def _save_state(self, state: LifecycleState) -> None:
+        save_lifecycle_state(self.repo, state, artifact_root=self.artifact_root)
+
     def _load_or_create_state(self) -> LifecycleState:
-        state = load_lifecycle_state(self.repo)
+        state = self._load_state()
         if state is None:
             lifecycle_id = self._initial_lifecycle_id or new_lifecycle_id()
             state = create_lifecycle(head_commit(self.repo), lifecycle_id=lifecycle_id)
-            save_lifecycle_state(self.repo, state)
+            self._save_state(state)
         return state
 
     def _reconcile_stale_inflight(self, state: LifecycleState) -> None:
         if state.inflight is None:
             return
         state.next_session = state.inflight.session_slot
-        save_lifecycle_state(self.repo, state)
+        self._save_state(state)
 
     def _turn_interrupted(self, state: LifecycleState, slot: SessionSlot) -> bool:
         return state.inflight is not None and state.inflight.session_slot == slot
@@ -177,7 +187,7 @@ class LifecycleRunner:
             started_at=utc_now(),
             head_before=head_commit(self.repo),
         )
-        save_lifecycle_state(self.repo, state)
+        self._save_state(state)
 
     def _clear_inflight(self, state: LifecycleState) -> None:
         state.inflight = None
@@ -191,7 +201,7 @@ class LifecycleRunner:
         state.inflight = None
         state.updated_at = utc_now()
         self._clear_inflight(state)
-        save_lifecycle_state(self.repo, state)
+        self._save_state(state)
         append_event(
             self.repo,
             self.config,
@@ -208,7 +218,7 @@ class LifecycleRunner:
     def _handle_stop_requested(self, state: LifecycleState) -> bool:
         if not self._stop.requested:
             return False
-        persist_stopped_state(self.repo, state)
+        persist_stopped_state(self.repo, state, self.artifact_root)
         append_event(
             self.repo,
             self.config,
@@ -235,14 +245,14 @@ class LifecycleRunner:
             },
         )
         state.updated_at = utc_now()
-        save_lifecycle_state(self.repo, state)
+        self._save_state(state)
         return True
 
     def _context_manifest(self, role: Role) -> str:
-        document = load_context_file(self.repo / self.config.context_file)
+        document = self.config.context
         validation = validate_context(self.repo, document)
         if not validation.ok_for_run:
-            raise RunPreconditionError("context.yaml failed validation")
+            raise RunPreconditionError("context resources failed validation")
         return render_resource_manifest(document, role)
 
     def _latest_review_path(self) -> str | None:
@@ -292,7 +302,7 @@ class LifecycleRunner:
             plan_path=self.config.plan_file,
             latest_review_path=self._latest_review_path(),
             head_commit=head_commit(self.repo),
-            product_clean=is_product_tree_clean(self.repo),
+            product_clean=is_product_tree_clean(self.repo, excludes=self._excludes()),
             interrupted=self._turn_interrupted(state, slot),
             protocol_repair=protocol_repair,
             resource_manifest=self._context_manifest(role),
@@ -357,7 +367,12 @@ class LifecycleRunner:
 
             def _provider_pid(pid: int | None) -> None:
                 self._stop.set_active_provider(pid)
-                register_active_run(self.repo, state.lifecycle_id, provider_pid=pid)
+                register_active_run(
+                    self.repo,
+                    state.lifecycle_id,
+                    provider_pid=pid,
+                    artifact_root=self.artifact_root,
+                )
 
             self.invoker.on_provider_pid = _provider_pid
         max_attempts = 1 + max(self.config.limits.provider_retries, 0)
@@ -381,7 +396,7 @@ class LifecycleRunner:
                             parsed.session_id,
                             model,
                         )
-                        save_lifecycle_state(self.repo, state)
+                        self._save_state(state)
                         if created:
                             append_event(
                                 self.repo,
@@ -399,7 +414,7 @@ class LifecycleRunner:
                     if attempt_result.failure == ProviderFailureKind.INTERRUPTED:
                         turn_log.finalize()
                         if self._stop.requested:
-                            persist_stopped_state(self.repo, state)
+                            persist_stopped_state(self.repo, state, self.artifact_root)
                             append_event(
                                 self.repo,
                                 self.config,
@@ -440,7 +455,7 @@ class LifecycleRunner:
                 except ProviderError:
                     turn_log.finalize()
                     if self._stop.requested:
-                        persist_stopped_state(self.repo, state)
+                        persist_stopped_state(self.repo, state, self.artifact_root)
                         append_event(
                             self.repo,
                             self.config,
@@ -477,7 +492,7 @@ class LifecycleRunner:
     def _assert_planning_clean(self, state: LifecycleState) -> None:
         if head_commit(self.repo) != state.initial_base_commit:
             raise GitProtocolError("Product HEAD must remain at initial baseline before plan PASS")
-        assert_clean_product_tree(self.repo)
+        assert_clean_product_tree(self.repo, excludes=self._excludes())
 
     def _assert_final_complete_valid(
         self,
@@ -491,7 +506,7 @@ class LifecycleRunner:
             )
         if result.reviewed_head_commit and resolve_commit(self.repo, result.reviewed_head_commit) != current_head:
             raise GitProtocolError("COMPLETE reviewed_head_commit does not match current HEAD")
-        assert_clean_product_tree(self.repo)
+        assert_clean_product_tree(self.repo, excludes=self._excludes())
 
     def _assert_pass_targets(self, review: ActiveReview, result: ReviewerResult) -> None:
         if result.verdict != "pass":
@@ -542,7 +557,7 @@ class LifecycleRunner:
         state.turn += 1
         state.updated_at = utc_now()
         self._clear_inflight(state)
-        save_lifecycle_state(self.repo, state)
+        self._save_state(state)
 
     def _assert_planning_slot_active(self, state: LifecycleState, slot: SessionSlot) -> None:
         if slot not in ("planner", "plan_reviewer"):
@@ -702,7 +717,7 @@ class LifecycleRunner:
             raise GitProtocolError("Worker review_requested requires a review request")
 
         if result.review.scope == "final":
-            assert_clean_product_tree(self.repo)
+            assert_clean_product_tree(self.repo, excludes=self._excludes())
             current_head = head_commit(self.repo)
             if current_head != state.last_approved_commit:
                 state.next_session = "worker"
@@ -723,7 +738,7 @@ class LifecycleRunner:
             state.active_review = self._make_plan_update_review(state, result)
         elif result.review.scope == "batch":
             try:
-                assert_clean_product_tree(self.repo)
+                assert_clean_product_tree(self.repo, excludes=self._excludes())
             except GitProtocolError:
                 self._dirty_batch_attempts += 1
                 if self._dirty_batch_attempts > self.config.limits.protocol_retries:
@@ -737,6 +752,7 @@ class LifecycleRunner:
                 self.repo,
                 last_approved_commit=state.last_approved_commit,
                 request=result.review,
+                excludes=self._excludes(),
             )
             pending = state.pending_revision
             if (
@@ -851,12 +867,13 @@ class LifecycleRunner:
                 summary=result.summary,
                 review_file=review_rel,
             ),
+            artifact_root=self.artifact_root,
         )
         state.status = LifecycleStatus.BLOCKED
         state.active_review = None
         state.updated_at = utc_now()
         self._clear_inflight(state)
-        save_lifecycle_state(self.repo, state)
+        self._save_state(state)
         append_event(
             self.repo,
             self.config,
@@ -885,6 +902,7 @@ class LifecycleRunner:
                 self.repo,
                 plan_path=self.repo / self.config.plan_file,
                 targets=state.active_review.targets,
+                config=self.config,
             )
             final_text = self._invoke_slot(slot, prompt, state)
             assert_protected_unchanged(self.repo, self.config, protected)
@@ -893,6 +911,7 @@ class LifecycleRunner:
                 plan_path=self.repo / self.config.plan_file,
                 before=snapshot,
                 targets=state.active_review.targets,
+                config=self.config,
             )
             try:
                 result = parse_reviewer_result(final_text)
@@ -985,12 +1004,13 @@ class LifecycleRunner:
                     plan_sha256=plan_hash,
                     initial_approved_plan_sha256=state.initial_approved_plan_sha256,
                 ),
+                artifact_root=self.artifact_root,
             )
             state.status = LifecycleStatus.COMPLETED
             state.active_review = None
             state.updated_at = utc_now()
             self._clear_inflight(state)
-            save_lifecycle_state(self.repo, state)
+            self._save_state(state)
             append_event(
                 self.repo,
                 self.config,
@@ -1045,11 +1065,11 @@ class LifecycleRunner:
             return self._run_loop()
         finally:
             self._stop.restore()
-            clear_active_run(self.repo)
+            clear_active_run(self.repo, self.artifact_root)
 
     def _run_loop(self) -> RunOutcome:
         state = self._load_or_create_state()
-        register_active_run(self.repo, state.lifecycle_id)
+        register_active_run(self.repo, state.lifecycle_id, artifact_root=self.artifact_root)
         prune_run_history(self.repo, self.config, state.lifecycle_id)
         append_event(
             self.repo,
@@ -1061,9 +1081,10 @@ class LifecycleRunner:
             goal_summary=self.options.goal_summary,
             user_config_rel=self.options.user_config_rel,
             resuming=self.options.resuming,
+            artifact_root_rel=self.config.artifacts_root,
         )
         self._reconcile_stale_inflight(state)
-        state = load_lifecycle_state(self.repo) or state
+        state = self._load_state() or state
         if state.inflight is not None:
             append_event(
                 self.repo,
@@ -1081,7 +1102,7 @@ class LifecycleRunner:
             while turns < self.options.max_turns:
                 if self._terminal_exit is not None:
                     break
-                state = load_lifecycle_state(self.repo) or state
+                state = self._load_state() or state
                 if self._handle_stop_requested(state):
                     break
                 if self._runtime_exceeded():
@@ -1098,48 +1119,48 @@ class LifecycleRunner:
                     self._worker_turn(state)
                 else:
                     self._reviewer_slot_turn(state, "reviewer")
-                state = load_lifecycle_state(self.repo) or state
+                state = self._load_state() or state
                 if self._terminal_exit is not None:
                     break
         except GitProtocolError:
             return RunOutcome(
                 exit_code=ExitCode.GIT_PROTOCOL_ERROR,
-                state=load_lifecycle_state(self.repo),
+                state=self._load_state(),
             )
         except SessionError as exc:
             return RunOutcome(
                 exit_code=ExitCode.SESSION_ERROR,
-                state=load_lifecycle_state(self.repo),
+                state=self._load_state(),
                 message=str(exc),
             )
         except ProviderError as exc:
             if self._stop.requested or self._terminal_exit == ExitCode.STOPPED:
                 return RunOutcome(
                     exit_code=ExitCode.STOPPED,
-                    state=load_lifecycle_state(self.repo),
+                    state=self._load_state(),
                     message=self._terminal_message or str(exc),
                 )
             return RunOutcome(
                 exit_code=exc.exit_code,
-                state=load_lifecycle_state(self.repo),
+                state=self._load_state(),
                 message=str(exc),
             )
         except ProtectionViolationError as exc:
             return RunOutcome(
                 exit_code=exc.exit_code,
-                state=load_lifecycle_state(self.repo),
+                state=self._load_state(),
                 message=str(exc),
             )
         except ReviewMutationError as exc:
             return RunOutcome(
                 exit_code=exc.exit_code,
-                state=load_lifecycle_state(self.repo),
+                state=self._load_state(),
                 message=str(exc),
             )
         except ProtocolParseError as exc:
             return RunOutcome(
                 exit_code=ExitCode.PROTOCOL_ERROR,
-                state=load_lifecycle_state(self.repo),
+                state=self._load_state(),
                 message=str(exc),
             )
         if self._terminal_exit is not None:
@@ -1157,11 +1178,11 @@ class LifecycleRunner:
         )
 
 
-def _check_idempotent_blocked(repo: Path) -> RunOutcome | None:
-    record = load_blocked_record(repo)
+def _check_idempotent_blocked(repo: Path, artifact_root: Path | None = None) -> RunOutcome | None:
+    record = load_blocked_record(repo, artifact_root)
     if record is None:
         return None
-    state = load_lifecycle_state(repo)
+    state = load_lifecycle_state(repo, artifact_root)
     summary = (record.summary or "").strip()
     message = summary or IDEMPOTENT_BLOCKED_MESSAGE
     return RunOutcome(
@@ -1171,12 +1192,16 @@ def _check_idempotent_blocked(repo: Path) -> RunOutcome | None:
     )
 
 
-def _check_idempotent_completion(repo: Path, config: AutoLoopConfig) -> RunOutcome | None:
-    record = load_completion_record(repo)
+def _check_idempotent_completion(
+    repo: Path,
+    config: AutoLoopConfig,
+    artifact_root: Path | None = None,
+) -> RunOutcome | None:
+    record = load_completion_record(repo, artifact_root)
     if record is None:
         return None
     assert_completion_inputs_unchanged(repo, config, record)
-    state = load_lifecycle_state(repo)
+    state = load_lifecycle_state(repo, artifact_root)
     return RunOutcome(
         exit_code=ExitCode.COMPLETE,
         state=state,
@@ -1190,22 +1215,21 @@ def run_lifecycle(
     invoker: ProviderInvoker,
     *,
     inputs: RunInputs | None = None,
+    config: AutoLoopConfig | None = None,
 ) -> RunOutcome:
     from auto_loop.locking import acquire_workspace_lock
-    from auto_loop.run_inputs import _user_supplied_new_goal
 
-    resolved_inputs = inputs or RunInputs()
-    if not (_user_supplied_new_goal(resolved_inputs) and not resolved_inputs.resume_only):
-        idempotent_blocked = _check_idempotent_blocked(repo)
-        if idempotent_blocked is not None:
-            return idempotent_blocked
-    config = ensure_run_prerequisites(repo, inputs)
-    idempotent = _check_idempotent_completion(repo, config)
+    config = ensure_run_prerequisites(repo, inputs, config=config)
+    artifact_root = (repo / config.artifacts_root).resolve()
+    idempotent_blocked = _check_idempotent_blocked(repo, artifact_root)
+    if idempotent_blocked is not None:
+        return idempotent_blocked
+    idempotent = _check_idempotent_completion(repo, config, artifact_root)
     if idempotent is not None:
         return idempotent
-    existing = load_lifecycle_state(repo)
+    existing = load_lifecycle_state(repo, artifact_root)
     lifecycle_id = existing.lifecycle_id if existing else new_lifecycle_id()
-    lock = acquire_workspace_lock(repo, lifecycle_id)
+    lock = acquire_workspace_lock(repo, lifecycle_id, artifact_root)
     try:
         runner = LifecycleRunner(
             repo,

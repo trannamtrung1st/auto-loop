@@ -1,19 +1,15 @@
-"""Human-readable lifecycle status (proposal section 35)."""
+"""Human-readable lifecycle status for a run located by its manifest."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
 
-from auto_loop.config import (
-    AutoLoopConfig,
-    USER_CONFIG_FILENAME,
-    ConfigurationError,
-    load_config_from_repo,
-    user_config_path,
-)
+from auto_loop.config import AutoLoopConfig, load_resolved_config_optional
 from auto_loop.git import head_commit
-from auto_loop.product_state import is_product_tree_clean
+from auto_loop.manifest import RunManifestSource
+from auto_loop.paths import workspace_relative
+from auto_loop.product_state import is_product_tree_clean, product_excludes
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.terminal_records import load_completion_record
 
@@ -87,25 +83,25 @@ def _run_label(status: str) -> str:
     return mapping.get(status, status)
 
 
-def _try_load_config(repo: Path) -> AutoLoopConfig | None:
-    try:
-        return load_config_from_repo(repo)
-    except ConfigurationError:
-        return None
+def _config_label(source: RunManifestSource) -> str:
+    rel = workspace_relative(source.workspace, source.path)
+    return rel if rel is not None else str(source.path)
 
 
-def build_status_report(repo: Path, *, now: datetime | None = None) -> str:
-    config = _try_load_config(repo)
+def build_status_report(source: RunManifestSource, *, now: datetime | None = None) -> str:
+    repo = source.workspace
+    artifact_root = source.artifact_root
+    frozen = load_resolved_config_optional(artifact_root)
+    config = frozen or source.config
     now = now or datetime.now(timezone.utc)
-    completion = load_completion_record(repo)
-    plan_rel = config.plan_file if config is not None else ".auto-loop/plan.md"
-    reviews_rel = config.reviews_dir if config is not None else ".auto-loop/reviews"
-    config_rel = (
-        USER_CONFIG_FILENAME if user_config_path(repo).is_file() else ".auto-loop/config.yaml"
-    )
+    completion = load_completion_record(repo, artifact_root)
+    plan_rel = config.plan_file
+    reviews_rel = config.reviews_dir
+    config_rel = _config_label(source)
+    excludes = product_excludes(config)
 
     if completion is not None:
-        state = load_lifecycle_state(repo)
+        state = load_lifecycle_state(repo, artifact_root)
         lines = [
             "Run:        complete",
             f"Config:     {config_rel}",
@@ -119,23 +115,21 @@ def build_status_report(repo: Path, *, now: datetime | None = None) -> str:
         ]
         if state is not None:
             lines.append(f"turn: {state.turn}")
-        if config is not None:
-            lines.append(f"latest review: {_latest_review_summary(repo, config)}")
+        lines.append(f"latest review: {_latest_review_summary(repo, config)}")
         return "\n".join(lines)
 
-    state = load_lifecycle_state(repo)
+    state = load_lifecycle_state(repo, artifact_root)
     if state is None:
         return "\n".join(
             [
                 "Run:        idle",
-                f"Config:     {config_rel if config is not None else '(none)'}",
+                f"Config:     {config_rel}",
                 "",
                 "status: idle",
                 "lifecycle: (none)",
                 "No active Auto Loop run.",
                 "Start with:",
-                '  auto-loop run "Describe the goal"',
-                "  auto-loop run --goal-file goal.md",
+                f"  auto-loop run {config_rel}",
             ]
         )
 
@@ -169,9 +163,9 @@ def build_status_report(repo: Path, *, now: datetime | None = None) -> str:
         f"initial base: {state.initial_base_commit[:7]}",
         f"last approved: {state.last_approved_commit[:7]}",
         f"HEAD: {head_commit(repo)[:7]}",
-        f"product tree: {'clean' if is_product_tree_clean(repo) else 'dirty'}",
+        f"product tree: {'clean' if is_product_tree_clean(repo, excludes=excludes) else 'dirty'}",
         "",
-        f"latest review: {_latest_review_summary(repo, config) if config is not None else '(none)'}",
+        f"latest review: {_latest_review_summary(repo, config)}",
         f"elapsed: {_format_duration(state.started_at, now)}",
         f"last activity: {_format_ago(state.updated_at, now)}",
     ]

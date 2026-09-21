@@ -8,7 +8,6 @@ from auto_loop.context_manifest import (
     ContextDocument,
     ManifestEntry,
     RoleManifestSection,
-    load_context_file,
     render_resource_manifest,
     validate_context,
 )
@@ -108,8 +107,8 @@ def test_manifest_appended_on_resume_turn(tmp_path: Path):
     state = create_lifecycle("abc")
     manifest = render_resource_manifest(ContextDocument(), "worker")
     ctx = TurnContext(
-        task_path=".auto-loop/task.md",
-        plan_path=".auto-loop/plan.md",
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
         latest_review_path=None,
         head_commit="abc",
         product_clean=True,
@@ -119,8 +118,10 @@ def test_manifest_appended_on_resume_turn(tmp_path: Path):
     assert "AVAILABLE TASK RESOURCES" in prompt
 
 
-def test_load_init_context_file(tmp_path: Path):
+def test_bootstrapped_context_defaults_empty(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
-    doc = load_context_file(repo / ".auto-loop" / "context.yaml")
-    assert doc.version == 1
+    from auto_loop.config import load_config_from_repo
+
+    doc = load_config_from_repo(repo).context
+    assert doc.shared.resources == []

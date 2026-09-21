@@ -67,7 +67,7 @@ def test_ignored_tracked_untracked_classification(tmp_path: Path):
     assert classify_path(repo, "tracked.txt") == "tracked"
     assert classify_path(repo, "untracked.txt") == "untracked"
     assert classify_path(repo, "build/out.bin") == "ignored"
-    assert classify_path(repo, ".auto-loop/plan.md") == "control"
+    assert classify_path(repo, ".ai/auto-loop/plan.md") == "control"
 
 
 def test_untracked_path_target_rejected(tmp_path: Path):
