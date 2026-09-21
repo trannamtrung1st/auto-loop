@@ -446,9 +446,6 @@ def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
     updated_targets: list[ActiveReviewTarget] = []
     changed = False
     for target in review.targets:
-        if target.kind == "path" and target.fingerprint:
-            updated_targets.append(target)
-            continue
         if _legacy_plan_target_needs_enrichment(target):
             rel = resolve_plan_review_path(repo, target.path)
             try:
@@ -468,24 +465,6 @@ def enrich_lifecycle_state(repo: Path, state: LifecycleState) -> LifecycleState:
                 target.model_copy(
                     update={"path": rel, "fingerprint": digest, "exists": exists}
                 )
-            )
-            changed = True
-        elif target.kind == "path" and not target.fingerprint:
-            try:
-                resolved = resolve_review_path(repo, target.path)
-            except Exception:
-                updates = {"active_review": None}
-                if state.next_session == "reviewer":
-                    updates["next_session"] = "worker"
-                return state.model_copy(update=updates)
-            digest, exists = fingerprint_path(resolved)
-            if not exists:
-                updates = {"active_review": None}
-                if state.next_session == "reviewer":
-                    updates["next_session"] = "worker"
-                return state.model_copy(update=updates)
-            updated_targets.append(
-                target.model_copy(update={"fingerprint": digest, "exists": exists})
             )
             changed = True
         else:

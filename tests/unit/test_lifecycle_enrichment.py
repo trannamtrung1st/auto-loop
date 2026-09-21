@@ -100,6 +100,41 @@ def test_reload_does_not_retarget_v2_plan_when_config_plan_file_changes(tmp_path
     assert stored.fingerprint == digest
 
 
+def test_empty_fingerprint_on_non_legacy_path_target_is_not_enriched(tmp_path: Path):
+    repo = _repo(tmp_path)
+    run_init(repo)
+    artifact = repo / "build" / "report.html"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("<html>v1</html>\n", encoding="utf-8")
+    on_disk, _ = fingerprint_path(artifact)
+
+    state = _execution_plan_review_state(
+        repo,
+        ActivePathTarget(
+            id="artifact",
+            path="build/report.html",
+            fingerprint="",
+            exists=True,
+            git_classification="ignored",
+            purpose="report",
+        ),
+    )
+    state.active_review = state.active_review.model_copy(
+        update={"scope": "batch", "target": "W01"}
+    )
+    save_lifecycle_state(repo, state)
+
+    artifact.write_text("<html>changed</html>\n", encoding="utf-8")
+    changed_on_disk, _ = fingerprint_path(artifact)
+    assert on_disk != changed_on_disk
+
+    loaded = load_lifecycle_state(repo)
+    assert loaded is not None
+    stored = next(t for t in loaded.active_review.targets if t.id == "artifact")
+    assert stored.fingerprint == ""
+    assert stored.path == "build/report.html"
+
+
 def test_legacy_sentinel_still_enriches_on_first_load(tmp_path: Path):
     repo = _repo(tmp_path)
     run_init(repo)
