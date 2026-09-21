@@ -1,4 +1,4 @@
-"""Shared helpers for proposal section 44 scenarios A-J."""
+"""Shared helpers for proposal section 44 integration scenarios."""
 
 from __future__ import annotations
 
@@ -82,12 +82,33 @@ def reviewer_invocation_count(provider: ScriptedProvider) -> int:
     return sum(1 for inv in provider.engine.invocations if inv.role == "reviewer")
 
 
+def worker_invocation_count(provider: ScriptedProvider) -> int:
+    return sum(1 for inv in provider.engine.invocations if inv.role == "worker")
+
+
+def worker_session_ids(provider: ScriptedProvider) -> list[str]:
+    return [inv.resume_session_id or "" for inv in provider.engine.invocations if inv.role == "worker"]
+
+
+def reviewer_session_ids(provider: ScriptedProvider) -> list[str]:
+    return [
+        inv.resume_session_id or ""
+        for inv in provider.engine.invocations
+        if inv.role == "reviewer"
+    ]
+
+
 class PromptCapturingProvider:
-    """Records reviewer prompts from fake-agent argv."""
+    """Records worker and reviewer prompts from fake-agent argv."""
 
     def __init__(self) -> None:
         self._inner = ScriptedProvider()
+        self.worker_prompts: list[str] = []
         self.reviewer_prompts: list[str] = []
+
+    @property
+    def engine(self):
+        return self._inner.engine
 
     def prepare(self, role: str) -> None:
         self._inner.prepare(role)
@@ -95,8 +116,11 @@ class PromptCapturingProvider:
     def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
         if len(argv) > 1 and argv[0] == "fake-agent":
             prompt = argv[-1]
-            if os.environ.get("AUTO_LOOP_FAKE_ROLE") == "reviewer":
+            fake_role = os.environ.get("AUTO_LOOP_FAKE_ROLE")
+            if fake_role == "reviewer":
                 self.reviewer_prompts.append(prompt)
+            elif fake_role == "worker":
+                self.worker_prompts.append(prompt)
         return self._inner.invoke(argv)
 
     def set_response(self, role: str, payload: dict) -> None:
@@ -116,3 +140,12 @@ class PromptCapturingProvider:
 
     def set_reviewer_complete(self, head: str) -> None:
         self._inner.set_reviewer_complete(head)
+
+    def set_worker_blocked(self, summary: str = "blocked on external dependency") -> None:
+        self._inner.set_worker_blocked(summary)
+
+    def set_reviewer_blocked(self, summary: str = "external intervention required") -> None:
+        self._inner.set_reviewer_blocked(summary)
+
+    def set_invalid_protocol_response(self, role: str) -> None:
+        self._inner.set_invalid_protocol_response(role)

@@ -44,7 +44,9 @@ from auto_loop.protection import (
     capture_protected_baseline,
 )
 from auto_loop.providers.base import AgentRequest
-from auto_loop.providers.cursor import build_cursor_command, parse_cursor_stream
+from auto_loop.providers.cursor import SessionError, build_cursor_command, parse_cursor_stream
+from auto_loop.providers.fake_cursor import FakeCursorError
+from auto_loop.providers.supervision import ProviderError
 from auto_loop.review_store import next_review_sequence, review_artifact_path
 from auto_loop.reviews import render_review_markdown
 from auto_loop.console_output import RunConsole
@@ -240,13 +242,38 @@ class LifecycleRunner:
             role,
         )
         self.invoker.prepare(role)
-        _code, lines = self.invoker.invoke(argv)
-        turn_log.write_stream_lines(lines)
+        max_attempts = 1 + max(self.config.limits.provider_retries, 0)
+        parsed = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                _code, lines = self.invoker.invoke(argv)
+                turn_log.write_stream_lines(lines)
+                parsed = parse_cursor_stream(
+                    lines,
+                    expected_session_id=session.session_id,
+                )
+                break
+            except SessionError:
+                turn_log.finalize()
+                raise
+            except FakeCursorError as exc:
+                if attempt >= max_attempts:
+                    turn_log.finalize()
+                    raise ProviderError(str(exc)) from exc
+                append_event(
+                    self.repo,
+                    self.config,
+                    {
+                        "type": "provider_retry",
+                        "actor": role,
+                        "attempt": attempt,
+                        "lifecycle_id": state.lifecycle_id,
+                    },
+                )
+        if parsed is None:
+            turn_log.finalize()
+            raise ProviderError(f"Provider failed for role {role}")
         turn_log.finalize()
-        parsed = parse_cursor_stream(
-            lines,
-            expected_session_id=session.session_id,
-        )
         if session.session_id is None:
             session.session_id = parsed.session_id
             append_event(
@@ -625,6 +652,18 @@ class LifecycleRunner:
             return RunOutcome(
                 exit_code=ExitCode.GIT_PROTOCOL_ERROR,
                 state=load_lifecycle_state(self.repo),
+            )
+        except SessionError as exc:
+            return RunOutcome(
+                exit_code=ExitCode.SESSION_ERROR,
+                state=load_lifecycle_state(self.repo),
+                message=str(exc),
+            )
+        except ProviderError as exc:
+            return RunOutcome(
+                exit_code=exc.exit_code,
+                state=load_lifecycle_state(self.repo),
+                message=str(exc),
             )
         except ProtectionViolationError as exc:
             return RunOutcome(
