@@ -7,15 +7,17 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from rich.text import Text
 from typer.testing import CliRunner
 
 from auto_loop.cli import app
+from auto_loop.config import ConfigurationError
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.lifecycle import create_lifecycle
 from tests.integration.scenario_harness import run_lifecycle
-from auto_loop.manifest import load_run_manifest
+from auto_loop.manifest import load_run_locator, load_run_manifest
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_inputs import prepare_repo_for_run
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
@@ -320,6 +322,32 @@ def test_operational_commands_survive_corrupt_manifest_fields(tmp_path: Path, mo
 
     logs = runner.invoke(app, ["logs", str(yaml_path)])
     assert logs.exit_code == 0
+
+    from auto_loop.loop import RunOutcome
+
+    def fake_run_lifecycle(*_args, **_kwargs):
+        return RunOutcome(
+            exit_code=ExitCode.COMPLETE,
+            state=load_lifecycle_state(repo, repo / ".ai" / "auto-loop"),
+            message="",
+        )
+
+    monkeypatch.setattr("auto_loop.cli.run_lifecycle", fake_run_lifecycle)
+    resumed = runner.invoke(app, ["resume", str(yaml_path), "--quiet"])
+    assert resumed.exit_code == int(ExitCode.COMPLETE)
+    assert "Invalid" not in (resumed.stderr + resumed.stdout)
+
+
+def test_locator_rejects_non_mapping_artifacts_section(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    yaml_path = repo / ".ai" / "run.yaml"
+    yaml_path.parent.mkdir(parents=True)
+    yaml_path.write_text(
+        "version: 2\nworkspace: ..\nartifacts: not-a-mapping\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="artifacts must be a mapping"):
+        load_run_locator(yaml_path)
 
 
 def test_blocked_idempotent_before_missing_context_resources(tmp_path: Path):

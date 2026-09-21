@@ -102,7 +102,13 @@ def load_run_locator(config_path: Path) -> RunLocator:
     if not workspace.is_dir():
         raise ConfigurationError(f"Workspace is not a directory: {workspace}")
 
-    artifacts = raw.get("artifacts") if isinstance(raw.get("artifacts"), dict) else {}
+    artifacts_raw = raw.get("artifacts")
+    if artifacts_raw is None:
+        artifacts: dict[str, Any] = {}
+    elif not isinstance(artifacts_raw, dict):
+        raise ConfigurationError(f"Invalid {path.name}\n\nartifacts must be a mapping.")
+    else:
+        artifacts = artifacts_raw
     root_raw = artifacts.get("root", DEFAULT_ARTIFACTS_ROOT)
     if not isinstance(root_raw, str):
         raise ConfigurationError(f"Invalid {path.name}\n\nartifacts.root must be a string.")

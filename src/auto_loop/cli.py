@@ -176,7 +176,7 @@ def resume_cmd(
     quiet: Annotated[bool, typer.Option("--quiet")] = False,
 ) -> None:
     """Continue the stored run using its frozen configuration and task snapshot."""
-    source = _load_manifest(run_config)
+    source = _resolve_operational(run_config)
     _run_prepared(source, resume=True, verbose=verbose, quiet=quiet)
 
 
