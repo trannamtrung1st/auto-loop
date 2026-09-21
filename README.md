@@ -180,7 +180,9 @@ Offline verification (no live Cursor):
 python -m pytest -q
 ```
 
-Integration tests use a deterministic in-process provider and real temporary Git repositories. Optional live Cursor smoke tests (proposal §45) are environment-gated and not required for wheel install checks.
+Integration tests use a deterministic in-process provider and real temporary Git repositories. The CLI `run` command invokes the **real Cursor agent subprocess** when prerequisites are met.
+
+Optional live Cursor smoke test (proposal §45): see [docs/live-cursor-smoke.md](docs/live-cursor-smoke.md). Set `AUTO_LOOP_LIVE_CURSOR=1` and run `pytest tests/integration/test_live_cursor_smoke.py -m live_cursor`. Skipped by default with an explicit reason.
 
 ## License
 

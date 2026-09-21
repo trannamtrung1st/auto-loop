@@ -14,7 +14,7 @@ from auto_loop.git import GitProtocolError
 from auto_loop.doctor import run_doctor
 from auto_loop.locking import ConcurrentRunError
 from auto_loop.loop import run_lifecycle
-from auto_loop.providers.scripted import ScriptedProvider
+from auto_loop.providers.subprocess_cursor import SubprocessCursorProvider
 from auto_loop.run_options import build_run_options
 from auto_loop.logs_view import render_logs
 from auto_loop.run_prerequisites import RunPreconditionError
@@ -123,7 +123,7 @@ def run_cmd(
             verbose=verbose,
             quiet=quiet,
         )
-        outcome = run_lifecycle(repo, options, ScriptedProvider())
+        outcome = run_lifecycle(repo, options, SubprocessCursorProvider(config))
     except (RunPreconditionError, ConfigurationError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(exc.exit_code)) from exc

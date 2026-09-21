@@ -37,7 +37,10 @@ include = ["src/auto_loop", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["tests", "src"]
+markers = [
+    "live_cursor: opt-in real Cursor smoke test (requires AUTO_LOOP_LIVE_CURSOR=1 and CLI auth).",
+]
 
 [tool.ruff]
 line-length = 100

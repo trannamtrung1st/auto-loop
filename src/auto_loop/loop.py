@@ -223,10 +223,11 @@ class LifecycleRunner:
             idle_timeout_seconds=self.config.limits.agent_idle_timeout_seconds,
             extra_args=[],
         )
+        use_live_cursor = getattr(self.invoker, "uses_live_cursor", False)
         argv = build_cursor_command(
             self.config,
             request,
-            binary="fake-agent",
+            binary=None if use_live_cursor else "fake-agent",
             resume_session_id=session.session_id,
         )
         os.environ["AUTO_LOOP_FAKE_ROLE"] = role
