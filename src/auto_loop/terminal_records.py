@@ -13,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 from auto_loop.config import AutoLoopConfig
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
+from auto_loop.atomic_io import atomic_write_json
 from auto_loop.paths import auto_loop_root
 from auto_loop.product_state import is_product_tree_clean
 from auto_loop.run_prerequisites import RunPreconditionError
@@ -75,15 +76,13 @@ def load_completion_record(repo: Path) -> CompletionRecord | None:
 
 def save_completion_record(repo: Path, record: CompletionRecord) -> Path:
     path = completion_path(repo)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, record.model_dump(mode="json"))
     return path
 
 
 def save_blocked_record(repo: Path, record: BlockedRecord) -> Path:
     path = blocked_path(repo)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, record.model_dump(mode="json"))
     return path
 
 

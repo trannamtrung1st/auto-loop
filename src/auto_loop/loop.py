@@ -19,7 +19,16 @@ from auto_loop.git import (
     resolve_commit,
 )
 from auto_loop.instructions import compose_role_instructions
-from auto_loop.lifecycle import ActiveReview, LifecycleState, LifecycleStatus, create_lifecycle, utc_now
+from auto_loop.atomic_io import atomic_write_text
+from auto_loop.lifecycle import (
+    ActiveReview,
+    InflightMarker,
+    LifecycleState,
+    LifecycleStatus,
+    create_lifecycle,
+    new_lifecycle_id,
+    utc_now,
+)
 from auto_loop.models import ReviewerResult
 from auto_loop.product_state import assert_clean_product_tree, is_product_tree_clean
 from auto_loop.prompts import TurnContext, build_reviewer_prompt, build_worker_prompt
@@ -71,11 +80,14 @@ class LifecycleRunner:
         config: AutoLoopConfig,
         options: RunOptions,
         invoker: ProviderInvoker,
+        *,
+        initial_lifecycle_id: str | None = None,
     ) -> None:
         self.repo = repo
         self.config = config
         self.options = options
         self.invoker = invoker
+        self._initial_lifecycle_id = initial_lifecycle_id
         self._dirty_batch_attempts = 0
         self._terminal_exit: ExitCode | None = None
         self._terminal_message: str | None = None
@@ -83,9 +95,33 @@ class LifecycleRunner:
     def _load_or_create_state(self) -> LifecycleState:
         state = load_lifecycle_state(self.repo)
         if state is None:
-            state = create_lifecycle(head_commit(self.repo))
+            lifecycle_id = self._initial_lifecycle_id or new_lifecycle_id()
+            state = create_lifecycle(head_commit(self.repo), lifecycle_id=lifecycle_id)
             save_lifecycle_state(self.repo, state)
         return state
+
+    def _reconcile_stale_inflight(self, state: LifecycleState) -> None:
+        if state.inflight is None:
+            return
+        state.next_actor = state.inflight.actor
+        save_lifecycle_state(self.repo, state)
+
+    def _turn_interrupted(self, state: LifecycleState, role: str) -> bool:
+        return state.inflight is not None and state.inflight.actor == role
+
+    def _persist_inflight(self, state: LifecycleState, role: str) -> None:
+        session_id = state.sessions[role].session_id or "pending"
+        state.inflight = InflightMarker(
+            actor=role,
+            turn=state.turn,
+            session_id=session_id,
+            started_at=utc_now(),
+            head_before=head_commit(self.repo),
+        )
+        save_lifecycle_state(self.repo, state)
+
+    def _clear_inflight(self, state: LifecycleState) -> None:
+        state.inflight = None
 
     def _context_manifest(self, role: str) -> str:
         document = load_context_file(self.repo / self.config.context_file)
@@ -122,6 +158,7 @@ class LifecycleRunner:
             resume_session_id=session.session_id,
         )
         os.environ["AUTO_LOOP_FAKE_ROLE"] = role
+        self._persist_inflight(state, role)
         self.invoker.prepare(role)
         _code, lines = self.invoker.invoke(argv)
         parsed = parse_cursor_stream(
@@ -157,6 +194,7 @@ class LifecycleRunner:
             latest_review_path=self._latest_review_path(),
             head_commit=head_commit(self.repo),
             product_clean=is_product_tree_clean(self.repo),
+            interrupted=self._turn_interrupted(state, "worker"),
             resource_manifest=self._context_manifest("worker"),
         )
         prompt = instruction_stack + "\n\n" + build_worker_prompt(state, ctx) if instruction_stack else build_worker_prompt(state, ctx)
@@ -174,6 +212,7 @@ class LifecycleRunner:
             state.next_actor = "reviewer"
             state.turn += 1
             state.updated_at = utc_now()
+            self._clear_inflight(state)
             save_lifecycle_state(self.repo, state)
             return
 
@@ -193,6 +232,7 @@ class LifecycleRunner:
                 state.next_actor = "worker"
                 state.turn += 1
                 state.updated_at = utc_now()
+                self._clear_inflight(state)
                 save_lifecycle_state(self.repo, state)
                 return
 
@@ -206,6 +246,7 @@ class LifecycleRunner:
                 state.next_actor = "worker"
                 state.turn += 1
                 state.updated_at = utc_now()
+                self._clear_inflight(state)
                 save_lifecycle_state(self.repo, state)
                 return
             normalized = normalize_batch_range(
@@ -229,6 +270,7 @@ class LifecycleRunner:
             state.next_actor = "reviewer"
         state.turn += 1
         state.updated_at = utc_now()
+        self._clear_inflight(state)
         save_lifecycle_state(self.repo, state)
 
     def _review_kind(self, review: ActiveReview, result: ReviewerResult) -> str:
@@ -251,6 +293,7 @@ class LifecycleRunner:
             latest_review_path=self._latest_review_path(),
             head_commit=head_commit(self.repo),
             product_clean=is_product_tree_clean(self.repo),
+            interrupted=self._turn_interrupted(state, "reviewer"),
             resource_manifest=self._context_manifest("reviewer"),
         )
         body = build_reviewer_prompt(state, ctx, state.active_review)
@@ -276,8 +319,7 @@ class LifecycleRunner:
             worker_session_id=state.sessions["worker"].session_id,
             reviewer_session_id=state.sessions["reviewer"].session_id,
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(markdown, encoding="utf-8")
+        atomic_write_text(path, markdown)
         review_rel = str(path.relative_to(self.repo))
 
         if result.verdict == "blocked":
@@ -296,6 +338,7 @@ class LifecycleRunner:
             state.status = LifecycleStatus.BLOCKED
             state.active_review = None
             state.updated_at = utc_now()
+            self._clear_inflight(state)
             save_lifecycle_state(self.repo, state)
             self._terminal_exit = ExitCode.BLOCKED
             return
@@ -329,6 +372,7 @@ class LifecycleRunner:
             state.status = LifecycleStatus.COMPLETED
             state.active_review = None
             state.updated_at = utc_now()
+            self._clear_inflight(state)
             save_lifecycle_state(self.repo, state)
             self._terminal_exit = ExitCode.COMPLETE
             return
@@ -337,10 +381,13 @@ class LifecycleRunner:
         state.next_actor = "worker"
         state.turn += 1
         state.updated_at = utc_now()
+        self._clear_inflight(state)
         save_lifecycle_state(self.repo, state)
 
     def run(self) -> RunOutcome:
         state = self._load_or_create_state()
+        self._reconcile_stale_inflight(state)
+        state = load_lifecycle_state(self.repo) or state
         turns = 0
         try:
             while turns < self.options.max_turns:
@@ -399,9 +446,23 @@ def run_lifecycle(
     options: RunOptions,
     invoker: ProviderInvoker,
 ) -> RunOutcome:
+    from auto_loop.locking import acquire_workspace_lock
+
     config = ensure_run_prerequisites(repo)
     idempotent = _check_idempotent_completion(repo, config)
     if idempotent is not None:
         return idempotent
-    runner = LifecycleRunner(repo, config, options, invoker)
-    return runner.run()
+    existing = load_lifecycle_state(repo)
+    lifecycle_id = existing.lifecycle_id if existing else new_lifecycle_id()
+    lock = acquire_workspace_lock(repo, lifecycle_id)
+    try:
+        runner = LifecycleRunner(
+            repo,
+            config,
+            options,
+            invoker,
+            initial_lifecycle_id=lifecycle_id if existing is None else None,
+        )
+        return runner.run()
+    finally:
+        lock.release()

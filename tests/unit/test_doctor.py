@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from auto_loop.cli import app
 from auto_loop.doctor import Severity, run_doctor
 from auto_loop.init_cmd import run_init
+from auto_loop.locking import acquire_workspace_lock
 
 runner = CliRunner()
 
@@ -76,6 +77,21 @@ def test_doctor_cli_exits_nonzero_on_failure(tmp_path: Path):
     repo = _repo(tmp_path)
     result = runner.invoke(app, ["doctor", str(repo)])
     assert result.exit_code == 10
+
+
+def test_doctor_reports_workspace_lock(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    run_init(repo, minimal=True)
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr(
+        "auto_loop.doctor.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="--resume stream-json ask", stderr=""),
+    )
+    monkeypatch.setattr("auto_loop.locking.is_pid_alive", lambda _pid: True)
+    handle = acquire_workspace_lock(repo, "lc-doc")
+    report = run_doctor(repo)
+    handle.release()
+    assert any(c.check_id == "lock" and c.severity == Severity.WARNING for c in report.checks)
 
 
 def test_doctor_cli_path_argument(tmp_path: Path, monkeypatch):

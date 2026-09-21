@@ -16,6 +16,7 @@ from auto_loop.context_manifest import validate_context_file
 from auto_loop.instructions import validate_custom_instruction_files
 from auto_loop.lifecycle import session_consistency_errors
 from auto_loop.providers.cursor import resolve_cursor_binary
+from auto_loop.locking import describe_lock_status
 from auto_loop.runtime import RuntimeStateError, load_lifecycle_state
 
 DEFAULT_INSTRUCTION_PATHS = (
@@ -237,6 +238,16 @@ def _check_context_manifest(repo: Path, config: AutoLoopConfig, report: DoctorRe
         report.add("context", Severity.OK, "context.yaml schema and resource paths validated")
 
 
+def _check_workspace_lock(repo: Path, report: DoctorReport) -> None:
+    severity, message = describe_lock_status(repo)
+    if severity == "error":
+        report.add("lock", Severity.ERROR, message)
+    elif severity == "warning":
+        report.add("lock", Severity.WARNING, message)
+    else:
+        report.add("lock", Severity.OK, message)
+
+
 def _check_lifecycle_sessions(repo: Path, report: DoctorReport) -> None:
     try:
         state = load_lifecycle_state(repo)
@@ -265,6 +276,7 @@ def run_doctor(repo: Path, *, verbose: bool = False) -> DoctorReport:
     _check_context_manifest(repo, config, report)
     _check_git(repo, config, report)
     _check_runtime_writable(repo, report)
+    _check_workspace_lock(repo, report)
     _check_lifecycle_sessions(repo, report)
     _check_cursor_cli(config, report)
     return report

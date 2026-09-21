@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from auto_loop.atomic_io import atomic_write_json
 from auto_loop.lifecycle import LifecycleState
 from auto_loop.paths import auto_loop_root
 
@@ -30,8 +31,12 @@ def load_lifecycle_state(repo: Path) -> LifecycleState | None:
         raise RuntimeStateError(f"Invalid lifecycle state at {path}: {exc}") from exc
 
 
-def save_lifecycle_state(repo: Path, state: LifecycleState) -> None:
+def save_lifecycle_state(
+    repo: Path,
+    state: LifecycleState,
+    *,
+    before_replace=None,
+) -> None:
     path = state_path(repo)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = state.model_dump(mode="json")
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, payload, before_replace=before_replace)

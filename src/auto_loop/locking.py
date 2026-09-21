@@ -1,0 +1,126 @@
+"""Workspace controller lock (proposal section 32)."""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+from pydantic import BaseModel, ValidationError
+
+from auto_loop.atomic_io import atomic_write_json
+from auto_loop.exits import ExitCode
+from auto_loop.paths import auto_loop_root
+
+
+class ConcurrentRunError(Exception):
+    exit_code = ExitCode.CONCURRENT_RUN
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class LockError(Exception):
+    """Lock file could not be read or written."""
+
+
+class WorkspaceLockRecord(BaseModel):
+    pid: int
+    hostname: str
+    started_at: datetime
+    lifecycle_id: str
+
+
+def lock_path(repo: Path) -> Path:
+    return auto_loop_root(repo) / "runtime" / "lock.json"
+
+
+def load_workspace_lock(repo: Path) -> WorkspaceLockRecord | None:
+    path = lock_path(repo)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return WorkspaceLockRecord.model_validate(data)
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+        raise LockError(f"Invalid lock file at {path}: {exc}") from exc
+
+
+def is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    else:
+        return True
+
+
+def lock_owner_is_live(record: WorkspaceLockRecord) -> bool:
+    if record.hostname != socket.gethostname():
+        return True
+    return is_pid_alive(record.pid)
+
+
+@dataclass
+class WorkspaceLockHandle:
+    repo: Path
+    record: WorkspaceLockRecord
+    released: bool = False
+
+    def release(self) -> None:
+        if self.released:
+            return
+        path = lock_path(self.repo)
+        try:
+            current = load_workspace_lock(self.repo)
+        except LockError:
+            current = None
+        if current and current.pid == self.record.pid and current.hostname == self.record.hostname:
+            path.unlink(missing_ok=True)
+        self.released = True
+
+
+def acquire_workspace_lock(repo: Path, lifecycle_id: str) -> WorkspaceLockHandle:
+    path = lock_path(repo)
+    existing = load_workspace_lock(repo)
+    if existing is not None and lock_owner_is_live(existing):
+        raise ConcurrentRunError(
+            f"Another auto-loop controller owns this workspace "
+            f"(pid={existing.pid}, host={existing.hostname}, lifecycle={existing.lifecycle_id})"
+        )
+    record = WorkspaceLockRecord(
+        pid=os.getpid(),
+        hostname=socket.gethostname(),
+        started_at=datetime.now().astimezone(),
+        lifecycle_id=lifecycle_id,
+    )
+    atomic_write_json(path, record.model_dump(mode="json"))
+    return WorkspaceLockHandle(repo=repo, record=record)
+
+
+def describe_lock_status(repo: Path) -> tuple[str, str]:
+    """Return (severity, message) for doctor: ok, warning, or error."""
+    try:
+        record = load_workspace_lock(repo)
+    except LockError as exc:
+        return ("error", str(exc))
+    if record is None:
+        return ("ok", "No workspace lock held")
+    if lock_owner_is_live(record):
+        return (
+            "warning",
+            f"Active controller lock: pid={record.pid} host={record.hostname} "
+            f"lifecycle={record.lifecycle_id}",
+        )
+    return (
+        "warning",
+        f"Stale workspace lock from pid={record.pid} host={record.hostname} "
+        f"(eligible for takeover on next run)",
+    )

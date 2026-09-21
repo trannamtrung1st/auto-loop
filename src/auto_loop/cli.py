@@ -12,6 +12,7 @@ from auto_loop.config import ConfigurationError, load_config_from_repo
 from auto_loop.exits import ExitCode
 from auto_loop.git import GitProtocolError
 from auto_loop.doctor import run_doctor
+from auto_loop.locking import ConcurrentRunError
 from auto_loop.loop import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import build_run_options
@@ -126,6 +127,9 @@ def run_cmd(
     except GitProtocolError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(ExitCode.GIT_PROTOCOL_ERROR)) from exc
+    except ConcurrentRunError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(ExitCode.CONCURRENT_RUN)) from exc
     if outcome.message:
         typer.echo(outcome.message)
     elif not quiet:
