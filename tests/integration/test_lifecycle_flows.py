@@ -1,5 +1,6 @@
 """Fake-provider lifecycle flows: revise, dirty batch, and protocol errors."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -186,6 +187,117 @@ def test_dirty_batch_exhaustion_returns_git_protocol_error(tmp_path: Path):
     assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
     state = load_lifecycle_state(repo)
     assert state.last_approved_commit == baseline
+
+
+def test_multi_fix_cumulative_batch_pass_advances_baseline(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    _approve_plan(repo, provider)
+    baseline = load_lifecycle_state(repo).last_approved_commit
+    (repo / "feature.txt").write_text("v1\n", encoding="utf-8")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-m", "feature v1")
+    head_v1 = head_commit(repo)
+    provider.set_response("worker", _batch_worker_payload(baseline, head_v1))
+    provider.set_reviewer_revise("batch", "W01")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    (repo / "feature.txt").write_text("v2\n", encoding="utf-8")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-m", "fix v2")
+    head_v2 = head_commit(repo)
+    provider.set_response("worker", _batch_worker_payload(baseline, head_v2))
+    provider.set_reviewer_pass("batch", "W01")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    state = load_lifecycle_state(repo)
+    assert state.last_approved_commit == head_v2
+
+
+def test_history_rewrite_during_run_exits_git_protocol_error(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    _approve_plan(repo, provider)
+    baseline = load_lifecycle_state(repo).last_approved_commit
+    (repo / "feature.txt").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-m", "feature")
+    head = head_commit(repo)
+    provider.set_response("worker", _batch_worker_payload(baseline, head))
+    provider.set_reviewer_pass("batch", "W01")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    _git(repo, "reset", "--hard", baseline)
+    outcome = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=1, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+
+
+class PromptCapturingProvider:
+    """Records reviewer prompts from fake-agent argv."""
+
+    def __init__(self) -> None:
+        self._inner = ScriptedProvider()
+        self.reviewer_prompts: list[str] = []
+
+    def prepare(self, role: str) -> None:
+        self._inner.prepare(role)
+
+    def invoke(self, argv: list[str]) -> tuple[int, list[str]]:
+        if len(argv) > 1 and argv[0] == "fake-agent":
+            prompt = argv[-1]
+            if os.environ.get("AUTO_LOOP_FAKE_ROLE") == "reviewer":
+                self.reviewer_prompts.append(prompt)
+        return self._inner.invoke(argv)
+
+    def set_worker_plan_request(self) -> None:
+        self._inner.set_worker_plan_request()
+
+    def set_reviewer_pass(self, scope: str, target: str) -> None:
+        self._inner.set_reviewer_pass(scope, target)
+
+    def set_response(self, role: str, payload: dict) -> None:
+        self._inner.set_response(role, payload)
+
+
+def test_batch_reviewer_prompt_allows_widened_inspection(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = PromptCapturingProvider()
+    provider.set_worker_plan_request()
+    provider.set_reviewer_pass("plan", "plan")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    baseline = load_lifecycle_state(repo).last_approved_commit
+    (repo / "feature.txt").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-m", "feature")
+    head = head_commit(repo)
+    provider.set_response("worker", _batch_worker_payload(baseline, head))
+    provider.set_reviewer_pass("batch", "W01")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert provider.reviewer_prompts
+    batch_prompt = provider.reviewer_prompts[-1]
+    assert "outside the diff" in batch_prompt
+    assert f"{baseline}..{head}" in batch_prompt
 
 
 def test_wrong_batch_head_exits_git_protocol_error(tmp_path: Path):
