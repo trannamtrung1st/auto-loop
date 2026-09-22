@@ -1,5 +1,6 @@
 """Turn log retention and rendering."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from auto_loop.turn_logs import (
     prune_run_history,
     read_turn_logs,
     role_with_log_for_turn,
+    write_unseen_stream_lines,
 )
 
 
@@ -26,15 +28,110 @@ def test_turn_logs_write_jsonl_and_readable(tmp_path: Path):
     writer = TurnLogWriter(repo, default_config(), "lc-1", 1, "worker")
     writer.write_stream_lines(
         [
-            '{"type":"result","text":"hello from provider"}',
+            json.dumps({"type": "thinking", "text": "I need "}),
+            json.dumps({"type": "thinking", "text": "to inspect"}),
+            json.dumps({"type": "assistant", "text": "hello "}),
+            json.dumps({"type": "assistant", "text": "from provider"}),
         ]
     )
+    partial = writer.log_path.read_text(encoding="utf-8")
+    assert "[thinking] I need to inspect" in partial
+    assert writer.raw_line_count == 4
     writer.finalize()
     assert list_turn_numbers(repo, "lc-1") == [1]
     readable = read_turn_logs(repo, "lc-1", 1, raw=False)
-    assert "hello from provider" in readable
+    assert "[thinking] I need to inspect" in readable
+    assert "[message] hello from provider" in readable
+    assert readable.count("[thinking]") == 1
+    assert readable.count("[message]") == 1
     raw = read_turn_logs(repo, "lc-1", 1, raw=True)
-    assert "result" in raw
+    assert '"type": "thinking"' in raw
+    assert "[thinking]" not in raw.split("===", 1)[-1]
+
+
+def test_result_only_stream_stays_raw_and_readable_log_is_a_placeholder(tmp_path: Path):
+    repo = _repo(tmp_path)
+    writer = TurnLogWriter(repo, default_config(), "lc-1", 1, "worker")
+    writer.write_stream_line(json.dumps({"type": "result", "text": "hello from provider"}))
+    assert writer.jsonl_path.read_text(encoding="utf-8").count("hello from provider") == 1
+    writer.finalize()
+    assert writer.log_path.read_text(encoding="utf-8").strip() == "(no readable provider output captured)"
+
+
+def test_malformed_line_is_kept_in_jsonl_without_breaking_the_trace(tmp_path: Path):
+    repo = _repo(tmp_path)
+    writer = TurnLogWriter(repo, default_config(), "lc-1", 1, "worker")
+    writer.write_stream_line("{not-json")
+    writer.write_stream_line(json.dumps({"type": "thinking", "text": "still here"}))
+    writer.finalize()
+    raw = writer.jsonl_path.read_text(encoding="utf-8")
+    assert "{not-json" in raw
+    assert "[thinking] still here" in writer.log_path.read_text(encoding="utf-8")
+
+
+def test_tool_payload_is_capped_in_the_readable_log(tmp_path: Path):
+    repo = _repo(tmp_path)
+    writer = TurnLogWriter(repo, default_config(), "lc-1", 1, "worker")
+    command = "z" * 1000
+    body = "x" * 18432
+    writer.write_stream_line(
+        json.dumps(
+            {
+                "type": "tool_call",
+                "status": "running",
+                "name": "run_terminal_cmd",
+                "args": {"command": command},
+            }
+        )
+    )
+    writer.write_stream_line(
+        json.dumps(
+            {
+                "type": "tool_call",
+                "status": "completed",
+                "name": "read_file",
+                "result": body,
+            }
+        )
+    )
+    writer.finalize()
+    raw = writer.jsonl_path.read_text(encoding="utf-8")
+    readable = writer.log_path.read_text(encoding="utf-8")
+    assert command in raw
+    assert body in raw
+    assert command not in readable
+    assert body not in readable
+    assert "..." in readable
+    assert "[tool:start] run_terminal_cmd" in readable
+    assert "[tool:end]   read_file  completed · 18432 chars" in readable
+
+
+def test_unseen_lines_do_not_duplicate_a_live_attempt(tmp_path: Path):
+    repo = _repo(tmp_path)
+    writer = TurnLogWriter(repo, default_config(), "lc-1", 7, "worker")
+    first = [
+        json.dumps({"type": "thinking", "text": "one"}),
+        json.dumps({"type": "thinking", "text": " "}),
+        json.dumps({"type": "thinking", "text": "pass"}),
+    ]
+    before = writer.raw_line_count
+    for line in first:
+        writer.write_stream_line(line)
+    write_unseen_stream_lines(writer, first, before=before, on_line=writer.write_stream_line)
+    writer.finish_open_trace()
+    second = [json.dumps({"type": "assistant", "text": "next"})]
+    before_second = writer.raw_line_count
+    write_unseen_stream_lines(
+        writer, second, before=before_second, on_line=writer.write_stream_line
+    )
+    writer.finalize()
+    raw = writer.jsonl_path.read_text(encoding="utf-8")
+    readable = writer.log_path.read_text(encoding="utf-8")
+    assert raw.count('"text": "one"') == 1
+    assert raw.count('"text": "next"') == 1
+    assert readable.count("[thinking]") == 1
+    assert "[thinking] one pass" in readable
+    assert "[message] next" in readable
 
 
 def test_turn_log_roles_cover_all_session_purposes():

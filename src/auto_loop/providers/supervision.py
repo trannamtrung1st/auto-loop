@@ -90,6 +90,7 @@ Clock = Callable[[], float]
 LineIterator = Callable[[], str | None]
 StopCheck = Callable[[], bool]
 PidCallback = Callable[[int | None], None]
+StreamLineCallback = Callable[[str], None]
 
 
 def supervise_stream(
@@ -99,8 +100,13 @@ def supervise_stream(
     wall_timeout_seconds: float,
     idle_timeout_seconds: float,
     stop_check: StopCheck | None = None,
+    on_line: StreamLineCallback | None = None,
 ) -> SupervisionOutcome:
-    """Read NDJSON lines until EOF or a timeout; refresh idle clock on each line."""
+    """Read NDJSON lines until EOF or a timeout; refresh idle clock on each line.
+
+    ``on_line`` runs on this caller after each dequeued stdout line is recorded,
+    not from the stdout reader thread.
+    """
     outcome = SupervisionOutcome()
     started = clock()
     last_activity = started
@@ -128,7 +134,10 @@ def supervise_stream(
             return outcome
         if line == "":
             continue
-        outcome.lines.append(line.rstrip("\n"))
+        stored = line.rstrip("\n")
+        outcome.lines.append(stored)
+        if on_line is not None:
+            on_line(stored)
         last_activity = clock()
 
 
@@ -162,6 +171,7 @@ def run_subprocess_streaming(
     expected_session_id: str | None = None,
     stop_check: StopCheck | None = None,
     on_provider_pid: PidCallback | None = None,
+    on_line: StreamLineCallback | None = None,
     poll_interval: float = 0.05,
 ) -> SupervisionOutcome:
     proc = subprocess.Popen(
@@ -218,6 +228,7 @@ def run_subprocess_streaming(
             wall_timeout_seconds=wall_timeout_seconds,
             idle_timeout_seconds=idle_timeout_seconds,
             stop_check=stop_check,
+            on_line=on_line,
         )
         if outcome.failure in {
             ProviderFailureKind.IDLE_TIMEOUT,

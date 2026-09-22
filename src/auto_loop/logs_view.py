@@ -70,12 +70,13 @@ def stream_follow_logs(
         repo, lifecycle_id, selected, role, artifact_root
     )
     target = jsonl_path if raw else log_path
+    header_sent = False
     if not target.is_file():
         emit(f"Waiting for {target.name}...")
-        last_size = 0
     else:
         emit(_log_header(selected, role, raw=raw, color=color))
-        last_size = 0
+        header_sent = True
+    last_size = 0
 
     started = time.monotonic()
     last_growth = started
@@ -86,6 +87,9 @@ def stream_follow_logs(
                 # Provider bytes stay on the raw write path. Do not render them with Rich.
                 text = target.read_text(encoding="utf-8")
                 if len(text) > last_size:
+                    if not header_sent:
+                        emit(_log_header(selected, role, raw=raw, color=color))
+                        header_sent = True
                     emit(text[last_size:])
                     last_size = len(text)
                     grew = True

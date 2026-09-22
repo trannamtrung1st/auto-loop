@@ -10,6 +10,7 @@ from auto_loop.providers.supervision import (
     PidCallback,
     ProviderAttemptResult,
     StopCheck,
+    StreamLineCallback,
     provider_attempt_from_outcome,
     run_subprocess_streaming,
 )
@@ -28,6 +29,7 @@ class SubprocessCursorProvider:
     uses_live_cursor: bool = True
     stop_check: StopCheck | None = None
     on_provider_pid: PidCallback | None = None
+    on_stream_line: StreamLineCallback | None = None
 
     def prepare(self, role: str) -> None:
         return None
@@ -42,5 +44,6 @@ class SubprocessCursorProvider:
             expected_session_id=expected_session_id,
             stop_check=self.stop_check,
             on_provider_pid=self.on_provider_pid,
+            on_line=self.on_stream_line,
         )
         return provider_attempt_from_outcome(outcome)

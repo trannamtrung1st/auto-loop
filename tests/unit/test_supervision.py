@@ -2,6 +2,7 @@
 
 import json
 import sys
+import time
 
 import pytest
 
@@ -19,6 +20,53 @@ from auto_loop.providers.supervision import (
 
 def _result_line(text: str = "done") -> str:
     return json.dumps({"type": "result", "session_id": "sess-1", "result": text})
+
+
+def test_supervise_stream_calls_on_line_before_the_next_read():
+    seen: list[str] = []
+    calls = {"n": 0}
+
+    def next_line():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "first\n"
+        if calls["n"] == 2:
+            assert seen == ["first"]
+            return "second\n"
+        return None
+
+    outcome = supervise_stream(
+        next_line,
+        wall_timeout_seconds=5,
+        idle_timeout_seconds=5,
+        on_line=seen.append,
+    )
+    assert seen == ["first", "second"]
+    assert outcome.lines == ["first", "second"]
+
+
+def test_supervise_stream_on_line_keeps_partial_output_on_timeout():
+    clock, advance = fake_clock()
+    seen: list[str] = []
+    calls = {"n": 0}
+
+    def next_line():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "partial\n"
+        advance(50)
+        return ""
+
+    outcome = supervise_stream(
+        next_line,
+        clock=clock,
+        wall_timeout_seconds=30,
+        idle_timeout_seconds=100,
+        on_line=seen.append,
+    )
+    assert seen == ["partial"]
+    assert outcome.lines == ["partial"]
+    assert outcome.failure == ProviderFailureKind.WALL_TIMEOUT
 
 
 def test_supervise_stream_idle_timeout():
@@ -107,6 +155,63 @@ def test_provider_retries_exhausted():
     with pytest.raises(ProviderError):
         run_with_provider_retries(attempt, provider_retries=2, session_id="sess-1")
     assert calls == 3
+
+
+def test_run_subprocess_streaming_reports_lines_before_the_child_exits():
+    script = (
+        "import json, time\n"
+        "print(json.dumps({'type': 'thinking', 'text': 'hello '}), flush=True)\n"
+        "time.sleep(0.6)\n"
+        "print(json.dumps({'type': 'thinking', 'text': 'world'}), flush=True)\n"
+        "print(json.dumps({'type': 'result', 'session_id': 's', 'result': 'done'}), flush=True)\n"
+    )
+    first: dict[str, float] = {}
+
+    def on_line(line: str) -> None:
+        if "hello" in line and "at" not in first:
+            first["at"] = time.monotonic()
+
+    outcome = run_subprocess_streaming(
+        [sys.executable, "-c", script],
+        wall_timeout_seconds=5.0,
+        idle_timeout_seconds=5.0,
+        on_line=on_line,
+        poll_interval=0.05,
+    )
+    finished = time.monotonic()
+    assert "at" in first
+    # The child sleeps after the first line, so a callback that waited for exit
+    # would see "hello" only at the end.
+    assert finished - first["at"] > 0.3
+    assert any("world" in line for line in outcome.lines)
+    assert outcome.failure is None
+
+
+def test_partial_subprocess_stream_is_persisted_on_idle_timeout(tmp_path):
+    from auto_loop.config import default_config
+    from auto_loop.turn_logs import TurnLogWriter
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    writer = TurnLogWriter(repo, default_config(), "lc-1", 1, "worker")
+    script = (
+        "import json, time\n"
+        "print(json.dumps({'type': 'thinking', 'text': 'partial'}), flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    outcome = run_subprocess_streaming(
+        [sys.executable, "-c", script],
+        wall_timeout_seconds=8.0,
+        idle_timeout_seconds=1.5,
+        on_line=writer.write_stream_line,
+        poll_interval=0.05,
+    )
+    assert outcome.failure == ProviderFailureKind.IDLE_TIMEOUT
+    assert writer.raw_line_count >= 1
+    assert "[thinking] partial" in writer.log_path.read_text(encoding="utf-8")
+    assert "thinking" in writer.jsonl_path.read_text(encoding="utf-8")
+    writer.finalize()
+    assert "[thinking] partial" in writer.log_path.read_text(encoding="utf-8")
 
 
 def test_run_subprocess_streaming_idle_timeout_terminates_silent_child():

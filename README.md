@@ -240,7 +240,8 @@ Contributors working on this repository should read root [`AGENTS.md`](AGENTS.md
 
 - **Events** — `<artifacts.root>/runtime/events.jsonl` (lifecycle started, reviews, baseline advanced, stops, limits).
 - **State** — `<artifacts.root>/runtime/state.json` (phase, turn, next session, four session slots, active review, pending revision, inflight).
-- **Turn logs** — `<artifacts.root>/runtime/runs/<lifecycle_id>/` per-turn `.jsonl` / `.log` streams, named by session purpose.
+- **Turn logs** — `<artifacts.root>/runtime/runs/<lifecycle_id>/` per-turn streams, named by session purpose. `.jsonl` is the raw provider NDJSON, appended as each line arrives. `.log` is the normalized thinking / message / tool trace, also appended immediately. `auto-loop logs RUN_CONFIG --follow` tails that activity while the agent is running. `--raw` prints the JSONL unchanged.
+- **Run console** — normal and verbose runs show that trace live: thinking, assistant text, and tool start/end. `--quiet` hides the live trace and still writes the turn logs. `--verbose` keeps the trace and adds session and lifecycle diagnostics, with longer tool-argument excerpts. Tool results stay summarized; the full payload remains in the JSONL.
 - **Completion / blocked** — `<artifacts.root>/runtime/completion.json` or `blocked.json` when terminal.
 
 Use `auto-loop status RUN_CONFIG` and `auto-loop logs RUN_CONFIG` for operator-friendly views.

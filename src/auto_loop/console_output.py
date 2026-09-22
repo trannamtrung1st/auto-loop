@@ -16,6 +16,14 @@ from rich.rule import Rule
 from rich.text import Text
 
 from auto_loop.config import ConsoleLevel
+from auto_loop.providers.cursor import (
+    TRACE_PAYLOAD_LIMIT,
+    TRACE_PAYLOAD_LIMIT_VERBOSE,
+    TraceEvent,
+    TraceEventKind,
+    format_tool_trace,
+    trace_text_prefix,
+)
 
 _LEVELS = {"quiet": 0, "normal": 1, "verbose": 2}
 _LABEL_WIDTH = 14
@@ -45,6 +53,11 @@ STATUS_STYLES = {
     "blocked": "bold red",
     "error": "bold red",
     "failure": "bold red",
+}
+
+_TRACE_TEXT_STYLES = {
+    TraceEventKind.THINKING: "dim magenta",
+    TraceEventKind.MESSAGE: "bright_white",
 }
 
 
@@ -150,6 +163,7 @@ class RunConsole:
         self.level = level
         self.stream = stream or sys.stdout
         self._rich = make_rich_console(self.stream, color=color)
+        self._active_stream_kind: TraceEventKind | None = None
 
     def _enabled(self, min_level: ConsoleLevel) -> bool:
         return _LEVELS[self.level] >= _LEVELS[min_level]
@@ -157,16 +171,19 @@ class RunConsole:
     def _blank(self, min_level: ConsoleLevel = "normal") -> None:
         if not self._enabled(min_level):
             return
+        self._finish_stream_line()
         self._rich.print()
 
     def _rule(self, title: Text, *, style: str, min_level: ConsoleLevel = "normal") -> None:
         if not self._enabled(min_level):
             return
+        self._finish_stream_line()
         self._rich.print(Rule(title, style=style, characters=_RULE_CHAR))
 
     def _row(self, label: str, value: Text, *, min_level: ConsoleLevel = "normal") -> None:
         if not self._enabled(min_level):
             return
+        self._finish_stream_line()
         line = Text()
         line.append(label.ljust(_LABEL_WIDTH))
         line.append(value)
@@ -182,6 +199,7 @@ class RunConsole:
     ) -> None:
         if not self._enabled(min_level):
             return
+        self._finish_stream_line()
         line = Text()
         line.append(f"{label}: ", style="bold")
         line.append(_single_line(value), style=value_style)
@@ -190,6 +208,7 @@ class RunConsole:
     def _status_row(self, label: str, status: str, *, style: str) -> None:
         if not self._enabled("normal"):
             return
+        self._finish_stream_line()
         line = Text()
         line.append(label.ljust(_LABEL_WIDTH), style=style)
         line.append(status, style=style)
@@ -289,6 +308,7 @@ class RunConsole:
     def lifecycle_stopped(self, message: str) -> None:
         if not self._enabled("normal"):
             return
+        self._finish_stream_line()
         self._blank()
         self._rule(Text("STOPPED", style="bold yellow"), style="bold yellow")
         self._rich.print(Text(message))
@@ -299,6 +319,7 @@ class RunConsole:
     def _outcome(self, title: str, message: str, *, style: str) -> None:
         if not self._enabled("normal"):
             return
+        self._finish_stream_line()
         self._blank()
         self._rule(Text(title, style=style), style=style)
         self._rich.print(Text(_single_line(message)))
@@ -306,4 +327,51 @@ class RunConsole:
     def verbose(self, message: str) -> None:
         if not self._enabled("verbose"):
             return
+        self._finish_stream_line()
         self._rich.print(Text(_single_line(message), style=_META_STYLE))
+
+    def provider_trace(self, event: TraceEvent) -> None:
+        """Render one normalized provider event immediately and flush."""
+        if not self._enabled("normal"):
+            return
+        if event.kind in (TraceEventKind.THINKING, TraceEventKind.MESSAGE):
+            self._trace_text(event)
+            return
+        if event.kind in (TraceEventKind.TOOL_START, TraceEventKind.TOOL_END):
+            self._finish_stream_line()
+            limit = (
+                TRACE_PAYLOAD_LIMIT_VERBOSE
+                if self.level == "verbose"
+                else TRACE_PAYLOAD_LIMIT
+            )
+            style = "bold yellow"
+            if event.kind is TraceEventKind.TOOL_END:
+                style = "bold red" if event.status == "error" else "bold green"
+            self._rich.print(Text(format_tool_trace(event, payload_limit=limit), style=style))
+            self._rich.file.flush()
+
+    def finish_provider_trace(self) -> None:
+        """End an open thinking or message line so the next console row starts clean."""
+        self._finish_stream_line()
+
+    def _trace_text(self, event: TraceEvent) -> None:
+        style = _TRACE_TEXT_STYLES[event.kind]
+        parts = event.text.split("\n")
+        for index, part in enumerate(parts):
+            if index:
+                self._finish_stream_line()
+            if not part:
+                continue
+            if self._active_stream_kind is not event.kind:
+                self._finish_stream_line()
+                self._rich.print(Text(trace_text_prefix(event.kind), style=style), end="")
+                self._active_stream_kind = event.kind
+            self._rich.print(Text(part, style=style), end="")
+            self._rich.file.flush()
+
+    def _finish_stream_line(self) -> None:
+        if self._active_stream_kind is None:
+            return
+        self._rich.file.write("\n")
+        self._rich.file.flush()
+        self._active_stream_kind = None

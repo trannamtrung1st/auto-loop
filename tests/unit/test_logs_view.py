@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+from auto_loop.config import default_config
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import LifecycleStatus, RoleSession, create_lifecycle
 from auto_loop.logs_view import render_logs, stream_follow_logs
@@ -106,6 +107,94 @@ def test_stream_follow_emits_incremental_chunks_before_return(tmp_path: Path):
     assert seen_line_two_before_done.is_set()
     assert body.count("line one") == 1
     assert body.count("line two") == 1
+
+
+def test_stream_follow_sees_live_thinking_message_and_tool_events(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+    from auto_loop.turn_logs import TurnLogWriter
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    writer = TurnLogWriter(repo, default_config(), state.lifecycle_id, 1, "worker")
+    writer.write_stream_line('{"type":"thinking","text":"I need "}')
+
+    chunks: list[str] = []
+    seen_tool = threading.Event()
+
+    def capture(text: str) -> None:
+        chunks.append(text)
+        if "[tool:start]" in "".join(chunks):
+            seen_tool.set()
+
+    def append_later() -> None:
+        time.sleep(0.15)
+        writer.write_stream_line('{"type":"thinking","text":"to inspect"}')
+        writer.write_stream_line(
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}'
+        )
+        writer.write_stream_line(
+            '{"type":"tool_call","status":"running","name":"read_file","args":{"path":"src/a.py"}}'
+        )
+        state.status = LifecycleStatus.COMPLETED
+        save_lifecycle_state(repo, state)
+
+    threading.Thread(target=append_later, daemon=True).start()
+    stream_follow_logs(
+        repo,
+        write=capture,
+        follow_max_seconds=2.0,
+        follow_idle_seconds=0.2,
+        color=False,
+    )
+    body = "".join(chunks)
+    assert seen_tool.is_set()
+    assert "[thinking] I need to inspect" in body
+    assert body.count("[thinking]") == 1
+    assert "[message] hello" in body
+    assert '[tool:start] read_file  {"path":"src/a.py"}' in body
+    raw = writer.jsonl_path.read_text(encoding="utf-8")
+    assert raw.count("\n") == 4
+    assert "[thinking]" not in raw
+    assert "[tool:start]" not in raw
+    writer.finalize()
+    assert writer.jsonl_path.read_text(encoding="utf-8") == raw
+
+
+def test_stream_follow_waits_for_readable_log_after_raw_turn_starts(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+    from auto_loop.turn_logs import TurnLogWriter
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    writer = TurnLogWriter(repo, default_config(), state.lifecycle_id, 1, "worker")
+    writer.write_stream_line('{"type":"system","session_id":"sess-1"}')
+    assert writer.jsonl_path.is_file()
+    assert not writer.log_path.is_file()
+
+    chunks: list[str] = []
+
+    def append_later() -> None:
+        time.sleep(0.15)
+        writer.write_stream_line('{"type":"thinking","text":"now visible"}')
+        writer.finish_open_trace()
+        state.status = LifecycleStatus.COMPLETED
+        save_lifecycle_state(repo, state)
+
+    threading.Thread(target=append_later, daemon=True).start()
+    stream_follow_logs(
+        repo,
+        write=chunks.append,
+        follow_max_seconds=2.0,
+        follow_idle_seconds=0.2,
+        color=False,
+    )
+    body = "".join(chunks)
+    assert "Waiting for" in body
+    assert "[thinking] now visible" in body
+    assert "WORKER" in body
+    writer.finalize()
 
 
 def test_render_logs_follow_no_duplicate_body(tmp_path: Path):

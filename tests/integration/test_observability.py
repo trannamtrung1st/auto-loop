@@ -10,7 +10,7 @@ from tests.integration.scenario_harness import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import RunOptions
 from auto_loop.runtime import load_lifecycle_state
-from auto_loop.turn_logs import list_turn_numbers
+from auto_loop.turn_logs import list_turn_numbers, read_turn_logs
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -42,4 +42,12 @@ def test_plan_run_emits_events_and_turn_logs(tmp_path: Path):
     assert "review_result" in types
     state = load_lifecycle_state(repo)
     assert state is not None
-    assert list_turn_numbers(repo, state.lifecycle_id)
+    turns = list_turn_numbers(repo, state.lifecycle_id)
+    assert turns
+    for turn in turns:
+        readable = read_turn_logs(repo, state.lifecycle_id, turn, raw=False)
+        raw = read_turn_logs(repo, state.lifecycle_id, turn, raw=True)
+        assert "[message]" in readable
+        assert "=== turn" in raw
+        assert '"type": "assistant"' in raw
+        assert "[message]" not in raw.split("===", 1)[-1]

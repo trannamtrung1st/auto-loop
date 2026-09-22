@@ -59,7 +59,7 @@ Supporting integration coverage: `test_plan_flow.py`, `test_lifecycle_flows.py`,
 | Final | HEAD == approved; `COMPLETE` only from reviewer | `loop.py`, `terminal_records.py` | Scenarios H–I, `test_final_completion.py` |
 | Instructions / resources | Protocol + extend/replace; context manifest; root development harness | `instructions.py`, `context_manifest.py`, `AGENTS.md`, `.agents/skills/` | `test_instructions.py`, `test_context_manifest.py`, `test_development_harness.py` |
 | Resilience | Retries, inflight, locks, repair | `supervision.py`, `subprocess_cursor.py`, `locking.py`, `atomic_io.py`, `loop.py` | Scenarios N–P, `test_recovery.py`, `test_locking.py`, `test_supervision.py` |
-| Monitoring | Events, turn logs, status, logs, stop | `events.py`, `turn_logs.py`, `status_report.py`, `logs_view.py`, `stop_control.py` | `test_observability.py`, `test_events.py`, `test_status_report.py` |
+| Monitoring | Events, turn logs, live provider trace, status, logs, stop | `events.py`, `turn_logs.py`, `console_output.py`, `providers/cursor.py`, `status_report.py`, `logs_view.py`, `stop_control.py` | `test_observability.py`, `test_provider_trace.py`, `test_console_output.py`, `test_logs_view.py` |
 | Limits | Turns, runtime, no-progress; distinct exit codes | `limits.py`, `exits.py`, `loop.py` | Scenario T, `test_limits.py`, `test_stop_and_limits.py` |
 | Tests | Unit + fake integration + documented live smoke | `tests/`, `live_smoke.py` | `pytest -q`; `docs/live-cursor-smoke.md` |
 | Operator docs | Install, commands, exit codes, troubleshooting | `README.md` | `test_packaging.py`, manual review |

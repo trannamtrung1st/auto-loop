@@ -94,7 +94,7 @@ from auto_loop.console_output import RunConsole
 from auto_loop.events import append_event
 from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
-from auto_loop.turn_logs import TurnLogWriter, prune_run_history
+from auto_loop.turn_logs import TurnLogWriter, prune_run_history, write_unseen_stream_lines
 from auto_loop.run_inputs import RunInputs, load_matching_blocked_record, load_matching_completion_record
 from auto_loop.paths import resolved_artifact_root
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
@@ -452,6 +452,13 @@ class LifecycleRunner:
                 )
 
             self.invoker.on_provider_pid = _provider_pid
+
+        def _consume_provider_line(line: str) -> None:
+            for event in turn_log.write_stream_line(line):
+                self._console.provider_trace(event)
+
+        if hasattr(self.invoker, "on_stream_line"):
+            self.invoker.on_stream_line = _consume_provider_line
         max_attempts = 1 + max(self.config.limits.provider_retries, 0)
         final_text: str | None = None
         try:
@@ -463,8 +470,18 @@ class LifecycleRunner:
                     resume_session_id=session.session_id,
                 )
                 try:
-                    attempt_result = self.invoker.invoke(argv)
-                    turn_log.write_stream_lines(attempt_result.lines)
+                    before_lines = turn_log.raw_line_count
+                    try:
+                        attempt_result = self.invoker.invoke(argv)
+                        write_unseen_stream_lines(
+                            turn_log,
+                            attempt_result.lines,
+                            before=before_lines,
+                            on_line=_consume_provider_line,
+                        )
+                    finally:
+                        turn_log.finish_open_trace()
+                        self._console.finish_provider_trace()
                     parsed = self._parse_provider_attempt(attempt_result, session.session_id)
                     if parsed.session_id:
                         created = adopt_session_identity(
@@ -561,9 +578,13 @@ class LifecycleRunner:
                     },
                 )
         finally:
+            if hasattr(self.invoker, "on_stream_line"):
+                self.invoker.on_stream_line = None
             if hasattr(self.invoker, "on_provider_pid"):
                 self.invoker.on_provider_pid(None)
             self._stop.set_active_provider(None)
+            turn_log.finalize()
+            self._console.finish_provider_trace()
         if final_text is None:
             turn_log.finalize()
             raise ProviderError(f"Provider failed for session {slot}")

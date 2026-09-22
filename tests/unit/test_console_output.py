@@ -3,6 +3,7 @@
 from io import StringIO
 
 from auto_loop.console_output import RunConsole
+from auto_loop.providers.cursor import TraceEvent, TraceEventKind
 
 
 class _TTY(StringIO):
@@ -19,6 +20,10 @@ def test_quiet_suppresses_normal_messages():
     console, stream = _console("quiet")
     console.lifecycle_started("lc-1", goal_summary="Build a kanban board")
     console.turn_started(1, "worker")
+    console.provider_trace(TraceEvent(TraceEventKind.THINKING, text="hidden"))
+    console.provider_trace(
+        TraceEvent(TraceEventKind.TOOL_START, tool_name="read_file", status="running")
+    )
     console.review_result("pass", "plan")
     console.plan_ready(".ai/auto-loop/plan.md")
     console.lifecycle_completed()
@@ -210,3 +215,120 @@ def test_tty_auto_color_emits_ansi(monkeypatch):
     text = stream.getvalue()
     assert "PASS" in text
     assert "\x1b[" in text
+
+
+def test_thinking_and_message_deltas_share_one_prefix():
+    console, stream = _console()
+    for chunk in ("I need ", "to inspect ", "the repository."):
+        console.provider_trace(TraceEvent(TraceEventKind.THINKING, text=chunk))
+    console.provider_trace(TraceEvent(TraceEventKind.MESSAGE, text="hello "))
+    console.provider_trace(TraceEvent(TraceEventKind.MESSAGE, text="world"))
+    console.finish_provider_trace()
+    assert stream.getvalue() == (
+        "[thinking] I need to inspect the repository.\n[message] hello world\n"
+    )
+
+
+def test_tool_events_close_an_open_text_line():
+    console, stream = _console()
+    console.provider_trace(TraceEvent(TraceEventKind.THINKING, text="wait"))
+    console.provider_trace(
+        TraceEvent(
+            TraceEventKind.TOOL_START,
+            tool_name="read_file",
+            status="running",
+            args={"path": "src/a.py"},
+        )
+    )
+    console.provider_trace(
+        TraceEvent(
+            TraceEventKind.TOOL_END,
+            tool_name="read_file",
+            status="completed",
+            result="x" * 12,
+        )
+    )
+    console.provider_trace(TraceEvent(TraceEventKind.THINKING, text="now"))
+    console.finish_provider_trace()
+    assert stream.getvalue() == (
+        "[thinking] wait\n"
+        '[tool:start] read_file  {"path":"src/a.py"}\n'
+        "[tool:end]   read_file  completed · 12 chars\n"
+        "[thinking] now\n"
+    )
+
+
+def test_provider_trace_colors_match_event_kind():
+    stream = StringIO()
+    console = RunConsole("normal", stream=stream, color=True)
+    console.provider_trace(TraceEvent(TraceEventKind.THINKING, text="think"))
+    console.finish_provider_trace()
+    console.provider_trace(TraceEvent(TraceEventKind.MESSAGE, text="say"))
+    console.finish_provider_trace()
+    console.provider_trace(
+        TraceEvent(TraceEventKind.TOOL_START, tool_name="read_file", status="running")
+    )
+    console.provider_trace(
+        TraceEvent(TraceEventKind.TOOL_END, tool_name="read_file", status="completed")
+    )
+    console.provider_trace(
+        TraceEvent(TraceEventKind.TOOL_END, tool_name="read_file", status="error")
+    )
+    raw = stream.getvalue()
+    assert "[thinking]" in raw
+    assert "[message]" in raw
+    assert "[tool:start]" in raw
+    assert raw.count("[tool:end]") == 2
+    assert "35" in raw
+    assert "97" in raw
+    assert "33" in raw
+    assert "32" in raw
+    assert "31" in raw
+
+
+def test_verbose_trace_includes_longer_tool_args():
+    command = "p" * 500
+    event = TraceEvent(
+        TraceEventKind.TOOL_START,
+        tool_name="run_terminal_cmd",
+        status="running",
+        args={"command": command},
+    )
+    normal, normal_stream = _console("normal")
+    verbose, verbose_stream = _console("verbose")
+    normal.provider_trace(event)
+    verbose.provider_trace(event)
+    normal_text = normal_stream.getvalue()
+    verbose_text = verbose_stream.getvalue()
+    assert "..." in normal_text
+    assert command not in normal_text
+    assert command in verbose_text
+
+
+def test_no_color_keeps_trace_labels_without_ansi(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    stream = _TTY()
+    console = RunConsole("normal", stream=stream)
+    console.provider_trace(TraceEvent(TraceEventKind.THINKING, text="secret"))
+    console.provider_trace(
+        TraceEvent(TraceEventKind.TOOL_END, tool_name="read_file", status="error", result="boom")
+    )
+    console.finish_provider_trace()
+    text = stream.getvalue()
+    assert "[thinking] secret" in text
+    assert "[tool:end]   read_file  error · boom" in text
+    assert "\x1b[" not in text
+
+
+def test_redirected_provider_trace_has_no_ansi():
+    console, stream = _console()
+    console.provider_trace(TraceEvent(TraceEventKind.MESSAGE, text="plain"))
+    console.provider_trace(
+        TraceEvent(TraceEventKind.TOOL_START, tool_name="read_file", status="running")
+    )
+    console.finish_provider_trace()
+    text = stream.getvalue()
+    assert "[message] plain" in text
+    assert "[tool:start] read_file" in text
+    assert "\x1b[" not in text

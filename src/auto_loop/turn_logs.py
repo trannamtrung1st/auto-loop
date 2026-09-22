@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TextIO
 
 from auto_loop.atomic_io import atomic_write_text
 from auto_loop.config import AutoLoopConfig
 from auto_loop.paths import auto_loop_root
+from auto_loop.providers.cursor import (
+    TraceEvent,
+    TraceEventKind,
+    format_tool_trace,
+    trace_events_from_stream_line,
+    trace_text_prefix,
+)
 
 # Session slot names used in turn log filenames (matches TurnLogWriter ``role``).
 TURN_LOG_ROLES: tuple[str, ...] = (
@@ -39,6 +46,8 @@ def turn_log_paths(
 
 @dataclass
 class TurnLogWriter:
+    """Append raw NDJSON and the normalized readable trace as each line arrives."""
+
     repo: Path
     config: AutoLoopConfig
     lifecycle_id: str
@@ -46,7 +55,11 @@ class TurnLogWriter:
     role: str
     jsonl_path: Path = field(init=False)
     log_path: Path = field(init=False)
-    _readable: list[str] = field(default_factory=list)
+    _raw_line_count: int = field(default=0, init=False)
+    _open_kind: TraceEventKind | None = field(default=None, init=False)
+    _wrote_readable: bool = field(default=False, init=False)
+    _jsonl_handle: TextIO | None = field(default=None, init=False, repr=False)
+    _log_handle: TextIO | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         artifact_root = self.repo / self.config.artifacts_root
@@ -55,33 +68,99 @@ class TurnLogWriter:
         )
         self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def raw_line_count(self) -> int:
+        return self._raw_line_count
+
+    def write_stream_line(self, line: str) -> list[TraceEvent]:
+        """Persist one provider line immediately and return its trace events."""
+        raw = line.rstrip("\n")
+        self._append_jsonl(raw)
+        events = trace_events_from_stream_line(raw)
+        for event in events:
+            self._write_trace_event(event)
+        return events
+
     def write_stream_lines(self, lines: list[str]) -> None:
-        with self.jsonl_path.open("a", encoding="utf-8") as handle:
-            for line in lines:
-                handle.write(line.rstrip("\n") + "\n")
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    self._readable.append(line.strip())
-                    continue
-                event_type = event.get("type") or event.get("event")
-                if event_type == "result":
-                    text = event.get("text") or event.get("result") or ""
-                    if text:
-                        self._readable.append(str(text).strip())
-                elif event_type in ("tool_call", "tool_result"):
-                    name = event.get("name") or event.get("tool")
-                    self._readable.append(f"[tool] {name or event_type}")
-                elif event_type == "assistant":
-                    chunk = event.get("text") or event.get("content") or ""
-                    if chunk:
-                        self._readable.append(str(chunk).strip())
+        for line in lines:
+            self.write_stream_line(line)
+
+    def finish_open_trace(self) -> None:
+        """Close an in-progress thinking or message line without ending the turn log."""
+        if self._open_kind is None:
+            return
+        self._append_log("\n")
+        self._open_kind = None
 
     def finalize(self) -> None:
-        body = "\n".join(line for line in self._readable if line).strip()
-        if not body:
-            body = "(no readable provider output captured)"
-        atomic_write_text(self.log_path, body + "\n")
+        self.finish_open_trace()
+        self._close_handles()
+        if not self._wrote_readable:
+            atomic_write_text(self.log_path, "(no readable provider output captured)\n")
+
+    def _append_jsonl(self, raw: str) -> None:
+        if self._jsonl_handle is None:
+            self._jsonl_handle = self.jsonl_path.open("a", encoding="utf-8")
+        self._jsonl_handle.write(raw + "\n")
+        self._jsonl_handle.flush()
+        self._raw_line_count += 1
+
+    def _append_log(self, text: str) -> None:
+        if self._log_handle is None:
+            self._log_handle = self.log_path.open("a", encoding="utf-8")
+        self._log_handle.write(text)
+        self._log_handle.flush()
+        self._wrote_readable = True
+
+    def _write_trace_event(self, event: TraceEvent) -> None:
+        if event.kind in (TraceEventKind.THINKING, TraceEventKind.MESSAGE):
+            self._write_text_event(event)
+            return
+        if event.kind in (TraceEventKind.TOOL_START, TraceEventKind.TOOL_END):
+            self.finish_open_trace()
+            self._append_log(format_tool_trace(event) + "\n")
+
+    def _write_text_event(self, event: TraceEvent) -> None:
+        parts = event.text.split("\n")
+        for index, part in enumerate(parts):
+            if index:
+                self.finish_open_trace()
+            if not part:
+                continue
+            prefix = ""
+            if self._open_kind is not event.kind:
+                self.finish_open_trace()
+                prefix = trace_text_prefix(event.kind)
+                self._open_kind = event.kind
+            self._append_log(prefix + part)
+
+    def _close_handles(self) -> None:
+        for handle in (self._jsonl_handle, self._log_handle):
+            if handle is not None and not handle.closed:
+                handle.flush()
+                handle.close()
+        self._jsonl_handle = None
+        self._log_handle = None
+
+
+def write_unseen_stream_lines(
+    writer: TurnLogWriter,
+    lines: list[str],
+    *,
+    before: int,
+    on_line: Callable[[str], None],
+) -> None:
+    """Persist provider lines that were not already streamed through ``on_line``.
+
+    Live providers append during ``invoke``. Scripted providers only return lines,
+    so those still flow through ``on_line`` once ``invoke`` returns. Already
+    streamed lines are skipped so a retry does not write them twice.
+    """
+    observed = writer.raw_line_count - before
+    if observed < 0:
+        observed = 0
+    for line in lines[observed:]:
+        on_line(line)
 
 
 def prune_run_history(repo: Path, config: AutoLoopConfig, lifecycle_id: str) -> None:
@@ -163,12 +242,17 @@ def role_with_log_for_turn(
     raw: bool = False,
     artifact_root: Path | None = None,
 ) -> str | None:
-    """Return the first role (lifecycle order) that has a log file for ``turn``."""
+    """Return the first role (lifecycle order) that has a log file for ``turn``.
+
+    Human mode prefers the readable log and falls back to raw JSONL so follow
+    can attach while a turn has started but no trace line has been rendered yet.
+    """
     run_dir = run_logs_dir(repo, lifecycle_id, artifact_root)
     if not run_dir.is_dir():
         return None
-    suffix = ".jsonl" if raw else ".log"
-    for role in TURN_LOG_ROLES:
-        if (run_dir / f"turn-{turn:04d}-{role}{suffix}").is_file():
-            return role
+    suffixes = (".jsonl",) if raw else (".log", ".jsonl")
+    for suffix in suffixes:
+        for role in TURN_LOG_ROLES:
+            if (run_dir / f"turn-{turn:04d}-{role}{suffix}").is_file():
+                return role
     return None
