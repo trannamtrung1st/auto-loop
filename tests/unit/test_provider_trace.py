@@ -357,6 +357,55 @@ def test_cursor_tool_call_with_metadata_uses_wrapper_name():
     assert format_tool_trace(shell[0]) == "[tool:start] run_terminal_cmd  pytest -q"
 
 
+def test_mcp_tool_call_uses_tool_name_and_issue_args():
+    started = _events(
+        {
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "mcp-1",
+            "tool_call": {
+                "mcpToolCall": {
+                    "args": {
+                        "providerIdentifier": "confluence-jira-gitlab",
+                        "toolName": "jira_get_issue",
+                        "issueUrl": "https://example.atlassian.net/browse/X-1",
+                    }
+                }
+            },
+        }
+    )
+    assert started[0].tool_name == "jira_get_issue"
+    assert format_tool_trace(started[0]) == (
+        "[tool:start] jira_get_issue  https://example.atlassian.net/browse/X-1"
+    )
+    verbose = format_tool_trace(started[0], verbose=True)
+    assert "provider=confluence-jira-gitlab" in verbose
+
+
+def test_completed_tool_call_with_rejected_result_is_failure():
+    ended = _events(
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "shell-1",
+            "tool_call": {
+                "shellToolCall": {
+                    "result": {
+                        "rejected": {"reason": "Hook blocked with message: denied"}
+                    }
+                }
+            },
+        }
+    )
+    assert len(ended) == 1
+    assert ended[0].kind is TraceEventKind.TOOL_END
+    assert ended[0].status == "error"
+    assert ended[0].tool_name == "run_terminal_cmd"
+    assert format_tool_trace(ended[0]) == (
+        "[tool:end]   run_terminal_cmd  failed · Hook blocked with message: denied"
+    )
+
+
 def test_malformed_system_result_and_tool_result_do_not_crash():
     assert trace_events_from_stream_line("{not-json") == []
     assert trace_events_from_stream_line("[]") == []

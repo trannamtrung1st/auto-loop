@@ -347,7 +347,9 @@ class RunConsole:
             style = "bold yellow"
             if event.kind is TraceEventKind.TOOL_END:
                 style = "bold red" if event.status == "error" else "bold green"
-            self._rich.print(Text(format_tool_trace(event, payload_limit=limit), style=style))
+            self._rich.print(
+                Text(format_tool_trace(event, payload_limit=limit, verbose=self.level == "verbose"), style=style)
+            )
             self._rich.file.flush()
 
     def finish_provider_trace(self) -> None:

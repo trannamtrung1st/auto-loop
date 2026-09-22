@@ -312,11 +312,16 @@ def trace_events_from_stream_line(
     )
 
 
-def format_tool_trace(event: TraceEvent, *, payload_limit: int = TRACE_PAYLOAD_LIMIT) -> str:
+def format_tool_trace(
+    event: TraceEvent,
+    *,
+    payload_limit: int = TRACE_PAYLOAD_LIMIT,
+    verbose: bool = False,
+) -> str:
     """Single-line tool trace. Args are a short summary; results are not dumped."""
     name = event.tool_name or "tool"
     if event.kind is TraceEventKind.TOOL_START:
-        rendered = _tool_arg_summary(event.args, payload_limit)
+        rendered = _tool_arg_summary(event.args, payload_limit, verbose=verbose)
         if rendered:
             return f"[tool:start] {name}  {rendered}"
         return f"[tool:start] {name}"
@@ -571,6 +576,9 @@ _ARG_NOISE_KEYS = frozenset(
         "multiline",
         "headLimit",
         "offset",
+        "toolName",
+        "name",
+        "providerIdentifier",
     }
 )
 _CURSOR_TOOL_NAMES = {
@@ -585,10 +593,33 @@ _CURSOR_TOOL_NAMES = {
     "updateTodosToolCall": "update_todos",
     "getMcpToolsToolCall": "get_mcp_tools",
 }
-_SUMMARY_KEYS = ("path", "file_path", "target_file", "command", "pattern", "globPattern", "glob_pattern", "query")
+_SUMMARY_KEYS = (
+    "path",
+    "file_path",
+    "target_file",
+    "command",
+    "pattern",
+    "globPattern",
+    "glob_pattern",
+    "query",
+    "issueUrl",
+    "url",
+)
 
 
-def _display_tool_name(raw: str) -> str:
+def _mcp_tool_display_name(args: object) -> str:
+    if not isinstance(args, dict):
+        return "mcp"
+    for key in ("toolName", "name"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "mcp"
+
+
+def _display_tool_name(raw: str, args: object | None = None) -> str:
+    if raw == "mcpToolCall":
+        return _mcp_tool_display_name(args)
     mapped = _CURSOR_TOOL_NAMES.get(raw)
     if mapped:
         return mapped
@@ -624,7 +655,7 @@ def _tool_wrapper(nested: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     return wrappers[0]
 
 
-def _tool_arg_summary(args: object, limit: int) -> str:
+def _tool_arg_summary(args: object, limit: int, *, verbose: bool = False) -> str:
     if not isinstance(args, dict):
         return _compact_payload(args, limit)
     useful = {
@@ -632,7 +663,12 @@ def _tool_arg_summary(args: object, limit: int) -> str:
         for key, value in args.items()
         if key not in _ARG_NOISE_KEYS and value not in (None, "", [], {})
     }
-    highlights = [(key, useful[key]) for key in _SUMMARY_KEYS if key in useful]
+    highlights: list[tuple[str, object]] = []
+    if verbose:
+        provider = args.get("providerIdentifier")
+        if isinstance(provider, str) and provider.strip():
+            highlights.append(("provider", provider.strip()))
+    highlights.extend((key, useful[key]) for key in _SUMMARY_KEYS if key in useful)
     if len(highlights) == 1:
         return _compact_payload(highlights[0][1], limit)
     if highlights:
@@ -675,7 +711,7 @@ def _tool_fields(
     if not isinstance(name, str) or not name:
         name = "tool"
     else:
-        name = _display_tool_name(name)
+        name = _display_tool_name(name, args)
     return name, call_id, args, result
 
 
@@ -696,7 +732,8 @@ def _result_is_error(result: object) -> bool:
     if not isinstance(result, dict):
         return False
     error = result.get("error")
-    return error not in (None, False, "")
+    rejected = result.get("rejected")
+    return error not in (None, False, "") or rejected not in (None, False, "")
 
 
 def _first_str(event: dict[str, Any], *keys: str) -> str:
@@ -712,6 +749,15 @@ def _error_text(result: object) -> str:
         return result
     if not isinstance(result, dict):
         return ""
+    rejected = result.get("rejected")
+    if rejected not in (None, False, ""):
+        if isinstance(rejected, str):
+            return rejected
+        if isinstance(rejected, dict):
+            for key in ("reason", "message", "errorMessage", "error"):
+                value = rejected.get(key)
+                if isinstance(value, str) and value:
+                    return value
     error = result.get("error")
     if isinstance(error, str):
         return error
