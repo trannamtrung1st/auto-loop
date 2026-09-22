@@ -201,9 +201,12 @@ def parse_cursor_stream(
     expected_session_id: str | None = None,
     fail_on_malformed: bool = True,
 ) -> CursorStreamParseResult:
-    """Parse NDJSON Cursor output into session metadata and terminal text."""
+    """Parse NDJSON Cursor output into session metadata and terminal text.
+
+    Only ``type: result`` supplies ``final_text``. Streaming assistant events are
+    retained in ``events`` for diagnostics but never satisfy the terminal contract.
+    """
     result = CursorStreamParseResult()
-    text_parts: list[str] = []
 
     for line_number, raw in enumerate(lines, start=1):
         stripped = raw.strip()
@@ -249,15 +252,10 @@ def parse_cursor_stream(
             if result.session_id is None:
                 result.session_id = session_id
 
-        chunk = _extract_text_from_event(event)
-        if chunk:
-            if event.get("type") == "result":
+        if event.get("type") == "result":
+            chunk = _extract_text_from_event(event)
+            if chunk:
                 result.final_text = chunk
-            else:
-                text_parts.append(chunk)
-
-    if not result.final_text and text_parts:
-        result.final_text = "".join(text_parts)
 
     if expected_session_id and result.session_id is None:
         result.diagnostics.append(

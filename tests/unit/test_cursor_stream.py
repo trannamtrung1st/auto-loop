@@ -9,11 +9,17 @@ from auto_loop.config import default_config
 from auto_loop.providers.base import AgentRequest
 from auto_loop.providers.cursor import (
     SessionError,
+    StreamIssueCode,
     StreamParseError,
     assert_distinct_session_ids,
     build_cursor_command,
     parse_cursor_stream,
     role_extra_args,
+)
+from auto_loop.providers.supervision import (
+    ProviderFailureKind,
+    SupervisionOutcome,
+    classify_stream_outcome,
 )
 
 
@@ -74,6 +80,39 @@ def test_parse_stream_captures_session_and_result():
     assert parsed.session_id == "abc-123"
     assert parsed.request_id == "req-1"
     assert parsed.final_text == "partial done"
+
+
+def test_partial_assistant_deltas_without_result_are_missing_result():
+    lines = [
+        json.dumps({"type": "system", "session_id": "s1"}),
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp_ms": 1,
+                "message": {"content": [{"type": "text", "text": "working..."}]},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "timestamp_ms": 2,
+                "message": {
+                    "content": [{"type": "text", "text": "<AUTO_LOOP_RESULT>..."}]
+                },
+            }
+        ),
+    ]
+    parsed = parse_cursor_stream(lines)
+    assert parsed.session_id == "s1"
+    assert parsed.final_text == ""
+    assert len(parsed.events) == 3
+    assert any(d.code == StreamIssueCode.MISSING_RESULT for d in parsed.diagnostics)
+    assert not parsed.ok
+
+    classified = classify_stream_outcome(
+        SupervisionOutcome(lines=lines), expected_session_id="s1"
+    )
+    assert classified.failure == ProviderFailureKind.MISSING_RESULT
 
 
 def test_resume_session_mismatch_fails():
