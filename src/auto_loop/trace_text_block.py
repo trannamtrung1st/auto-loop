@@ -2,23 +2,12 @@
 
 ``AssistantTraceNormalizer`` decides which text is emitted. This renderer decides
 how that text is displayed: one ``[thinking]`` or ``[message]`` prefix when a
-block starts, with later lines indented to the prefix width.
+block starts; explicit newlines are preserved with no continuation indentation.
 """
 
 from __future__ import annotations
 
 from auto_loop.providers.cursor import TraceEventKind, trace_text_prefix
-
-
-def continuation_prefix(kind: TraceEventKind) -> str:
-    """Spaces matching the visible width of the thinking or message prefix."""
-    prefix = trace_text_prefix(kind)
-    return " " * _visible_width(prefix)
-
-
-def _visible_width(prefix: str) -> int:
-    """Column width of a plain prefix. Current prefixes are ASCII."""
-    return len(prefix)
 
 
 class TraceTextBlock:
@@ -53,9 +42,7 @@ class TraceTextBlock:
             if not line:
                 continue
             if self._at_line_start:
-                if self._prefixed:
-                    chunks.append(continuation_prefix(kind))
-                else:
+                if not self._prefixed:
                     chunks.append(trace_text_prefix(kind))
                     self._prefixed = True
                 self._at_line_start = False

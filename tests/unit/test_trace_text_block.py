@@ -9,14 +9,12 @@ from auto_loop.config import default_config
 from auto_loop.console_output import RunConsole
 from auto_loop.protocol import RESULT_BLOCK_END, RESULT_BLOCK_START
 from auto_loop.providers.cursor import TraceEvent, TraceEventKind
-from auto_loop.trace_text_block import TraceTextBlock, continuation_prefix
+from auto_loop.trace_text_block import TraceTextBlock
 from auto_loop.turn_logs import TurnLogWriter
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _MESSAGE = "[message] "
 _THINKING = "[thinking] "
-_MESSAGE_INDENT = continuation_prefix(TraceEventKind.MESSAGE)
-_THINKING_INDENT = continuation_prefix(TraceEventKind.THINKING)
 
 
 class _TTY(StringIO):
@@ -114,7 +112,7 @@ def test_same_kind_stream_chunks_share_one_prefix(tmp_path: Path):
     _assert_match(console, readable, "[message] hello world\n")
 
 
-def test_multiline_message_indents_continuations(tmp_path: Path):
+def test_multiline_message_preserves_explicit_newlines(tmp_path: Path):
     console, readable, _raw = _drive(
         tmp_path,
         [_message("line 1\nline 2\nline 3")],
@@ -122,12 +120,12 @@ def test_multiline_message_indents_continuations(tmp_path: Path):
     _assert_match(
         console,
         readable,
-        f"{_MESSAGE}line 1\n{_MESSAGE_INDENT}line 2\n{_MESSAGE_INDENT}line 3\n",
+        f"{_MESSAGE}line 1\nline 2\nline 3\n",
     )
     assert readable.count("[message]") == 1
 
 
-def test_multiline_thinking_indents_continuations(tmp_path: Path):
+def test_multiline_thinking_preserves_explicit_newlines(tmp_path: Path):
     console, readable, _raw = _drive(
         tmp_path,
         [_thinking("inspect first\ncheck tests\nlook at resume")],
@@ -135,13 +133,32 @@ def test_multiline_thinking_indents_continuations(tmp_path: Path):
     _assert_match(
         console,
         readable,
-        (
-            f"{_THINKING}inspect first\n"
-            f"{_THINKING_INDENT}check tests\n"
-            f"{_THINKING_INDENT}look at resume\n"
-        ),
+        f"{_THINKING}inspect first\ncheck tests\nlook at resume\n",
     )
     assert readable.count("[thinking]") == 1
+
+
+def test_thinking_heading_blank_line_and_paragraph_have_no_continuation_indent(
+    tmp_path: Path,
+):
+    heading = "**Executing planning tasks**"
+    paragraph = (
+        "I need to execute the planner and inspect the task, proposal, and required "
+        "documents or skills."
+    )
+    console, readable, _raw = _drive(
+        tmp_path,
+        [_thinking(f"{heading}\n\n{paragraph}")],
+    )
+    _assert_match(
+        console,
+        readable,
+        f"{_THINKING}{heading}\n\n{paragraph}\n",
+    )
+    assert readable.count("[thinking]") == 1
+    for line in readable.splitlines():
+        if line and not line.startswith("[thinking]"):
+            assert not line.startswith(" ")
 
 
 def test_kind_change_starts_a_new_block(tmp_path: Path):
@@ -166,7 +183,7 @@ def test_message_thinking_message_are_three_blocks(tmp_path: Path):
         readable,
         (
             f"{_MESSAGE}answer line\n"
-            f"{_MESSAGE_INDENT}continuation\n"
+            "continuation\n"
             "[thinking] further\n"
             "[message] done\n"
         ),
@@ -190,7 +207,7 @@ def test_tool_boundary_restarts_the_message_prefix(tmp_path: Path):
     assert readable.count("[message]") == 2
 
 
-def test_streamed_multiline_chunks_keep_continuation_indent(tmp_path: Path):
+def test_streamed_multiline_chunks_share_one_prefix(tmp_path: Path):
     console, readable, _raw = _drive(
         tmp_path,
         [_message("line 1\nli", stamp=1), _message("ne 2", stamp=2)],
@@ -198,7 +215,7 @@ def test_streamed_multiline_chunks_keep_continuation_indent(tmp_path: Path):
     _assert_match(
         console,
         readable,
-        f"{_MESSAGE}line 1\n{_MESSAGE_INDENT}line 2\n",
+        f"{_MESSAGE}line 1\nline 2\n",
     )
 
 
@@ -207,12 +224,12 @@ def test_blank_lines_are_preserved_without_a_prefix(tmp_path: Path):
         tmp_path,
         [_message("Summary:\n\nDetails follow.")],
     )
-    expected = f"{_MESSAGE}Summary:\n\n{_MESSAGE_INDENT}Details follow.\n"
+    expected = f"{_MESSAGE}Summary:\n\nDetails follow.\n"
     _assert_match(console, readable, expected)
     lines = readable.splitlines()
     assert lines[0] == "[message] Summary:"
     assert lines[1] == ""
-    assert lines[2] == f"{_MESSAGE_INDENT}Details follow."
+    assert lines[2] == "Details follow."
     assert "[message]" not in lines[1]
 
 
@@ -228,7 +245,7 @@ def test_blank_lines_split_across_chunks_stay_unprefixed(tmp_path: Path):
     _assert_match(
         console,
         readable,
-        f"{_MESSAGE}Summary:\n\n{_MESSAGE_INDENT}Details follow.\n",
+        f"{_MESSAGE}Summary:\n\nDetails follow.\n",
     )
 
 
@@ -284,7 +301,7 @@ def test_ordinary_lt_across_a_newline_stays_in_one_block(tmp_path: Path):
     _assert_match(
         console,
         readable,
-        f"{_MESSAGE}comparison <\n{_MESSAGE_INDENT}next\n",
+        f"{_MESSAGE}comparison <\nnext\n",
     )
 
 
@@ -303,7 +320,7 @@ def test_provider_retry_starts_a_fresh_prefix(tmp_path: Path):
     _assert_match(console, readable, expected)
     assert "schema_version" not in readable
     assert readable.count("[message]") == 2
-    assert f"{_MESSAGE_INDENT}retry succeeded" not in readable
+    assert "           retry succeeded" not in readable
     assert raw.count(RESULT_BLOCK_START) == 1
     assert "retry succeeded" in raw
 
@@ -321,9 +338,8 @@ def test_turn_boundary_resets_text_block_state():
     text = stream.getvalue()
     assert "Turn 1 · PLANNER · planner-model" in text
     assert "Turn 2 · PLAN REVIEWER · reviewer-model" in text
-    assert f"{_MESSAGE}line 1\n{_MESSAGE_INDENT}line 2\n" in text
+    assert f"{_MESSAGE}line 1\nline 2\n" in text
     assert f"{_MESSAGE}fresh\n" in text
-    assert f"{_MESSAGE_INDENT}fresh" not in text
     assert text.count("[message]") == 2
 
 
@@ -345,12 +361,12 @@ def test_readable_log_and_console_share_block_structure(tmp_path: Path):
     console, readable, raw = _drive(tmp_path, lines)
     expected = (
         f"{_THINKING}I need to inspect the worker transition.\n"
-        f"{_THINKING_INDENT}The review target validation is in review_targets.py.\n"
+        "The review target validation is in review_targets.py.\n"
         "[tool:start] read_file  src/auto_loop/review_targets.py\n"
         "[tool:end]   read_file  completed · 8421 chars\n"
         "[thinking] The protected-path rule is correct.\n"
         f"{_MESSAGE}The request is repairable.\n"
-        f"{_MESSAGE_INDENT}Resume should reopen the same worker session.\n"
+        "Resume should reopen the same worker session.\n"
     )
     _assert_match(console, readable, expected)
     assert readable.count("[thinking]") == 2
@@ -381,7 +397,7 @@ def test_quiet_mode_suppresses_live_trace_but_still_writes_the_log(tmp_path: Pat
         level="quiet",
     )
     assert console == ""
-    assert readable == f"{_MESSAGE}line 1\n{_MESSAGE_INDENT}line 2\n"
+    assert readable == f"{_MESSAGE}line 1\nline 2\n"
     assert "line 1\\nline 2" in raw or "line 1\nline 2" in raw
 
 
@@ -401,8 +417,8 @@ def test_verbose_mode_does_not_repeat_text_prefixes(tmp_path: Path):
     assert normal == normal_log
     assert verbose.count("[thinking]") == 1
     assert verbose.count("[message]") == 1
-    assert f"{_THINKING}inspect\n{_THINKING_INDENT}again\n" in verbose
-    assert f"{_MESSAGE}Review complete:\n{_MESSAGE_INDENT}- tests pass\n" in verbose
+    assert f"{_THINKING}inspect\nagain\n" in verbose
+    assert f"{_MESSAGE}Review complete:\n- tests pass\n" in verbose
     assert command not in normal
     assert command in verbose
     assert verbose_log.count("[message]") == 1
@@ -414,8 +430,8 @@ def test_no_color_and_non_tty_keep_plain_prefixes(tmp_path: Path, monkeypatch):
     non_tty, readable, _raw = _drive(tmp_path / "plain", lines, color=None)
     assert "\x1b[" not in non_tty
     assert non_tty == readable
-    assert f"{_THINKING_INDENT}second" in non_tty
-    assert f"{_MESSAGE_INDENT}two" in non_tty
+    assert f"{_THINKING}first\nsecond" in non_tty
+    assert f"{_MESSAGE}one\ntwo" in non_tty
 
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("TERM", "xterm-256color")
@@ -428,7 +444,7 @@ def test_no_color_and_non_tty_keep_plain_prefixes(tmp_path: Path, monkeypatch):
     )
     assert colored_off == readable_off
     assert "\x1b[" not in colored_off
-    assert f"{_THINKING}first\n{_THINKING_INDENT}second\n" in colored_off
+    assert f"{_THINKING}first\nsecond\n" in colored_off
 
 
 def test_color_keeps_thinking_dim_and_plain_structure(tmp_path: Path):
