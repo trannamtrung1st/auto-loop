@@ -1627,7 +1627,7 @@ def run_lifecycle(
     artifact_root: Path,
     inputs: RunInputs | None = None,
 ) -> RunOutcome:
-    from auto_loop.locking import acquire_workspace_lock
+    from auto_loop.locking import ConcurrentRunError, acquire_workspace_lock
 
     del inputs
     idempotent_blocked = _check_idempotent_blocked(repo, artifact_root)
@@ -1637,7 +1637,9 @@ def run_lifecycle(
     if idempotent is not None:
         return idempotent
     ensure_run_prerequisites(repo, config)
-    reconcile_stale_runtime(repo, artifact_root)
+    reconciled = reconcile_stale_runtime(repo, artifact_root)
+    if reconciled.remote_ownership or reconciled.unverified_ownership:
+        raise ConcurrentRunError(reconciled.message)
     existing = load_lifecycle_state(repo, artifact_root)
     lifecycle_id = existing.lifecycle_id if existing else new_lifecycle_id()
     lock = acquire_workspace_lock(repo, lifecycle_id, artifact_root)

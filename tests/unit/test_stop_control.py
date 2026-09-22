@@ -188,9 +188,11 @@ def test_remote_lock_never_signals_a_local_pid(tmp_path: Path, monkeypatch):
     )
     atomic_write_json(lock_path(repo), record.model_dump(mode="json"))
     try:
-        message = request_remote_stop(repo)
+        from auto_loop.locking import ConcurrentRunError
+
+        with pytest.raises(ConcurrentRunError, match="another host"):
+            request_remote_stop(repo)
         assert decoy.pid not in signals
-        assert "another host" in message.lower()
         time.sleep(0.1)
         assert decoy.poll() is None
     finally:
@@ -236,5 +238,7 @@ def test_remote_active_run_is_not_reconciled_on_stop(tmp_path: Path):
     loaded = load_lifecycle_state(repo)
     assert loaded is not None
     assert loaded.status == LifecycleStatus.RUNNING
-    message = request_remote_stop(repo)
-    assert "another host" in message.lower()
+    from auto_loop.locking import ConcurrentRunError
+
+    with pytest.raises(ConcurrentRunError, match="another host"):
+        request_remote_stop(repo)

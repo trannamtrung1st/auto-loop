@@ -14,6 +14,7 @@ from auto_loop.atomic_io import atomic_write_json
 from auto_loop.exits import ExitCode
 from auto_loop.lifecycle import LifecycleState, LifecycleStatus, utc_now
 from auto_loop.locking import (
+    ConcurrentRunError,
     LockError,
     is_pid_alive,
     load_workspace_lock,
@@ -171,7 +172,18 @@ def controller_is_verified_local(
 
 def controller_is_alive(pid: int, create_time: float | None) -> bool:
     """Deprecated alias; prefer :func:`controller_is_verified_local` with hostname."""
-    return controller_is_verified_local(pid, create_time, None)
+    return controller_is_verified_local(pid, create_time, socket.gethostname())
+
+
+def raise_if_ownership_blocks_local_reconciliation(
+    active: ActiveRunRecord | None,
+    lock,
+) -> None:
+    remote, unverified, blocked_message = _ownership_blocks_local_reconciliation(active, lock)
+    if remote or unverified:
+        raise ConcurrentRunError(
+            blocked_message or "Ownership is not verified on this host."
+        )
 
 
 def provider_is_verified(record: ActiveRunRecord) -> bool:
@@ -466,9 +478,7 @@ def request_remote_stop(
     lock, _invalid = _read_lock(repo, artifact_root)
     before_state = _read_state(repo, artifact_root)
     before_status = before_state.status if before_state is not None else None
-    remote, unverified, blocked_message = _ownership_blocks_local_reconciliation(active, lock)
-    if remote or unverified:
-        return blocked_message or "Ownership is not verified on this host."
+    raise_if_ownership_blocks_local_reconciliation(active, lock)
 
     target = _live_stop_target(active, lock)
     if target is None:

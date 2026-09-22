@@ -261,6 +261,9 @@ def stop_cmd(
     except StopError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(exc.exit_code)) from exc
+    except ConcurrentRunError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(exc.exit_code)) from exc
     typer.echo(message)
     raise typer.Exit(code=int(ExitCode.STOPPED))
 
