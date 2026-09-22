@@ -19,6 +19,14 @@ class GitProtocolError(GitError):
     exit_code = ExitCode.GIT_PROTOCOL_ERROR
 
 
+class ReviewRequestError(GitProtocolError):
+    """Worker review request the agent can correct on the same session.
+
+    Raised for invalid explicit targets, empty evidence, and similar request
+    payload mistakes. Fatal Git integrity failures remain plain ``GitProtocolError``.
+    """
+
+
 @dataclass(frozen=True)
 class ReviewRange:
     base: str

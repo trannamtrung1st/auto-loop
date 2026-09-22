@@ -109,6 +109,27 @@ def batch_worker_payload(base: str, head: str, target: str = "W01") -> dict:
     }
 
 
+def batch_worker_payload_with_path(
+    base: str,
+    head: str,
+    path: str,
+    *,
+    target: str = "W01",
+    path_id: str = "extra",
+) -> dict:
+    """Batch request with Git range plus an explicit path target."""
+    payload = batch_worker_payload(base, head, target=target)
+    payload["review"]["targets"] = [
+        {
+            "kind": "path",
+            "id": path_id,
+            "path": path,
+            "purpose": "explicit review target",
+        }
+    ]
+    return payload
+
+
 def approve_plan(repo: Path, provider: ScriptedProvider) -> None:
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
@@ -127,6 +148,10 @@ def latest_review_text(repo: Path) -> str:
     reviews = sorted((repo / ".ai" / "auto-loop" / "reviews").glob("*.md"))
     assert reviews, "expected a review artifact"
     return reviews[-1].read_text(encoding="utf-8")
+
+
+def execution_reviewer_invocation_count(provider: ScriptedProvider) -> int:
+    return sum(1 for inv in provider.engine.invocations if inv.role == "reviewer")
 
 
 def reviewer_invocation_count(provider: ScriptedProvider) -> int:

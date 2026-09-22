@@ -408,12 +408,12 @@ def test_optional_final_without_targets_is_rejected(tmp_path: Path):
     provider.set_worker_final_request()
     provider.set_reviewer_complete(target_ids=[])
     outcome = run_lifecycle(repo, run_opts(3), provider)
-    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.status.value != "completed"
-    assert state.inflight is not None
     assert state.completed_provider_turn is None
+    assert state.inflight is not None
     assert state.next_session == "worker"
     assert state.inflight.repair_reason
     assert "reviewable evidence" in state.inflight.repair_reason.lower()
@@ -430,7 +430,7 @@ def test_optional_final_without_targets_worker_repairs_on_resume(tmp_path: Path)
     (repo / "report.md").write_text("v2\n", encoding="utf-8")
     provider.set_worker_final_request()
     rejected = run_lifecycle(repo, run_opts(3), provider)
-    assert rejected.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert rejected.exit_code == ExitCode.LIMIT_REACHED
     state = load_lifecycle_state(repo)
     assert state is not None
     worker_session_before = state.sessions["worker"].session_id

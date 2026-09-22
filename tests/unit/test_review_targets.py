@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from auto_loop.git import GitProtocolError, head_commit
+from auto_loop.git import GitProtocolError, ReviewRequestError, head_commit
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.models import PathTargetRequest
 from auto_loop.review_targets import (
@@ -110,10 +110,21 @@ def test_content_target_is_hashed_without_git_range(tmp_path: Path):
     assert targets[0].content_sha256 == sha256_bytes(b"keep the public API\n")
 
 
+def test_plan_path_in_batch_scope_raises_review_request_error(tmp_path: Path):
+    repo = _repo(tmp_path)
+    with pytest.raises(ReviewRequestError, match="plan.md"):
+        normalize_path_target(
+            repo,
+            PathTargetRequest(id="plan-bad", path=".ai/auto-loop/plan.md"),
+            scope="batch",
+            git_mode="required",
+        )
+
+
 def test_untracked_path_target_rejected(tmp_path: Path):
     repo = _repo(tmp_path)
     (repo / "loose.py").write_text("x\n", encoding="utf-8")
-    with pytest.raises(GitProtocolError, match="untracked"):
+    with pytest.raises(ReviewRequestError, match="untracked"):
         normalize_path_target(
             repo,
             PathTargetRequest(id="loose", path="loose.py"),

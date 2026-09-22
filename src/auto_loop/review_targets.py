@@ -9,6 +9,7 @@ from pathlib import Path
 from auto_loop.config import GitMode
 from auto_loop.git import (
     GitProtocolError,
+    ReviewRequestError,
     ReviewRange,
     head_commit,
     is_git_repository,
@@ -113,9 +114,9 @@ def path_target_permitted(
 
 def normalize_content_target(request: ContentTargetRequest) -> ActiveContentTarget:
     if not request.id.strip():
-        raise GitProtocolError("Content review target id must be non-empty")
+        raise ReviewRequestError("Content review target id must be non-empty")
     if request.id == "git":
-        raise GitProtocolError("Duplicate or reserved review target id: git")
+        raise ReviewRequestError("Duplicate or reserved review target id: git")
     digest = sha256_bytes(request.content.encode("utf-8"))
     return ActiveContentTarget(
         id=request.id,
@@ -123,6 +124,33 @@ def normalize_content_target(request: ContentTargetRequest) -> ActiveContentTarg
         content=request.content,
         content_sha256=digest,
     )
+
+
+def _protected_control_target_error(rel: str, scope: ReviewScope) -> ReviewRequestError:
+    scope_label = scope if scope in ("batch", "final", "plan") else "review"
+    lines = [
+        f"Protected control path is not a valid {scope_label} review target: {rel}.",
+        "",
+    ]
+    if scope in ("batch", "final") and rel.endswith("plan.md"):
+        lines.extend(
+            [
+                "Do not include plan.md in batch/final review.targets.",
+                "Plan changes are tracked automatically by plan_sha256.",
+                "Use scope=plan only when the plan itself is the subject of review.",
+            ]
+        )
+    else:
+        lines.append(
+            "Auto Loop control files are not batch/final path targets. "
+            "Use scope=plan when the plan itself is the subject of review."
+        )
+    lines.extend(
+        [
+            "Emit a corrected AUTO_LOOP_RESULT without redoing completed work.",
+        ]
+    )
+    return ReviewRequestError("\n".join(lines))
 
 
 def normalize_path_target(
@@ -133,7 +161,7 @@ def normalize_path_target(
     git_mode: GitMode = "required",
 ) -> ActivePathTarget:
     if not request.id.strip():
-        raise GitProtocolError("Path review target id must be non-empty")
+        raise ReviewRequestError("Path review target id must be non-empty")
     resolved = resolve_review_path(repo, request.path)
     try:
         rel = posix_relpath(repo, resolved)
@@ -144,14 +172,14 @@ def normalize_path_target(
     if classification == "untracked" and not path_target_permitted(
         scope, classification, rel, git_mode=git_mode
     ):
-        raise GitProtocolError(
+        raise ReviewRequestError(
             f"Path target {rel} is untracked non-ignored product state; "
             "commit it or use an ignored artifact"
         )
     if classification == "control" and not path_target_permitted(
         scope, classification, rel, git_mode=git_mode
     ):
-        raise GitProtocolError(f"Protected control path is not a valid review target: {rel}")
+        raise _protected_control_target_error(rel, scope)
     digest, exists = fingerprint_path(resolved)
     return ActivePathTarget(
         id=request.id,
@@ -185,7 +213,7 @@ def _explicit_targets(
         if item.kind == "git_range":
             continue
         if item.id in seen_ids or item.id == "git":
-            raise GitProtocolError(f"Duplicate or reserved review target id: {item.id}")
+            raise ReviewRequestError(f"Duplicate or reserved review target id: {item.id}")
         seen_ids.add(item.id)
         if item.kind == "path":
             active.append(normalize_path_target(repo, item, scope=request.scope, git_mode=git_mode))
@@ -237,7 +265,7 @@ def normalize_work_targets(
                 ),
             )
     if not active and not allow_empty:
-        raise GitProtocolError(
+        raise ReviewRequestError(
             "Review request contains no reviewable evidence "
             "(empty Git range and no path or content targets)"
         )

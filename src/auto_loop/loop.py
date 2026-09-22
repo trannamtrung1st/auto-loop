@@ -15,6 +15,7 @@ from auto_loop.task_resources import compose_turn_resource_manifest
 from auto_loop.exits import ExitCode
 from auto_loop.git import (
     GitProtocolError,
+    ReviewRequestError,
     assert_approved_baseline_ancestry,
     head_commit,
     is_git_repository,
@@ -123,12 +124,6 @@ INTERRUPTED_MESSAGE = """Run interrupted.
 Your state was saved.
 Resume with:
   auto-loop resume RUN_CONFIG"""
-
-# Worker review-request mistakes the agent can correct on the same session turn.
-_WORKER_REVIEW_REQUEST_REPAIR_HINTS = (
-    "Final review requires explicit path, content, or Git targets",
-    "Review request contains no reviewable evidence",
-)
 
 
 class ProviderInvoker(Protocol):
@@ -241,10 +236,13 @@ class LifecycleRunner:
 
     def _mark_limit_reached(self, state: LifecycleState, reason: str) -> None:
         state.status = LifecycleStatus.LIMIT_REACHED
-        state.inflight = None
+        preserve_repair_inflight = (
+            state.inflight is not None and bool(state.inflight.repair_reason)
+        )
         state.completed_provider_turn = None
+        if not preserve_repair_inflight:
+            state.inflight = None
         state.updated_at = utc_now()
-        self._clear_inflight(state)
         self._save_state(state)
         append_event(
             self.repo,
@@ -660,9 +658,9 @@ class LifecycleRunner:
         state.updated_at = utc_now()
         self._save_state(state)
 
-    def _worker_review_request_needs_repair(self, exc: GitProtocolError) -> bool:
-        message = str(exc)
-        return any(hint in message for hint in _WORKER_REVIEW_REQUEST_REPAIR_HINTS)
+    def _reopen_worker_review_request(self, state: LifecycleState, exc: ReviewRequestError) -> None:
+        """Keep the worker session and re-prompt with the rejection reason."""
+        self._reopen_provider_turn(state, "worker", repair_reason=str(exc))
 
     def _record_approved_evidence(self, state: LifecycleState, review: ActiveReview) -> None:
         for target in review.targets:
@@ -975,11 +973,11 @@ class LifecycleRunner:
         except ProtocolParseError as exc:
             self._reopen_provider_turn(state, "worker", repair_reason=str(exc))
             raise
+        except ReviewRequestError as exc:
+            self._reopen_worker_review_request(state, exc)
+            return
         except GitProtocolError as exc:
-            if self._worker_review_request_needs_repair(exc):
-                self._reopen_provider_turn(state, "worker", repair_reason=str(exc))
-            else:
-                self._note_transition_error(state, exc)
+            self._note_transition_error(state, exc)
             raise
 
     def _apply_worker_result(
@@ -1097,7 +1095,7 @@ class LifecycleRunner:
             allow_empty=False,
         )
         if not targets:
-            raise GitProtocolError(
+            raise ReviewRequestError(
                 "Final review requires explicit path, content, or Git targets"
             )
         state.active_review = ActiveReview(

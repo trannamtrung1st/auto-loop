@@ -55,6 +55,7 @@ Request review when the evidence you want approved is stable.
 - If you committed product changes, the controller reviews `last_approved_commit..HEAD` when that range is non-empty.
 - If work is uncommitted, ignored, generated, or outside Git, add explicit path targets (or content targets) for those outputs.
 - A review with path or content targets is valid even when HEAD did not move.
+- `plan.md` and other Auto Loop control files are never batch/final path targets. When you update `plan.md` during implementation, do not add it to `review.targets`. The controller records `plan_sha256` separately. Use `scope=plan` when requesting a review whose subject is the plan itself.
 - In strict Git mode, commit normal source changes and leave the product tree clean before requesting review.
 
 ## Implementation batches

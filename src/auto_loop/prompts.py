@@ -153,6 +153,16 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
         ]
     )
     lines.extend(_plan_hash_lines(ctx))
+    lines.extend(
+        [
+            "",
+            "Review targets:",
+            f"- `{ctx.plan_path}` and other Auto Loop control files are never batch/final path targets.",
+            "- When you update the plan during implementation, do not add it to review.targets.",
+            "- The controller records plan_sha256 separately.",
+            "- Use scope=plan when the plan itself is the subject of review.",
+        ]
+    )
     if ctx.pending_revision:
         pending = ctx.pending_revision
         lines.extend(
