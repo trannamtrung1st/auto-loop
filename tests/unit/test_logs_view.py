@@ -100,6 +100,89 @@ def test_stream_follow_uses_worker_log_when_next_actor_is_reviewer(tmp_path: Pat
     assert "reviewer" not in body.split("===")[0]
 
 
+def _write_provider_log(repo: Path, *, text: str, raw_line: str | None = None) -> None:
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    state.status = LifecycleStatus.COMPLETED
+    save_lifecycle_state(repo, state)
+    jsonl_path, log_path = turn_log_paths(repo, state.lifecycle_id, 4, "reviewer")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text(raw_line or '{"type":"assistant","text":"provider"}\n', encoding="utf-8")
+    log_path.write_text(text, encoding="utf-8")
+
+
+def test_raw_logs_keep_literal_provider_text_without_ansi(tmp_path: Path):
+    repo = _repo(tmp_path)
+    markup = "[bold red]not markup[/bold red]\n"
+    _write_provider_log(repo, text="ignored readable\n", raw_line=markup)
+    output = render_logs(repo, raw=True, color=True)
+    assert "\x1b" not in output
+    assert markup.strip() in output
+    assert "=== turn 4 reviewer ===" in output
+    assert "━" not in output
+
+
+def test_human_logs_style_framing_and_leave_provider_text_literal(tmp_path: Path):
+    repo = _repo(tmp_path)
+    markup = "[bold red]not markup[/bold red]\n"
+    _write_provider_log(repo, text=markup)
+    plain = render_logs(repo, color=False)
+    assert "\x1b" not in plain
+    assert "REVIEWER" in plain
+    assert "turn 0004" in plain
+    assert markup.strip() in plain
+    assert "━" in plain
+
+    colored = render_logs(repo, color=True)
+    assert "\x1b" in colored
+    for line in colored.splitlines():
+        if "not markup" in line:
+            assert "\x1b" not in line
+            assert markup.strip() in line
+
+
+def test_follow_raw_streams_provider_text_without_new_ansi(tmp_path: Path):
+    repo = _repo(tmp_path)
+    markup = "[bold red]not markup[/bold red]\n"
+    _write_provider_log(repo, text="readable\n", raw_line=markup)
+    chunks: list[str] = []
+    stream_follow_logs(
+        repo,
+        raw=True,
+        write=chunks.append,
+        follow_idle_seconds=0.15,
+        color=True,
+    )
+    body = "".join(chunks)
+    assert "\x1b" not in body
+    assert markup.strip() in body
+    assert "=== turn 0004 reviewer ===" in body
+    provider_chunks = [chunk for chunk in chunks if "not markup" in chunk]
+    assert provider_chunks
+    assert all("\x1b" not in chunk for chunk in provider_chunks)
+
+
+def test_follow_human_color_does_not_restyle_provider_chunks(tmp_path: Path):
+    repo = _repo(tmp_path)
+    markup = "[bold red]not markup[/bold red]\n"
+    _write_provider_log(repo, text=markup)
+    chunks: list[str] = []
+    stream_follow_logs(
+        repo,
+        write=chunks.append,
+        follow_idle_seconds=0.15,
+        color=True,
+    )
+    body = "".join(chunks)
+    assert "REVIEWER" in body
+    assert markup.strip() in body
+    provider_chunks = [chunk for chunk in chunks if "not markup" in chunk]
+    assert provider_chunks
+    assert all("\x1b" not in chunk for chunk in provider_chunks)
+    assert any("\x1b" in chunk for chunk in chunks)
+
+
 def test_stream_follow_stops_after_terminal_lifecycle_idle(tmp_path: Path):
     repo = _repo(tmp_path)
     from auto_loop.git import head_commit

@@ -1,23 +1,205 @@
-"""Run console rendering for quiet/normal/verbose modes."""
+"""Run console rendering for quiet/normal/verbose modes.
+
+Presentation only: lifecycle code calls semantic methods, and this module owns
+Rich styles, rules, and literal handling of external strings.
+"""
 
 from __future__ import annotations
 
+import os
 import sys
+from io import StringIO
 from typing import TextIO
+
+from rich.console import Console
+from rich.rule import Rule
+from rich.text import Text
 
 from auto_loop.config import ConsoleLevel
 
+_LEVELS = {"quiet": 0, "normal": 1, "verbose": 2}
+_LABEL_WIDTH = 14
+_RULE_CHAR = "━"
+_HEADING_STYLE = "bold bright_cyan"
+_META_STYLE = "dim"
+_NEUTRAL_BOLD = "bold"
+
+ROLE_STYLES = {
+    "planner": "bold blue",
+    "plan_reviewer": "bold magenta",
+    "worker": "bold cyan",
+    "reviewer": "bold yellow",
+}
+
+ROLE_LABELS = {
+    "planner": "PLANNER",
+    "plan_reviewer": "PLAN REVIEWER",
+    "worker": "WORKER",
+    "reviewer": "REVIEWER",
+}
+
+STATUS_STYLES = {
+    "pass": "bold green",
+    "complete": "bold green",
+    "revise": "bold yellow",
+    "blocked": "bold red",
+    "error": "bold red",
+    "failure": "bold red",
+}
+
+
+def role_label(actor: str) -> str:
+    known = ROLE_LABELS.get(actor)
+    if known is not None:
+        return known
+    cleaned = actor.replace("_", " ").replace("-", " ").strip()
+    return cleaned.upper() if cleaned else "UNKNOWN"
+
+
+def role_style(actor: str) -> str:
+    return ROLE_STYLES.get(actor, _NEUTRAL_BOLD)
+
+
+def status_style(verdict: str) -> str:
+    return STATUS_STYLES.get(verdict.lower(), _NEUTRAL_BOLD)
+
+
+def _single_line(value: str) -> str:
+    return value.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
+def _color_disabled_by_env() -> bool:
+    # Any NO_COLOR value, including empty, requests plain text.
+    return "NO_COLOR" in os.environ
+
+
+def make_rich_console(stream: TextIO, *, color: bool | None) -> Console:
+    """Build a console that styles literal ``Text`` and never parses markup."""
+    if color is None and _color_disabled_by_env():
+        color = False
+    if color is True:
+        return Console(
+            file=stream,
+            force_terminal=True,
+            no_color=False,
+            color_system="standard",
+            highlight=False,
+            markup=False,
+            emoji=False,
+            soft_wrap=True,
+        )
+    if color is False:
+        return Console(
+            file=stream,
+            force_terminal=False,
+            no_color=True,
+            color_system=None,
+            highlight=False,
+            markup=False,
+            emoji=False,
+            soft_wrap=True,
+        )
+    return Console(
+        file=stream,
+        highlight=False,
+        markup=False,
+        emoji=False,
+        soft_wrap=True,
+    )
+
+
+def console_color_enabled(stream: TextIO | None = None) -> bool:
+    """True when ``stream`` (stdout by default) should receive ANSI styles."""
+    if _color_disabled_by_env():
+        return False
+    target = sys.stdout if stream is None else stream
+    probe = Console(file=target, highlight=False, markup=False, emoji=False)
+    return bool(probe.is_terminal and probe.color_system is not None)
+
+
+def render_log_header(
+    turn: int,
+    role: str,
+    *,
+    color: bool | None = None,
+    stream: TextIO | None = None,
+) -> str:
+    """Auto Loop framing for one provider log. The returned text excludes log bytes."""
+    buffer = StringIO()
+    if color is None:
+        target = sys.stdout if stream is None else stream
+        enabled = console_color_enabled(target)
+    else:
+        enabled = color
+    console = make_rich_console(buffer, color=enabled)
+    title = Text()
+    title.append(f"turn {turn:04d} · ")
+    title.append(role_label(role), style=role_style(role))
+    console.print(Rule(title, style=role_style(role), characters=_RULE_CHAR))
+    return buffer.getvalue()
+
 
 class RunConsole:
-    def __init__(self, level: ConsoleLevel, stream: TextIO | None = None) -> None:
+    def __init__(
+        self,
+        level: ConsoleLevel,
+        stream: TextIO | None = None,
+        *,
+        color: bool | None = None,
+    ) -> None:
         self.level = level
         self.stream = stream or sys.stdout
+        self._rich = make_rich_console(self.stream, color=color)
 
-    def _emit(self, message: str, *, min_level: ConsoleLevel = "normal") -> None:
-        order = {"quiet": 0, "normal": 1, "verbose": 2}
-        if order[self.level] < order[min_level]:
+    def _enabled(self, min_level: ConsoleLevel) -> bool:
+        return _LEVELS[self.level] >= _LEVELS[min_level]
+
+    def _blank(self, min_level: ConsoleLevel = "normal") -> None:
+        if not self._enabled(min_level):
             return
-        print(message, file=self.stream)
+        self._rich.print()
+
+    def _rule(self, title: Text, *, style: str, min_level: ConsoleLevel = "normal") -> None:
+        if not self._enabled(min_level):
+            return
+        self._rich.print(Rule(title, style=style, characters=_RULE_CHAR))
+
+    def _row(self, label: str, value: Text, *, min_level: ConsoleLevel = "normal") -> None:
+        if not self._enabled(min_level):
+            return
+        line = Text()
+        line.append(label.ljust(_LABEL_WIDTH))
+        line.append(value)
+        self._rich.print(line)
+
+    def _meta(
+        self,
+        label: str,
+        value: str,
+        *,
+        value_style: str = "",
+        min_level: ConsoleLevel = "normal",
+    ) -> None:
+        if not self._enabled(min_level):
+            return
+        line = Text()
+        line.append(f"{label}: ", style="bold")
+        line.append(_single_line(value), style=value_style)
+        self._rich.print(line)
+
+    def _status_row(self, label: str, status: str, *, style: str) -> None:
+        if not self._enabled("normal"):
+            return
+        line = Text()
+        line.append(label.ljust(_LABEL_WIDTH), style=style)
+        line.append(status, style=style)
+        self._rich.print(line)
+
+    def _lifecycle_id(self, lifecycle_id: str, *, action: str) -> None:
+        value = Text()
+        value.append(_single_line(lifecycle_id), style=_META_STYLE)
+        value.append(f" · {action}", style=_META_STYLE)
+        self._row("Lifecycle", value, min_level="verbose")
 
     def lifecycle_started(
         self,
@@ -29,54 +211,89 @@ class RunConsole:
         artifact_root_rel: str = ".ai/auto-loop",
     ) -> None:
         if resuming:
-            self._emit("Resuming Auto Loop", min_level="normal")
+            title = Text("AUTO LOOP · RESUME", style=_HEADING_STYLE)
+            self._rule(title, style=_HEADING_STYLE)
             if goal_summary:
-                self._emit(f"Goal: {goal_summary}", min_level="normal")
-            self._emit(
-                f"Lifecycle {lifecycle_id} resumed",
-                min_level="verbose",
-            )
+                self._meta("Goal", goal_summary)
+            self._lifecycle_id(lifecycle_id, action="resumed")
             return
-        self._emit("Starting Auto Loop", min_level="normal")
-        self._emit("", min_level="normal")
+        title = Text("AUTO LOOP", style=_HEADING_STYLE)
+        self._rule(title, style=_HEADING_STYLE)
         if goal_summary:
-            self._emit(f"Goal: {goal_summary}", min_level="normal")
-        self._emit(f"Config: {user_config_rel}", min_level="normal")
-        self._emit("", min_level="normal")
-        self._emit("Planner   starting", min_level="normal")
-        self._emit("Worker    waiting", min_level="normal")
-        self._emit("Reviewer  waiting", min_level="normal")
-        self._emit("", min_level="normal")
-        self._emit(f"Generated state will be stored in {artifact_root_rel}/", min_level="normal")
-        self._emit("You normally do not need to edit that directory.", min_level="normal")
-        self._emit(f"Lifecycle {lifecycle_id} started", min_level="verbose")
+            self._meta("Goal", goal_summary)
+        self._meta("Config", user_config_rel, value_style=_META_STYLE)
+        state = artifact_root_rel if artifact_root_rel.endswith("/") else f"{artifact_root_rel}/"
+        self._meta("State", state, value_style=_META_STYLE)
+        self._blank()
+        self._status_row("Planner", "STARTING", style=role_style("planner"))
+        self._status_row("Worker", "WAITING", style=_META_STYLE)
+        self._status_row("Reviewer", "WAITING", style=_META_STYLE)
+        self._lifecycle_id(lifecycle_id, action="started")
 
     def plan_ready(self, plan_path: str) -> None:
-        self._emit("", min_level="normal")
-        self._emit(f"Plan ready: {plan_path}", min_level="normal")
-        self._emit("Starting worker...", min_level="normal")
+        if not self._enabled("normal"):
+            return
+        self._blank()
+        title = Text("PLAN APPROVED", style="bold green")
+        self._rule(title, style="bold green")
+        self._row("Plan", Text(_single_line(plan_path), style=_META_STYLE))
+        self._row("Next", Text("worker"))
 
     def turn_started(self, turn: int, actor: str) -> None:
-        self._emit(f"Turn {turn}: {actor}", min_level="normal")
+        if not self._enabled("normal"):
+            return
+        self._blank()
+        title = Text()
+        title.append(f"Turn {turn} · ")
+        title.append(role_label(actor), style=role_style(actor))
+        self._rule(title, style=role_style(actor))
 
-    def session_created(self, actor: str, session_id: str) -> None:
-        self._emit(f"{actor} session created {session_id[:8]}...", min_level="normal")
+    def session_created(self, session_id: str) -> None:
+        self._session_line(session_id, action="created", min_level="normal")
 
-    def session_resumed(self, actor: str, session_id: str) -> None:
-        self._emit(f"{actor} resuming session {session_id[:8]}...", min_level="verbose")
+    def session_resumed(self, session_id: str) -> None:
+        self._session_line(session_id, action="resumed", min_level="verbose")
+
+    def _session_line(self, session_id: str, *, action: str, min_level: ConsoleLevel) -> None:
+        short = _single_line(session_id)[:8]
+        self._row("Session", Text(f"{short} · {action}", style=_META_STYLE), min_level=min_level)
 
     def review_requested(self, scope: str, target: str) -> None:
-        self._emit(f"Review requested: {scope} ({target})", min_level="normal")
+        value = Text()
+        value.append("requested · ")
+        value.append(_single_line(scope), style="bold")
+        value.append(" · ")
+        value.append(_single_line(target), style=_META_STYLE)
+        self._row("Review", value)
 
     def review_result(self, verdict: str, scope: str, finding_count: int = 0) -> None:
-        extra = f", {finding_count} finding(s)" if finding_count else ""
-        self._emit(f"Review {scope}: {verdict.upper()}{extra}", min_level="normal")
+        value = Text()
+        value.append(verdict.upper(), style=status_style(verdict))
+        if finding_count:
+            noun = "finding" if finding_count == 1 else "findings"
+            value.append(f" · {finding_count} {noun}", style=_META_STYLE)
+        self._row(f"Review {scope}", value)
 
     def baseline_advanced(self, head: str) -> None:
-        self._emit(f"Approved baseline advanced to {head[:7]}", min_level="normal")
+        value = Text()
+        value.append("advanced", style="bold green")
+        value.append(f" · {_single_line(head)[:7]}", style=_META_STYLE)
+        self._row("Baseline", value)
 
-    def terminal(self, message: str) -> None:
-        self._emit(message, min_level="normal")
+    def lifecycle_completed(self) -> None:
+        self._outcome("COMPLETE", "Lifecycle completed successfully", style="bold green")
+
+    def lifecycle_blocked(self) -> None:
+        self._outcome("BLOCKED", "Lifecycle blocked by reviewer", style="bold red")
+
+    def _outcome(self, title: str, message: str, *, style: str) -> None:
+        if not self._enabled("normal"):
+            return
+        self._blank()
+        self._rule(Text(title, style=style), style=style)
+        self._rich.print(Text(_single_line(message)))
 
     def verbose(self, message: str) -> None:
-        self._emit(message, min_level="verbose")
+        if not self._enabled("verbose"):
+            return
+        self._rich.print(Text(_single_line(message), style=_META_STYLE))

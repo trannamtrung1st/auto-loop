@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -113,7 +114,14 @@ def read_turn_logs(
     raw: bool = False,
     role: str | None = None,
     artifact_root: Path | None = None,
+    header: Callable[[int, str], str] | None = None,
 ) -> str:
+    """Return turn log text.
+
+    ``header``, when set, supplies Auto Loop framing for human-readable logs.
+    Raw mode ignores it and keeps the legacy ``=== turn`` prefix so provider
+    bytes stay literal.
+    """
     run_dir = run_logs_dir(repo, lifecycle_id, artifact_root)
     if not run_dir.is_dir():
         return ""
@@ -122,8 +130,13 @@ def read_turn_logs(
     chunks: list[str] = []
     for r in roles:
         path = run_dir / f"turn-{turn:04d}-{r}{suffix}"
-        if path.is_file():
-            chunks.append(f"=== turn {turn} {r} ===\n{path.read_text(encoding='utf-8')}")
+        if not path.is_file():
+            continue
+        body = path.read_text(encoding="utf-8")
+        if header is not None and not raw:
+            chunks.append(f"{header(turn, r)}{body}")
+        else:
+            chunks.append(f"=== turn {turn} {r} ===\n{body}")
     return "\n\n".join(chunks).strip()
 
 

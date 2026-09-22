@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from auto_loop.console_output import console_color_enabled, render_log_header
 from auto_loop.lifecycle import LifecycleStatus
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.turn_logs import (
@@ -24,6 +25,18 @@ def _default_stdout_write(chunk: str) -> None:
     sys.stdout.flush()
 
 
+def _use_color(color: bool | None) -> bool:
+    if color is None:
+        return console_color_enabled()
+    return color
+
+
+def _log_header(turn: int, role: str, *, raw: bool, color: bool | None) -> str:
+    if raw:
+        return f"=== turn {turn:04d} {role} ===\n"
+    return render_log_header(turn, role, color=_use_color(color))
+
+
 def stream_follow_logs(
     repo: Path,
     *,
@@ -33,6 +46,7 @@ def stream_follow_logs(
     follow_max_seconds: float | None = None,
     follow_idle_seconds: float = 1.0,
     artifact_root: Path | None = None,
+    color: bool | None = None,
 ) -> None:
     """Write turn log bytes to ``write`` as they appear (proposal §35 logs --follow)."""
     emit = write or _default_stdout_write
@@ -60,7 +74,7 @@ def stream_follow_logs(
         emit(f"Waiting for {target.name}...")
         last_size = 0
     else:
-        emit(f"=== turn {selected:04d} {role} ===\n")
+        emit(_log_header(selected, role, raw=raw, color=color))
         last_size = 0
 
     started = time.monotonic()
@@ -69,6 +83,7 @@ def stream_follow_logs(
         while True:
             grew = False
             if target.is_file():
+                # Provider bytes stay on the raw write path. Do not render them with Rich.
                 text = target.read_text(encoding="utf-8")
                 if len(text) > last_size:
                     emit(text[last_size:])
@@ -95,6 +110,7 @@ def render_logs(
     follow_max_seconds: float | None = None,
     follow_idle_seconds: float = 1.0,
     artifact_root: Path | None = None,
+    color: bool | None = None,
 ) -> str:
     state = load_lifecycle_state(repo, artifact_root)
     if state is None:
@@ -120,7 +136,25 @@ def render_logs(
             follow_max_seconds=follow_max_seconds,
             follow_idle_seconds=follow_idle_seconds,
             artifact_root=artifact_root,
+            color=color,
         )
         return buffer.getvalue().rstrip("\n") if buffer.tell() else buffer.getvalue()
 
-    return read_turn_logs(repo, lifecycle_id, selected, raw=raw, artifact_root=artifact_root)
+    if raw:
+        return read_turn_logs(
+            repo,
+            lifecycle_id,
+            selected,
+            raw=True,
+            artifact_root=artifact_root,
+        )
+
+    styled = _use_color(color)
+    return read_turn_logs(
+        repo,
+        lifecycle_id,
+        selected,
+        raw=False,
+        artifact_root=artifact_root,
+        header=lambda turn_no, role_name: render_log_header(turn_no, role_name, color=styled),
+    )

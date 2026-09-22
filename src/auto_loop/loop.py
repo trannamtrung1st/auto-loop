@@ -394,9 +394,9 @@ class LifecycleRunner:
         os.environ["AUTO_LOOP_FAKE_ROLE"] = slot
         os.environ["AUTO_LOOP_FAKE_SLOT"] = slot
         self._persist_inflight(state, slot)
-        if session.session_id:
-            self._console.session_resumed(slot, session.session_id)
         self._console.turn_started(state.turn, slot)
+        if session.session_id:
+            self._console.session_resumed(session.session_id)
         turn_log = TurnLogWriter(
             self.repo,
             self.config,
@@ -454,7 +454,7 @@ class LifecycleRunner:
                                     "lifecycle_id": state.lifecycle_id,
                                 },
                             )
-                            self._console.session_created(slot, parsed.session_id)
+                            self._console.session_created(parsed.session_id)
                     if attempt_result.failure == ProviderFailureKind.INTERRUPTED:
                         turn_log.finalize()
                         if self._stop.requested:
@@ -1151,7 +1151,7 @@ class LifecycleRunner:
             self.config,
             {"type": "lifecycle_blocked", "lifecycle_id": state.lifecycle_id},
         )
-        self._console.terminal("Lifecycle blocked by reviewer")
+        self._console.lifecycle_blocked()
         self._terminal_exit = ExitCode.BLOCKED
 
     def _reviewer_slot_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
@@ -1323,7 +1323,7 @@ class LifecycleRunner:
                     "lifecycle_id": state.lifecycle_id,
                 },
             )
-            self._console.terminal("Lifecycle completed successfully")
+            self._console.lifecycle_completed()
             self._terminal_exit = ExitCode.COMPLETE
             return
 
