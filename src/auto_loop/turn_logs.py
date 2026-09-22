@@ -16,9 +16,9 @@ from auto_loop.providers.cursor import (
     TraceEvent,
     TraceEventKind,
     format_tool_trace,
-    trace_text_prefix,
 )
 from auto_loop.result_trace_filter import ResultTraceFilter
+from auto_loop.trace_text_block import TraceTextBlock
 
 # Session slot names used in turn log filenames (matches TurnLogWriter ``role``).
 TURN_LOG_ROLES: tuple[str, ...] = (
@@ -58,7 +58,6 @@ class TurnLogWriter:
     jsonl_path: Path = field(init=False)
     log_path: Path = field(init=False)
     _raw_line_count: int = field(default=0, init=False)
-    _open_kind: TraceEventKind | None = field(default=None, init=False)
     _wrote_readable: bool = field(default=False, init=False)
     _jsonl_handle: TextIO | None = field(default=None, init=False, repr=False)
     _log_handle: TextIO | None = field(default=None, init=False, repr=False)
@@ -68,6 +67,7 @@ class TurnLogWriter:
     _result_trace_filter: ResultTraceFilter = field(
         default_factory=ResultTraceFilter, init=False, repr=False
     )
+    _text_block: TraceTextBlock = field(default_factory=TraceTextBlock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         artifact_root = self.repo / self.config.artifacts_root
@@ -96,31 +96,30 @@ class TurnLogWriter:
             self.write_stream_line(line)
 
     def finish_open_trace(self) -> None:
-        """Close an in-progress thinking or message line without ending the turn log."""
-        if self._open_kind is None:
-            return
-        self._append_log("\n")
-        self._open_kind = None
+        """Close an in-progress thinking or message block without ending the turn log."""
+        closing = self._text_block.close()
+        if closing:
+            self._append_log(closing)
 
     def finish_message_trace_segment(self) -> None:
-        """End a contiguous assistant message segment (for example before a tool event)."""
+        """End a contiguous assistant message block (for example before a tool event)."""
         trailing = self._result_trace_filter.flush_pending_outside()
         if trailing:
-            self._write_filtered_message_multiline(trailing)
+            self._write_block(TraceEventKind.MESSAGE, trailing)
         self.finish_open_trace()
 
     def finish_provider_attempt(self) -> None:
-        """Reset result filtering at a provider retry boundary."""
+        """Reset result filtering and the open text block at a provider retry boundary."""
         trailing = self._result_trace_filter.flush()
         if trailing:
-            self._write_filtered_message_multiline(trailing)
+            self._write_block(TraceEventKind.MESSAGE, trailing)
         self._result_trace_filter.reset()
         self.finish_open_trace()
 
     def finalize(self) -> None:
         trailing = self._result_trace_filter.flush()
         if trailing:
-            self._write_filtered_message_multiline(trailing)
+            self._write_block(TraceEventKind.MESSAGE, trailing)
         self._result_trace_filter.reset()
         self.finish_open_trace()
         self._close_handles()
@@ -151,39 +150,14 @@ class TurnLogWriter:
 
     def _write_text_event(self, event: TraceEvent) -> None:
         if event.kind is TraceEventKind.MESSAGE:
-            filtered = self._result_trace_filter.feed(event.text)
-            self._write_filtered_message_multiline(filtered)
+            self._write_block(event.kind, self._result_trace_filter.feed(event.text))
             return
-        parts = event.text.split("\n")
-        for index, part in enumerate(parts):
-            if index:
-                self.finish_open_trace()
-            if not part:
-                continue
-            prefix = ""
-            if self._open_kind is not event.kind:
-                self.finish_open_trace()
-                prefix = trace_text_prefix(event.kind)
-                self._open_kind = event.kind
-            self._append_log(prefix + part)
+        self._write_block(event.kind, event.text)
 
-    def _write_filtered_message_multiline(self, text: str) -> None:
-        if not text:
-            return
-        parts = text.split("\n")
-        for index, part in enumerate(parts):
-            if index:
-                self.finish_open_trace()
-            if part:
-                self._write_filtered_message(part)
-
-    def _write_filtered_message(self, text: str) -> None:
-        prefix = ""
-        if self._open_kind is not TraceEventKind.MESSAGE:
-            self.finish_open_trace()
-            prefix = trace_text_prefix(TraceEventKind.MESSAGE)
-            self._open_kind = TraceEventKind.MESSAGE
-        self._append_log(prefix + text)
+    def _write_block(self, kind: TraceEventKind, text: str) -> None:
+        rendered = self._text_block.feed(kind, text)
+        if rendered:
+            self._append_log(rendered)
 
     def _close_handles(self) -> None:
         for handle in (self._jsonl_handle, self._log_handle):

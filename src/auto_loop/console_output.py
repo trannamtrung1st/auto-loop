@@ -23,8 +23,8 @@ from auto_loop.providers.cursor import (
     TraceEvent,
     TraceEventKind,
     format_tool_trace,
-    trace_text_prefix,
 )
+from auto_loop.trace_text_block import TraceTextBlock
 
 _LEVELS = {"quiet": 0, "normal": 1, "verbose": 2}
 _LABEL_WIDTH = 14
@@ -168,7 +168,7 @@ class RunConsole:
         self.level = level
         self.stream = stream or sys.stdout
         self._rich = make_rich_console(self.stream, color=color)
-        self._active_stream_kind: TraceEventKind | None = None
+        self._text_block = TraceTextBlock()
         self._result_trace_filter = ResultTraceFilter()
 
     def _enabled(self, min_level: ConsoleLevel) -> bool:
@@ -362,7 +362,7 @@ class RunConsole:
             self._rich.file.flush()
 
     def finish_provider_trace(self) -> None:
-        """End an open thinking or message line so the next console row starts clean."""
+        """End an open thinking or message block so the next console row starts clean."""
         trailing = self._result_trace_filter.flush()
         if trailing:
             self._emit_trace_multiline(TraceEventKind.MESSAGE, trailing)
@@ -383,27 +383,21 @@ class RunConsole:
         self._emit_trace_multiline(event.kind, event.text)
 
     def _emit_trace_multiline(self, kind: TraceEventKind, text: str) -> None:
-        if not text:
+        rendered = self._text_block.feed(kind, text)
+        if not rendered:
             return
-        parts = text.split("\n")
-        for index, part in enumerate(parts):
-            if index:
-                self._finish_stream_line()
-            if part:
-                self._emit_trace_text(kind, part)
-
-    def _emit_trace_text(self, kind: TraceEventKind, text: str) -> None:
         style = _TRACE_TEXT_STYLES[kind]
-        if self._active_stream_kind is not kind:
-            self._finish_stream_line()
-            self._rich.print(Text(trace_text_prefix(kind), style=style), end="")
-            self._active_stream_kind = kind
-        self._rich.print(Text(text, style=style), end="")
+        lines = rendered.split("\n")
+        for index, line in enumerate(lines):
+            if index:
+                self._rich.file.write("\n")
+            if line:
+                self._rich.print(Text(line, style=style), end="")
         self._rich.file.flush()
 
     def _finish_stream_line(self) -> None:
-        if self._active_stream_kind is None:
+        closing = self._text_block.close()
+        if not closing:
             return
-        self._rich.file.write("\n")
+        self._rich.file.write(closing)
         self._rich.file.flush()
-        self._active_stream_kind = None
