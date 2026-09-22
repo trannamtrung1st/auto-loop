@@ -184,6 +184,12 @@ class PromptCapturingProvider:
     def set_worker_plan_request(self) -> None:
         self._inner.set_worker_plan_request()
 
+    def set_planner_review_request(self) -> None:
+        self._inner.set_planner_review_request()
+
+    def set_plan_reviewer_pass(self, target: str = "plan") -> None:
+        self._inner.set_plan_reviewer_pass(target)
+
     def set_reviewer_pass(self, scope: str, target: str) -> None:
         self._inner.set_reviewer_pass(scope, target)
 
@@ -193,8 +199,13 @@ class PromptCapturingProvider:
     def set_worker_final_request(self, head: str | None = None) -> None:
         self._inner.set_worker_final_request(head=head)
 
-    def set_reviewer_complete(self, head: str) -> None:
-        self._inner.set_reviewer_complete(head)
+    def set_reviewer_complete(
+        self,
+        head: str | None = None,
+        *,
+        target_ids: list[str] | None = None,
+    ) -> None:
+        self._inner.set_reviewer_complete(head, target_ids=target_ids)
 
     def set_worker_blocked(self, summary: str = "blocked on external dependency") -> None:
         self._inner.set_worker_blocked(summary)

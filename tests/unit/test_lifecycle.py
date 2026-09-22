@@ -68,6 +68,22 @@ def test_worker_prompt_includes_durable_facts():
     assert "AUTO_LOOP_RESULT" in prompt
 
 
+def test_worker_prompt_surfaces_controller_repair_reason():
+    state = create_lifecycle("abc123")
+    ctx = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="abc123",
+        product_clean=True,
+        repair_reason="Final review requires explicit path, content, or Git targets",
+    )
+    prompt = build_worker_prompt(state, ctx)
+    assert "controller rejected it" in prompt.lower()
+    assert "Final review requires explicit path" in prompt
+    assert "interrupted" not in prompt.lower()
+
+
 def test_reviewer_batch_and_final_prompts():
     state = create_lifecycle("base")
     state.plan_approved = True

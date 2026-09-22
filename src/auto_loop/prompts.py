@@ -18,6 +18,7 @@ class TurnContext:
     git_available: bool = True
     interrupted: bool = False
     protocol_repair: bool = False
+    repair_reason: str | None = None
     resource_manifest: str = ""
     session_purpose: SessionSlot = "worker"
     phase: str = "execution"
@@ -69,6 +70,18 @@ def _repair_lines(ctx: TurnContext) -> list[str]:
     ]
 
 
+def _controller_repair_lines(ctx: TurnContext) -> list[str]:
+    if not ctx.repair_reason:
+        return []
+    return [
+        "Your previous turn produced a result, but the controller rejected it:",
+        f"- {ctx.repair_reason}",
+        "Inspect current durable state and emit a corrected AUTO_LOOP_RESULT for this turn.",
+        "Do not assume the rejected request was accepted.",
+        "",
+    ]
+
+
 def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
     lines = [
         "Continue your planner role for the planning phase.",
@@ -85,7 +98,9 @@ def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
         "Reconcile repository/task/review evidence, update the plan, and request plan review.",
         "",
     ]
-    if ctx.interrupted:
+    if ctx.repair_reason:
+        lines.extend(_controller_repair_lines(ctx))
+    elif ctx.interrupted:
         lines.extend(
             [
                 "The prior planner invocation may have been interrupted.",
@@ -155,7 +170,9 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
             "",
         ]
     )
-    if ctx.interrupted:
+    if ctx.repair_reason:
+        lines.extend(_controller_repair_lines(ctx))
+    elif ctx.interrupted:
         lines.extend(
             [
                 "The prior worker invocation may have been interrupted.",

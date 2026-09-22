@@ -96,6 +96,7 @@ class InflightMarker(BaseModel):
     session_id: str
     started_at: datetime
     head_before: str | None = None
+    repair_reason: str | None = None
 
 
 class CompletedProviderTurn(BaseModel):

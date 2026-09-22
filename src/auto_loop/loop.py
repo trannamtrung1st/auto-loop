@@ -195,7 +195,21 @@ class LifecycleRunner:
     def _turn_interrupted(self, state: LifecycleState, slot: SessionSlot) -> bool:
         return state.inflight is not None and state.inflight.session_slot == slot
 
-    def _persist_inflight(self, state: LifecycleState, slot: SessionSlot) -> None:
+    def _persist_inflight(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        *,
+        repair_reason: str | None = None,
+    ) -> None:
+        existing = state.inflight
+        if (
+            repair_reason is None
+            and existing is not None
+            and existing.session_slot == slot
+            and existing.turn == state.turn
+        ):
+            repair_reason = existing.repair_reason
         session = state.sessions[slot]
         session_id = session.session_id or "pending"
         state.inflight = InflightMarker(
@@ -205,6 +219,7 @@ class LifecycleRunner:
             session_id=session_id,
             started_at=utc_now(),
             head_before=self._optional_head(),
+            repair_reason=repair_reason,
         )
         self._save_state(state)
 
@@ -317,6 +332,9 @@ class LifecycleRunner:
             and state.sessions[slot].session_id is None
             and slot in ("worker", "reviewer")
         )
+        inflight = state.inflight
+        slot_inflight = inflight is not None and inflight.session_slot == slot
+        repair_reason = inflight.repair_reason if slot_inflight else None
         return TurnContext(
             task_path=self.config.task_file,
             plan_path=self.config.plan_file,
@@ -328,8 +346,9 @@ class LifecycleRunner:
                 else True
             ),
             git_available=self._git_usable(),
-            interrupted=self._turn_interrupted(state, slot),
+            interrupted=slot_inflight and repair_reason is None,
             protocol_repair=protocol_repair,
+            repair_reason=repair_reason,
             resource_manifest=self._context_manifest(role),
             session_purpose=slot,
             phase=state.phase,
@@ -551,10 +570,16 @@ class LifecycleRunner:
         state.updated_at = utc_now()
         self._save_state(state)
 
-    def _reopen_provider_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
+    def _reopen_provider_turn(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        *,
+        repair_reason: str | None = None,
+    ) -> None:
         """Protocol-invalid output stays an in-progress turn so resume can re-invoke."""
         state.completed_provider_turn = None
-        self._persist_inflight(state, slot)
+        self._persist_inflight(state, slot, repair_reason=repair_reason)
 
     def _note_transition_error(self, state: LifecycleState, exc: BaseException) -> None:
         done = state.completed_provider_turn
@@ -747,8 +772,8 @@ class LifecycleRunner:
         try:
             self._assert_planning_policy(state)
             self._apply_planner_result(state, result)
-        except ProtocolParseError:
-            self._reopen_provider_turn(state, "planner")
+        except ProtocolParseError as exc:
+            self._reopen_provider_turn(state, "planner", repair_reason=str(exc))
             raise
         except GitProtocolError as exc:
             self._note_transition_error(state, exc)
@@ -877,12 +902,12 @@ class LifecycleRunner:
     ) -> None:
         try:
             self._apply_worker_result(state, result, from_replay=from_replay)
-        except ProtocolParseError:
-            self._reopen_provider_turn(state, "worker")
+        except ProtocolParseError as exc:
+            self._reopen_provider_turn(state, "worker", repair_reason=str(exc))
             raise
         except GitProtocolError as exc:
             if self._worker_review_request_needs_repair(exc):
-                self._reopen_provider_turn(state, "worker")
+                self._reopen_provider_turn(state, "worker", repair_reason=str(exc))
             else:
                 self._note_transition_error(state, exc)
             raise
@@ -1180,8 +1205,8 @@ class LifecycleRunner:
     ) -> None:
         try:
             self._apply_reviewer_result(state, slot, result)
-        except ProtocolParseError:
-            self._reopen_provider_turn(state, slot)
+        except ProtocolParseError as exc:
+            self._reopen_provider_turn(state, slot, repair_reason=str(exc))
             raise
         except GitProtocolError as exc:
             self._note_transition_error(state, exc)

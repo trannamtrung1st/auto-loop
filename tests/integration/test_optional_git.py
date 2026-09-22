@@ -13,7 +13,7 @@ from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.manifest import load_run_manifest
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.runtime import load_lifecycle_state
-from tests.integration.scenario_harness import git, run_lifecycle, run_opts
+from tests.integration.scenario_harness import PromptCapturingProvider, git, run_lifecycle, run_opts
 from tests.repo_utils import git_repo
 
 
@@ -415,12 +415,14 @@ def test_optional_final_without_targets_is_rejected(tmp_path: Path):
     assert state.inflight is not None
     assert state.completed_provider_turn is None
     assert state.next_session == "worker"
+    assert state.inflight.repair_reason
+    assert "reviewable evidence" in state.inflight.repair_reason.lower()
 
 
 def test_optional_final_without_targets_worker_repairs_on_resume(tmp_path: Path):
     repo = git_repo(tmp_path)
     bootstrap_workspace(repo, git_mode="optional")
-    provider = ScriptedProvider()
+    provider = PromptCapturingProvider()
     _approve_plan(repo, provider)
     (repo / "report.md").write_text("v1\n", encoding="utf-8")
     provider.set_response("worker", _path_batch("report.md", "report"))
@@ -434,7 +436,13 @@ def test_optional_final_without_targets_worker_repairs_on_resume(tmp_path: Path)
     worker_session_before = state.sessions["worker"].session_id
     provider.set_response("worker", _final_path_request("report.md", "report"))
     provider.set_reviewer_complete(target_ids=["report"])
+    prompts_before_resume = len(provider.worker_prompts)
     completed = run_lifecycle(repo, run_opts(3), provider)
+    assert len(provider.worker_prompts) > prompts_before_resume
+    repair_prompt = provider.worker_prompts[-1]
+    assert "controller rejected it" in repair_prompt.lower()
+    assert "reviewable evidence" in repair_prompt.lower()
+    assert "interrupted" not in repair_prompt.lower()
     assert completed.exit_code == ExitCode.COMPLETE
     state = load_lifecycle_state(repo)
     assert state is not None
