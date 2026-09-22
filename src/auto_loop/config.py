@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from auto_loop.context_manifest import ContextDocument
 from auto_loop.exits import ExitCode
+from auto_loop.manifest_models import ManifestModel
 from auto_loop.paths import DEFAULT_ARTIFACTS_ROOT, artifact_root_path, posix_rel
 
 CONFIG_VERSION = 2
@@ -32,19 +33,19 @@ class ConfigurationError(Exception):
     exit_code = ExitCode.CONFIG_ERROR
 
 
-class CursorProviderSettings(BaseModel):
+class CursorProviderSettings(ManifestModel):
     command: CursorCommand = "agent"
     planner_extra_args: list[str] = Field(default_factory=lambda: ["--force"])
     worker_extra_args: list[str] = Field(default_factory=lambda: ["--force"])
     reviewer_extra_args: list[str] = Field(default_factory=list)
 
 
-class ProviderSettings(BaseModel):
+class ProviderSettings(ManifestModel):
     type: ProviderType = "cursor"
     cursor: CursorProviderSettings = Field(default_factory=CursorProviderSettings)
 
 
-class RoleAgentSettings(BaseModel):
+class RoleAgentSettings(ManifestModel):
     """Runtime agent slot settings. Model selection lives under top-level `models`."""
 
     role_file: str = ""
@@ -52,19 +53,19 @@ class RoleAgentSettings(BaseModel):
     mode: AgentMode = "agent"
 
 
-class InstructionRoleSettings(BaseModel):
+class InstructionRoleSettings(ManifestModel):
     mode: InstructionMode = "extend"
     files: list[str] = Field(default_factory=list)
 
 
-class InstructionSettings(BaseModel):
+class InstructionSettings(ManifestModel):
     shared: InstructionRoleSettings = Field(default_factory=InstructionRoleSettings)
     planner: InstructionRoleSettings = Field(default_factory=InstructionRoleSettings)
     worker: InstructionRoleSettings = Field(default_factory=InstructionRoleSettings)
     reviewer: InstructionRoleSettings = Field(default_factory=InstructionRoleSettings)
 
 
-class GitPolicySettings(BaseModel):
+class GitPolicySettings(ManifestModel):
     require_repository: bool = True
     require_clean_product_start: bool = True
     require_clean_product_before_review: bool = True
@@ -84,24 +85,24 @@ class LimitSettings(BaseModel):
     max_consecutive_worker_no_progress: int = Field(default=3, ge=1)
 
 
-class ProtectionSettings(BaseModel):
+class ProtectionSettings(ManifestModel):
     product_exclude: list[str] = Field(default_factory=list)
     protected_files: list[str] = Field(default_factory=list)
 
 
-class LoggingSettings(BaseModel):
+class LoggingSettings(ManifestModel):
     console: ConsoleLevel = "normal"
     retain_raw_streams: bool = True
     max_run_history: int = Field(default=20, ge=1)
 
 
-class ModelSettings(BaseModel):
+class ModelSettings(ManifestModel):
     planner: str = "auto"
     worker: str = "auto"
     reviewer: str = "auto"
 
 
-class RunSettings(BaseModel):
+class RunSettings(ManifestModel):
     max_turns: int = Field(default=100, ge=1)
     max_runtime_minutes: int = Field(default=480, ge=1)
     agent_timeout_seconds: int = Field(default=3600, ge=1)
@@ -111,15 +112,15 @@ class RunSettings(BaseModel):
     max_consecutive_worker_no_progress: int = Field(default=3, ge=1)
 
 
-class TaskSettings(BaseModel):
+class TaskSettings(ManifestModel):
     source: str
 
 
-class ArtifactSettings(BaseModel):
+class ArtifactSettings(ManifestModel):
     root: str = DEFAULT_ARTIFACTS_ROOT
 
 
-class AutoLoopConfig(BaseModel):
+class AutoLoopConfig(ManifestModel):
     version: int
     workspace: str = "."
     task: TaskSettings

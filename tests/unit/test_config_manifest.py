@@ -161,6 +161,51 @@ def test_rejects_top_level_limits_section(tmp_path: Path):
         load_config(path)
 
 
+def test_rejects_unknown_top_level_manifest_key(tmp_path: Path):
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
+        "goal: build something\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="Extra inputs are not permitted"):
+        load_config(path)
+
+
+def test_rejects_unknown_models_key(tmp_path: Path):
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
+        "models:\n  workr: gpt-5.6\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="Extra inputs are not permitted"):
+        load_config(path)
+
+
+def test_rejects_unknown_run_key(tmp_path: Path):
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
+        "run:\n  max_turn: 200\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="Extra inputs are not permitted"):
+        load_config(path)
+
+
+def test_rejects_unknown_context_resource_field(tmp_path: Path):
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
+        "context:\n  shared:\n    resources:\n      - path: README.md\n"
+        "        typo: oops\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="Extra inputs are not permitted"):
+        load_config(path)
+
+
 def test_kanban_sample_manifest_passes_doctor(tmp_path: Path, monkeypatch):
     sample = _repo_root() / "samples" / "kanban-board"
     dest = tmp_path / "kanban"

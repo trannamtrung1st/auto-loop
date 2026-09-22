@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from auto_loop.exits import ExitCode
+from auto_loop.manifest_models import ManifestModel
 
 CONTEXT_VERSION = 1
 RoleName = Literal["planner", "worker", "reviewer"]
@@ -21,7 +22,7 @@ class ContextError(Exception):
     exit_code = ExitCode.CONFIG_ERROR
 
 
-class ManifestEntry(BaseModel):
+class ManifestEntry(ManifestModel):
     path: str
     purpose: str = ""
     required: bool = True
@@ -40,12 +41,12 @@ class ManifestEntry(BaseModel):
         return self
 
 
-class RoleManifestSection(BaseModel):
+class RoleManifestSection(ManifestModel):
     resources: list[ManifestEntry] = Field(default_factory=list)
     skills: list[ManifestEntry] = Field(default_factory=list)
 
 
-class ContextDocument(BaseModel):
+class ContextDocument(ManifestModel):
     version: int = CONTEXT_VERSION
     shared: RoleManifestSection = Field(default_factory=RoleManifestSection)
     planner: RoleManifestSection = Field(default_factory=RoleManifestSection)
