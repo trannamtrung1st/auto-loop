@@ -135,22 +135,23 @@ class ScriptedProvider:
             },
         )
 
-    def set_reviewer_complete(self, head: str) -> None:
-        self.set_response(
-            "reviewer",
-            {
-                "schema_version": 2,
-                "actor": "reviewer",
-                "verdict": "complete",
-                "scope": "final",
-                "target": "whole-task",
-                "reviewed_head_commit": head,
-                "whole_task_reviewed": True,
-                "summary": "whole task satisfied",
-                "findings": [],
-                "verification": [],
-            },
-        )
+    def set_reviewer_complete(self, head: str | None = None, *, target_ids: list[str] | None = None) -> None:
+        payload: dict = {
+            "schema_version": 2,
+            "actor": "reviewer",
+            "verdict": "complete",
+            "scope": "final",
+            "target": "whole-task",
+            "whole_task_reviewed": True,
+            "summary": "whole task satisfied",
+            "findings": [],
+            "verification": [],
+        }
+        if head:
+            payload["reviewed_head_commit"] = head
+        if target_ids:
+            payload["reviewed_target_ids"] = target_ids
+        self.set_response("reviewer", payload)
 
     def set_reviewer_blocked(self, summary: str = "external intervention required") -> None:
         self.set_response(

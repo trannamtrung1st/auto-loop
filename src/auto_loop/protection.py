@@ -132,8 +132,17 @@ def capture_product_fingerprint(
     excludes: tuple[str, ...] | None = None,
     config: AutoLoopConfig | None = None,
 ) -> ProductFingerprint:
+    from auto_loop.git_policy import git_usable
+
     if excludes is None:
         excludes = product_excludes(config) if config is not None else DEFAULT_PRODUCT_EXCLUDES
+    if config is not None and not git_usable(repo, config):
+        return ProductFingerprint(head="", changes=())
+    if config is None:
+        from auto_loop.git import is_git_repository
+
+        if not is_git_repository(repo):
+            return ProductFingerprint(head="", changes=())
     changes = list_product_changes(repo, excludes=excludes)
     return ProductFingerprint(
         head=head_commit(repo),

@@ -58,6 +58,19 @@ def _format_targets(review: ActiveReview | None, reviewer: ReviewerResult) -> li
                         "",
                     ]
                 )
+            elif target.kind == "content":
+                lines.extend(
+                    [
+                        f"### {target.id}",
+                        "- Kind: content",
+                        f"- Fingerprint: `sha256:{target.content_sha256}`",
+                        "",
+                        "```",
+                        target.content,
+                        "```",
+                        "",
+                    ]
+                )
             else:
                 lines.extend(
                     [

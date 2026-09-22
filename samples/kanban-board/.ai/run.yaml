@@ -32,6 +32,10 @@ context:
       - path: README.md
         purpose: Sample overview for all roles
 
+git:
+  mode: optional
+  protect_approved_history: true
+
 logging:
   console: normal
   retain_raw_streams: true

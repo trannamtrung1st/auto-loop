@@ -12,6 +12,22 @@ from auto_loop.locking import acquire_workspace_lock
 from auto_loop.manifest import load_run_manifest
 
 runner = CliRunner()
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _cursor_subprocess(argv, *args, **kwargs):
+    """Stub the Cursor CLI without hiding Git commands doctor evaluates."""
+    if argv and argv[0] == "git":
+        return _REAL_SUBPROCESS_RUN(argv, *args, **kwargs)
+    cmd = " ".join(str(part) for part in argv)
+    if "--version" in cmd:
+        return subprocess.CompletedProcess(argv, 0, stdout="agent 1.0\n", stderr="")
+    return subprocess.CompletedProcess(
+        argv,
+        0,
+        stdout="--resume stream-json --mode ask",
+        stderr="",
+    )
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -36,19 +52,8 @@ def test_doctor_passes_after_bootstrap(tmp_path: Path, monkeypatch):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
 
-    def fake_run(argv, **kwargs):
-        cmd = " ".join(argv)
-        if "--version" in cmd:
-            return subprocess.CompletedProcess(argv, 0, stdout="agent 1.0\n", stderr="")
-        return subprocess.CompletedProcess(
-            argv,
-            0,
-            stdout="--resume stream-json --mode ask",
-            stderr="",
-        )
-
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
-    monkeypatch.setattr("auto_loop.doctor.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
 
     report = run_doctor(_source(repo), verbose=True)
     assert report.ok
@@ -64,10 +69,7 @@ def test_package_defaults_do_not_require_generated_instructions(tmp_path: Path, 
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
-    monkeypatch.setattr(
-        "auto_loop.doctor.subprocess.run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="--resume stream-json ask", stderr=""),
-    )
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
     report = run_doctor(_source(repo))
     assert report.ok
     assert not (repo / ".ai" / "auto-loop" / "instructions").exists()
@@ -78,10 +80,7 @@ def test_doctor_reports_workspace_lock(tmp_path: Path, monkeypatch):
     bootstrap_workspace(repo)
     source = _source(repo)
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
-    monkeypatch.setattr(
-        "auto_loop.doctor.subprocess.run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="--resume stream-json ask", stderr=""),
-    )
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
     monkeypatch.setattr("auto_loop.locking.is_pid_alive", lambda _pid: True)
     handle = acquire_workspace_lock(repo, "lc-doc", source.artifact_root)
     report = run_doctor(source)
@@ -93,10 +92,7 @@ def test_doctor_cli_path_argument(tmp_path: Path, monkeypatch):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
-    monkeypatch.setattr(
-        "auto_loop.doctor.subprocess.run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="--resume stream-json ask", stderr=""),
-    )
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
     result = runner.invoke(app, ["doctor", str(repo / ".ai" / "run.yaml")])
     assert result.exit_code == 0
 
@@ -108,10 +104,7 @@ def test_doctor_reports_missing_custom_instruction(tmp_path: Path, monkeypatch):
     text = yaml_path.read_text(encoding="utf-8")
     yaml_path.write_text(text + "\ninstructions:\n  worker:\n    files:\n      - missing.md\n", encoding="utf-8")
     monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
-    monkeypatch.setattr(
-        "auto_loop.doctor.subprocess.run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="--resume stream-json ask", stderr=""),
-    )
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
     report = run_doctor(load_run_manifest(yaml_path))
     assert not report.ok
     assert any("missing.md" in check.message for check in report.checks)

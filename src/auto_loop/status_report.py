@@ -7,6 +7,7 @@ from pathlib import Path
 
 from auto_loop.config import AutoLoopConfig, load_resolved_config_optional
 from auto_loop.git import head_commit
+from auto_loop.git_policy import git_usable
 from auto_loop.manifest import RunManifestSource
 from auto_loop.paths import workspace_relative
 from auto_loop.product_state import is_product_tree_clean, product_excludes
@@ -110,7 +111,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
             "",
             "status: completed",
             f"lifecycle: {completion.lifecycle_id}",
-            f"final commit: {completion.final_commit[:7]}",
+            f"final commit: {completion.final_commit[:7] if completion.final_commit else 'n/a'}",
             f"completed at: {completion.completed_at.isoformat()}",
         ]
         if state is not None:
@@ -160,10 +161,10 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         f"reviewer session: {_redact_session_id(state.sessions['reviewer'].session_id)} "
         f"({state.sessions['reviewer'].status}, model={state.sessions['reviewer'].model})",
         "",
-        f"initial base: {state.initial_base_commit[:7]}",
-        f"last approved: {state.last_approved_commit[:7]}",
-        f"HEAD: {head_commit(repo)[:7]}",
-        f"product tree: {'clean' if is_product_tree_clean(repo, excludes=excludes) else 'dirty'}",
+        f"initial base: {state.initial_base_commit[:7] if state.initial_base_commit else 'n/a'}",
+        f"last approved: {state.last_approved_commit[:7] if state.last_approved_commit else 'n/a'}",
+        f"HEAD: {_head_label(repo, config)}",
+        f"product tree: {_tree_label(repo, config, excludes)}",
         "",
         f"latest review: {_latest_review_summary(repo, config)}",
         f"elapsed: {_format_duration(state.started_at, now)}",
@@ -184,4 +185,27 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
             f"inflight: {state.inflight.session_slot} turn {state.inflight.turn} "
             f"since {state.inflight.started_at.isoformat()}"
         )
+    completed = state.completed_provider_turn
+    if completed is not None:
+        if completed.transition_error:
+            lines.append(
+                f"provider turn completed: {completed.session_slot} turn {completed.turn}; "
+                f"transition failed: {completed.transition_error}"
+            )
+        else:
+            lines.append(
+                f"provider turn completed: {completed.session_slot} turn {completed.turn}"
+            )
     return "\n".join(lines)
+
+
+def _head_label(repo: Path, config: AutoLoopConfig) -> str:
+    if not git_usable(repo, config):
+        return "n/a"
+    return head_commit(repo)[:7]
+
+
+def _tree_label(repo: Path, config: AutoLoopConfig, excludes: tuple[str, ...]) -> str:
+    if not git_usable(repo, config):
+        return "n/a"
+    return "clean" if is_product_tree_clean(repo, excludes=excludes) else "dirty"

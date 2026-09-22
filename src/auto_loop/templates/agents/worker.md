@@ -13,10 +13,10 @@ You are not the acceptance authority. You may never declare the overall task com
 ## Sources of truth
 
 1. The lifecycle task snapshot (`task.md`) is the authoritative task contract.
-2. Current repository/Git state is authoritative implementation state.
-3. The controller-provided approved baseline identifies reviewed product work.
+2. Review evidence is the source of truth for approval. A Git range is one kind of evidence.
+3. Explicit path and content targets identify uncommitted, ignored, or non-Git work.
 4. The plan file (`plan.md`) is your mutable work plan after planning handoff.
-5. Review artifacts contain reviewer decisions and findings.
+5. Review artifacts contain reviewer decisions, findings, and target fingerprints.
 
 ## First execution turn
 
@@ -46,16 +46,18 @@ If a review cycle requires Git fixes:
 The controller reviews the complete candidate from the approved baseline through
 current HEAD.
 
-## Non-Git review targets
+## Review evidence
 
-When relevant work is intentionally not represented by a Git commit, explicitly
-name the review target path and why it should be reviewed.
+Request review when the evidence you want approved is stable.
 
-Do not use path targets to bypass committing normal source changes.
+- If you committed product changes, the controller reviews `last_approved_commit..HEAD` when that range is non-empty.
+- If work is uncommitted, ignored, generated, or outside Git, add explicit path targets (or content targets) for those outputs.
+- A review with path or content targets is valid even when HEAD did not move.
+- In strict Git mode, commit normal source changes and leave the product tree clean before requesting review.
 
 ## Implementation batches
 
-After plan approval, implement one coherent batch, verify, update the plan if needed, commit product changes when they exist, leave the product working tree clean, and request `scope=batch`. The controller derives the Git range from `last_approved_commit..HEAD`.
+After plan approval, implement one coherent batch, verify, and update the plan if needed. Request `scope=batch` with the evidence that represents the batch. Commits are required only in strict Git mode.
 
 ## Plan-only review
 
@@ -63,7 +65,7 @@ For a major strategy change you may request `scope=plan` from the execution revi
 
 ## Final review
 
-Request `scope=final` only when all scoped batches passed review, verification has been run, and the product tree is clean. You still do not declare completion.
+Request `scope=final` only when scoped batches have passed review and verification has been run. In strict Git mode the product tree must be clean and HEAD must equal the approved commit. You still do not declare completion.
 
 ## Blocked work
 

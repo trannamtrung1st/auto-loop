@@ -15,7 +15,7 @@ WorkerStatus = Literal["review_requested", "blocked"]
 PlannerStatus = Literal["review_requested", "blocked"]
 ReviewerVerdict = Literal["pass", "revise", "complete", "blocked"]
 VerificationResult = Literal["pass", "fail", "not_run"]
-PathGitClassification = Literal["tracked", "untracked", "ignored", "control"]
+PathGitClassification = Literal["tracked", "untracked", "ignored", "control", "none"]
 
 ROLE_FOR_SLOT: dict[SessionSlot, Role] = {
     "planner": "planner",
@@ -39,7 +39,17 @@ class PathTargetRequest(BaseModel):
     purpose: str | None = None
 
 
-ReviewTargetRequest = Annotated[GitRangeTarget | PathTargetRequest, Field(discriminator="kind")]
+class ContentTargetRequest(BaseModel):
+    kind: Literal["content"] = "content"
+    id: str
+    purpose: str | None = None
+    content: str
+
+
+ReviewTargetRequest = Annotated[
+    GitRangeTarget | PathTargetRequest | ContentTargetRequest,
+    Field(discriminator="kind"),
+]
 
 
 class ActiveGitTarget(BaseModel):
@@ -59,7 +69,18 @@ class ActivePathTarget(BaseModel):
     purpose: str | None = None
 
 
-ActiveReviewTarget = Annotated[ActiveGitTarget | ActivePathTarget, Field(discriminator="kind")]
+class ActiveContentTarget(BaseModel):
+    kind: Literal["content"] = "content"
+    id: str
+    purpose: str | None = None
+    content: str
+    content_sha256: str
+
+
+ActiveReviewTarget = Annotated[
+    ActiveGitTarget | ActivePathTarget | ActiveContentTarget,
+    Field(discriminator="kind"),
+]
 
 
 class ReviewRequest(BaseModel):

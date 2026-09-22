@@ -18,10 +18,13 @@ from auto_loop.git import (
     head_commit,
     resolve_commit,
 )
+from auto_loop.git_policy import git_usable, repository_required_error
 from auto_loop.instructions import compose_role_instructions
 from auto_loop.atomic_io import atomic_write_text
 from auto_loop.lifecycle import (
     ActiveReview,
+    ApprovedTargetEvidence,
+    CompletedProviderTurn,
     InflightMarker,
     LifecycleState,
     LifecycleStatus,
@@ -35,11 +38,17 @@ from auto_loop.lifecycle import (
 )
 from auto_loop.models import (
     ROLE_FOR_SLOT,
+    PlannerResult,
     ReviewerResult,
     Role,
     WorkerResult,
 )
-from auto_loop.product_state import assert_clean_product_tree, is_product_tree_clean, product_excludes
+from auto_loop.product_state import (
+    assert_clean_product_tree,
+    is_product_tree_clean,
+    list_product_changes,
+    product_excludes,
+)
 from auto_loop.prompts import TurnContext, build_planner_prompt, build_reviewer_prompt, build_worker_prompt
 from auto_loop.protocol import (
     ProtocolParseError,
@@ -161,8 +170,11 @@ class LifecycleRunner:
     def _load_or_create_state(self) -> LifecycleState:
         state = self._load_state()
         if state is None:
+            message = repository_required_error(self.repo, self.config)
+            if message:
+                raise GitProtocolError(message)
             lifecycle_id = self._initial_lifecycle_id or new_lifecycle_id()
-            state = create_lifecycle(head_commit(self.repo), lifecycle_id=lifecycle_id)
+            state = create_lifecycle(self._optional_head(), lifecycle_id=lifecycle_id)
             self._save_state(state)
         return state
 
@@ -184,7 +196,7 @@ class LifecycleRunner:
             turn=state.turn,
             session_id=session_id,
             started_at=utc_now(),
-            head_before=head_commit(self.repo),
+            head_before=self._optional_head(),
         )
         self._save_state(state)
 
@@ -198,6 +210,7 @@ class LifecycleRunner:
     def _mark_limit_reached(self, state: LifecycleState, reason: str) -> None:
         state.status = LifecycleStatus.LIMIT_REACHED
         state.inflight = None
+        state.completed_provider_turn = None
         state.updated_at = utc_now()
         self._clear_inflight(state)
         self._save_state(state)
@@ -300,8 +313,13 @@ class LifecycleRunner:
             task_path=self.config.task_file,
             plan_path=self.config.plan_file,
             latest_review_path=self._latest_review_path(),
-            head_commit=head_commit(self.repo),
-            product_clean=is_product_tree_clean(self.repo, excludes=self._excludes()),
+            head_commit=head_commit(self.repo) if self._git_usable() else None,
+            product_clean=(
+                is_product_tree_clean(self.repo, excludes=self._excludes())
+                if self._git_usable()
+                else True
+            ),
+            git_available=self._git_usable(),
             interrupted=self._turn_interrupted(state, slot),
             protocol_repair=protocol_repair,
             resource_manifest=self._context_manifest(role),
@@ -488,22 +506,140 @@ class LifecycleRunner:
         turn_log.finalize()
         return final_text
 
-    def _assert_planning_clean(self, state: LifecycleState) -> None:
-        if head_commit(self.repo) != state.initial_base_commit:
-            raise GitProtocolError("Product HEAD must remain at initial baseline before plan PASS")
-        assert_clean_product_tree(self.repo, excludes=self._excludes())
+    def _git_usable(self) -> bool:
+        return git_usable(self.repo, self.config)
+
+    def _optional_head(self) -> str | None:
+        if not self._git_usable():
+            return None
+        return head_commit(self.repo)
+
+    def _product_snapshot(self) -> tuple[str | None, list[list[str]] | None]:
+        if not self._git_usable():
+            return None, None
+        changes = [
+            [change.path, change.status]
+            for change in list_product_changes(self.repo, excludes=self._excludes())
+        ]
+        changes.sort()
+        return head_commit(self.repo), changes
+
+    def _adopt_parsed_result(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        kind: str,
+        result: PlannerResult | WorkerResult | ReviewerResult,
+        product_before: tuple[str | None, list[list[str]] | None],
+    ) -> None:
+        head_before, changes_before = product_before
+        session = state.sessions[slot]
+        state.completed_provider_turn = CompletedProviderTurn(
+            session_slot=slot,
+            role=ROLE_FOR_SLOT[slot],
+            turn=state.turn,
+            session_id=session.session_id,
+            result_kind=kind,  # type: ignore[arg-type]
+            result=result.model_dump(mode="json"),
+            product_head_before=head_before,
+            product_changes_before=changes_before,
+        )
+        state.inflight = None
+        state.updated_at = utc_now()
+        self._save_state(state)
+
+    def _reopen_provider_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
+        """Protocol-invalid output stays an in-progress turn so resume can re-invoke."""
+        state.completed_provider_turn = None
+        self._persist_inflight(state, slot)
+
+    def _note_transition_error(self, state: LifecycleState, exc: BaseException) -> None:
+        done = state.completed_provider_turn
+        if done is None:
+            return
+        done.transition_error = str(exc)
+        state.inflight = None
+        state.updated_at = utc_now()
+        self._save_state(state)
+
+    def _record_approved_evidence(self, state: LifecycleState, review: ActiveReview) -> None:
+        for target in review.targets:
+            if target.kind == "git_range":
+                state.approved_evidence.append(
+                    ApprovedTargetEvidence(
+                        id=target.id,
+                        kind="git_range",
+                        fingerprint=target.head_commit,
+                        git_base=target.base_commit,
+                        git_head=target.head_commit,
+                    )
+                )
+            elif target.kind == "path":
+                state.approved_evidence.append(
+                    ApprovedTargetEvidence(
+                        id=target.id,
+                        kind="path",
+                        path=target.path,
+                        fingerprint=target.fingerprint,
+                    )
+                )
+            else:
+                state.approved_evidence.append(
+                    ApprovedTargetEvidence(
+                        id=target.id,
+                        kind="content",
+                        fingerprint=target.content_sha256,
+                    )
+                )
+
+    def _assert_planning_policy(self, state: LifecycleState) -> None:
+        if not self._git_usable():
+            return
+        if self.config.git.mode == "required":
+            if head_commit(self.repo) != state.initial_base_commit:
+                raise GitProtocolError(
+                    "Product HEAD must remain at initial baseline before plan PASS"
+                )
+            assert_clean_product_tree(self.repo, excludes=self._excludes())
+            return
+        done = state.completed_provider_turn
+        if done is None or done.product_head_before is None:
+            return
+        current_head, current_changes = self._product_snapshot()
+        before = done.product_changes_before or []
+        if current_head != done.product_head_before or (current_changes or []) != before:
+            raise GitProtocolError("Planner mutated product files outside the artifact root")
 
     def _assert_final_complete_valid(
         self,
         state: LifecycleState,
         result: ReviewerResult,
+        active: ActiveReview,
     ) -> None:
+        if active.targets and not set(active.target_ids) <= set(result.reviewed_target_ids):
+            raise missing_pass_targets(active.target_ids, result.reviewed_target_ids)
+        if self.config.git.mode != "required":
+            if not active.has_git_target:
+                return
+            current_head = head_commit(self.repo)
+            expected = active.git_head
+            if expected and current_head != expected:
+                raise GitProtocolError("COMPLETE Git target does not match current HEAD")
+            if result.reviewed_head_commit and resolve_commit(
+                self.repo, result.reviewed_head_commit
+            ) != current_head:
+                raise GitProtocolError(
+                    "COMPLETE reviewed_head_commit does not match current HEAD"
+                )
+            return
         current_head = head_commit(self.repo)
         if current_head != state.last_approved_commit:
             raise GitProtocolError(
                 "COMPLETE requires HEAD to equal last_approved_commit"
             )
-        if result.reviewed_head_commit and resolve_commit(self.repo, result.reviewed_head_commit) != current_head:
+        if result.reviewed_head_commit and resolve_commit(
+            self.repo, result.reviewed_head_commit
+        ) != current_head:
             raise GitProtocolError("COMPLETE reviewed_head_commit does not match current HEAD")
         assert_clean_product_tree(self.repo, excludes=self._excludes())
 
@@ -556,6 +692,7 @@ class LifecycleRunner:
         state.turn += 1
         state.updated_at = utc_now()
         self._clear_inflight(state)
+        state.completed_provider_turn = None
         self._save_state(state)
 
     def _assert_planning_slot_active(self, state: LifecycleState, slot: SessionSlot) -> None:
@@ -569,6 +706,7 @@ class LifecycleRunner:
     def _planner_turn(self, state: LifecycleState) -> None:
         self._assert_planning_slot_active(state, "planner")
         protocol_repair = False
+        product_before = self._product_snapshot()
         while True:
             first = state.sessions["planner"].session_id is None
             instruction_stack = compose_role_instructions(
@@ -589,8 +727,21 @@ class LifecycleRunner:
                 raise
             break
         state.consecutive_protocol_failures = 0
-        self._assert_planning_clean(state)
+        self._adopt_parsed_result(state, "planner", "planner", result, product_before)
+        self._transition_planner(state, result)
 
+    def _transition_planner(self, state: LifecycleState, result: PlannerResult) -> None:
+        try:
+            self._assert_planning_policy(state)
+            self._apply_planner_result(state, result)
+        except ProtocolParseError:
+            self._reopen_provider_turn(state, "planner")
+            raise
+        except GitProtocolError as exc:
+            self._note_transition_error(state, exc)
+            raise
+
+    def _apply_planner_result(self, state: LifecycleState, result: PlannerResult) -> None:
         if result.status == "blocked":
             append_event(
                 self.repo,
@@ -607,7 +758,11 @@ class LifecycleRunner:
                 session_purpose="plan_reviewer",
                 plan_summary=result.plan_summary,
                 plan_sha256=self._plan_hash(),
-                targets=[plan_path_target(self.repo, self.config.plan_file)],
+                targets=[
+                    plan_path_target(
+                        self.repo, self.config.plan_file, git_mode=self.config.git.mode
+                    )
+                ],
             )
             state.next_session = "plan_reviewer"
             self._persist_after_turn(state)
@@ -615,7 +770,6 @@ class LifecycleRunner:
 
         if result.review is None or result.review.scope != "plan":
             raise GitProtocolError("Planner must request plan review")
-        self._assert_planning_clean(state)
         append_event(
             self.repo,
             self.config,
@@ -639,7 +793,11 @@ class LifecycleRunner:
             session_purpose="plan_reviewer",
             plan_summary=result.plan_summary,
             plan_sha256=self._plan_hash(),
-            targets=[plan_path_target(self.repo, self.config.plan_file)],
+            targets=[
+                plan_path_target(
+                    self.repo, self.config.plan_file, git_mode=self.config.git.mode
+                )
+            ],
         )
         state.next_session = "plan_reviewer"
         self._persist_after_turn(state)
@@ -662,7 +820,11 @@ class LifecycleRunner:
             session_purpose="reviewer",
             worker_summary=result.work_summary,
             plan_sha256=self._plan_hash(),
-            targets=[plan_path_target(self.repo, self.config.plan_file)],
+            targets=[
+                plan_path_target(
+                    self.repo, self.config.plan_file, git_mode=self.config.git.mode
+                )
+            ],
         )
 
     def _worker_turn(self, state: LifecycleState) -> None:
@@ -690,7 +852,32 @@ class LifecycleRunner:
                 raise
             break
         state.consecutive_protocol_failures = 0
+        self._adopt_parsed_result(state, "worker", "worker", result, (None, None))
+        self._transition_worker(state, result)
 
+    def _transition_worker(
+        self,
+        state: LifecycleState,
+        result: WorkerResult,
+        *,
+        from_replay: bool = False,
+    ) -> None:
+        try:
+            self._apply_worker_result(state, result, from_replay=from_replay)
+        except ProtocolParseError:
+            self._reopen_provider_turn(state, "worker")
+            raise
+        except GitProtocolError as exc:
+            self._note_transition_error(state, exc)
+            raise
+
+    def _apply_worker_result(
+        self,
+        state: LifecycleState,
+        result: WorkerResult,
+        *,
+        from_replay: bool = False,
+    ) -> None:
         if result.status == "blocked":
             append_event(
                 self.repo,
@@ -716,74 +903,14 @@ class LifecycleRunner:
             raise GitProtocolError("Worker review_requested requires a review request")
 
         if result.review.scope == "final":
-            assert_clean_product_tree(self.repo, excludes=self._excludes())
-            current_head = head_commit(self.repo)
-            if current_head != state.last_approved_commit:
-                state.next_session = "worker"
-                self._persist_after_turn(state)
+            if not self._apply_final_request(state, result):
                 return
-            state.active_review = ActiveReview(
-                cycle_id=next_cycle_id(state),
-                scope="final",
-                target=result.review.target,
-                summary=result.review.summary,
-                session_purpose="reviewer",
-                approved_base_commit=state.last_approved_commit,
-                current_candidate_head=current_head,
-                worker_summary=result.work_summary,
-                plan_sha256=self._plan_hash(),
-            )
         elif result.review.scope == "plan":
             state.active_review = self._make_plan_update_review(state, result)
         elif result.review.scope == "batch":
-            try:
-                assert_clean_product_tree(self.repo, excludes=self._excludes())
-            except GitProtocolError:
-                self._dirty_batch_attempts += 1
-                if self._dirty_batch_attempts > self.config.limits.protocol_retries:
-                    raise
-                state.worker_no_progress_streak = 0
-                state.last_worker_progress_key = None
-                state.next_session = "worker"
-                self._persist_after_turn(state)
+            if not self._accept_batch_tree(state, from_replay=from_replay):
                 return
-            targets, _warnings = normalize_work_targets(
-                self.repo,
-                last_approved_commit=state.last_approved_commit,
-                request=result.review,
-                excludes=self._excludes(),
-            )
-            pending = state.pending_revision
-            if (
-                pending
-                and pending.scope == "batch"
-                and pending.target == result.review.target
-            ):
-                cycle_id = pending.cycle_id
-                round_no = pending.round
-                production_head = pending.production_head_commit
-            else:
-                cycle_id = next_cycle_id(state)
-                round_no = 1
-                production_head = head_commit(self.repo)
-            git_target = next((t for t in targets if t.kind == "git_range"), None)
-            state.active_review = ActiveReview(
-                cycle_id=cycle_id,
-                round=round_no,
-                scope="batch",
-                target=result.review.target,
-                summary=result.review.summary,
-                session_purpose="reviewer",
-                approved_base_commit=state.last_approved_commit,
-                production_head_commit=production_head,
-                current_candidate_head=head_commit(self.repo),
-                worker_summary=result.work_summary,
-                plan_sha256=self._plan_hash(),
-                targets=targets,
-            )
-            if git_target is not None:
-                result.review.base_commit = git_target.base_commit
-                result.review.head_commit = git_target.head_commit
+            self._apply_batch_request(state, result)
         else:
             raise GitProtocolError(f"Unsupported worker review scope: {result.review.scope}")
 
@@ -801,14 +928,114 @@ class LifecycleRunner:
         )
         self._console.review_requested(result.review.scope, result.review.target)
         state.next_session = "reviewer"
-        current_head = head_commit(self.repo)
         progress_key = worker_progress_key(
-            self.repo, self.config, state, result, current_head
+            self.repo, self.config, state, result, self._optional_head() or ""
         )
         if update_worker_no_progress(state, self.config, progress_key):
             self._mark_limit_reached(state, "worker_no_progress")
             return
         self._persist_after_turn(state)
+
+    def _accept_batch_tree(self, state: LifecycleState, *, from_replay: bool) -> bool:
+        """Return False when strict mode sends the worker back to clean the tree."""
+        if self.config.git.mode != "required":
+            return True
+        try:
+            assert_clean_product_tree(self.repo, excludes=self._excludes())
+        except GitProtocolError:
+            if from_replay:
+                raise
+            self._dirty_batch_attempts += 1
+            if self._dirty_batch_attempts > self.config.limits.protocol_retries:
+                raise
+            state.worker_no_progress_streak = 0
+            state.last_worker_progress_key = None
+            state.next_session = "worker"
+            self._persist_after_turn(state)
+            return False
+        return True
+
+    def _apply_final_request(self, state: LifecycleState, result: WorkerResult) -> bool:
+        assert result.review is not None
+        if self.config.git.mode == "required":
+            assert_clean_product_tree(self.repo, excludes=self._excludes())
+            current_head = head_commit(self.repo)
+            if current_head != state.last_approved_commit:
+                state.next_session = "worker"
+                self._persist_after_turn(state)
+                return False
+            state.active_review = ActiveReview(
+                cycle_id=next_cycle_id(state),
+                scope="final",
+                target=result.review.target,
+                summary=result.review.summary,
+                session_purpose="reviewer",
+                approved_base_commit=state.last_approved_commit,
+                current_candidate_head=current_head,
+                worker_summary=result.work_summary,
+                plan_sha256=self._plan_hash(),
+            )
+            return True
+        targets, _warnings = normalize_work_targets(
+            self.repo,
+            last_approved_commit=state.last_approved_commit,
+            request=result.review,
+            excludes=self._excludes(),
+            git_mode=self.config.git.mode,
+            protect_history=self.config.git.protect_approved_history,
+            allow_empty=True,
+        )
+        state.active_review = ActiveReview(
+            cycle_id=next_cycle_id(state),
+            scope="final",
+            target=result.review.target,
+            summary=result.review.summary,
+            session_purpose="reviewer",
+            approved_base_commit=state.last_approved_commit,
+            current_candidate_head=self._optional_head(),
+            worker_summary=result.work_summary,
+            plan_sha256=self._plan_hash(),
+            targets=targets,
+        )
+        return True
+
+    def _apply_batch_request(self, state: LifecycleState, result: WorkerResult) -> None:
+        assert result.review is not None
+        targets, _warnings = normalize_work_targets(
+            self.repo,
+            last_approved_commit=state.last_approved_commit,
+            request=result.review,
+            excludes=self._excludes(),
+            git_mode=self.config.git.mode,
+            protect_history=self.config.git.protect_approved_history,
+        )
+        pending = state.pending_revision
+        if pending and pending.scope == "batch" and pending.target == result.review.target:
+            cycle_id = pending.cycle_id
+            round_no = pending.round
+            production_head = pending.production_head_commit
+        else:
+            cycle_id = next_cycle_id(state)
+            round_no = 1
+            production_head = self._optional_head()
+        git_target = next((item for item in targets if item.kind == "git_range"), None)
+        state.active_review = ActiveReview(
+            cycle_id=cycle_id,
+            round=round_no,
+            scope="batch",
+            target=result.review.target,
+            summary=result.review.summary,
+            session_purpose="reviewer",
+            approved_base_commit=state.last_approved_commit,
+            production_head_commit=production_head,
+            current_candidate_head=self._optional_head(),
+            worker_summary=result.work_summary,
+            plan_sha256=self._plan_hash(),
+            targets=targets,
+        )
+        if git_target is not None:
+            result.review.base_commit = git_target.base_commit
+            result.review.head_commit = git_target.head_commit
 
     def _review_kind(self, review: ActiveReview, result: ReviewerResult) -> str:
         if result.scope == "final" or review.scope == "final":
@@ -870,6 +1097,7 @@ class LifecycleRunner:
         )
         state.status = LifecycleStatus.BLOCKED
         state.active_review = None
+        state.completed_provider_turn = None
         state.updated_at = utc_now()
         self._clear_inflight(state)
         self._save_state(state)
@@ -921,6 +1149,32 @@ class LifecycleRunner:
                 raise
             break
         state.consecutive_protocol_failures = 0
+        self._adopt_parsed_result(state, slot, "reviewer", result, (None, None))
+        self._transition_reviewer(state, slot, result)
+
+    def _transition_reviewer(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        result: ReviewerResult,
+    ) -> None:
+        try:
+            self._apply_reviewer_result(state, slot, result)
+        except ProtocolParseError:
+            self._reopen_provider_turn(state, slot)
+            raise
+        except GitProtocolError as exc:
+            self._note_transition_error(state, exc)
+            raise
+
+    def _apply_reviewer_result(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        result: ReviewerResult,
+    ) -> None:
+        if state.active_review is None:
+            raise GitProtocolError("Reviewer invoked without active review")
         self._assert_reviewer_matches_active(state.active_review, result)
         self._assert_pass_targets(state.active_review, result)
         if slot == "plan_reviewer" and result.verdict == "complete":
@@ -951,8 +1205,11 @@ class LifecycleRunner:
         self._console.review_result(result.verdict, result.scope, len(result.findings))
 
         active = state.active_review
+        if active is None:
+            raise GitProtocolError("Reviewer invoked without active review")
         if slot == "plan_reviewer":
             if result.verdict == "pass":
+                self._record_approved_evidence(state, active)
                 plan_hash = self._plan_hash()
                 state.plan_approved = True
                 state.initial_approved_plan_sha256 = plan_hash
@@ -979,9 +1236,10 @@ class LifecycleRunner:
             return
 
         if result.verdict == "complete" and result.scope == "final":
-            self._assert_final_complete_valid(state, result)
+            self._assert_final_complete_valid(state, result, active)
+            self._record_approved_evidence(state, active)
             task_hash, plan_hash = task_and_plan_hashes(self.repo, self.config)
-            final_head = head_commit(self.repo)
+            final_head = self._optional_head()
             save_completion_record(
                 self.repo,
                 CompletionRecord(
@@ -1007,6 +1265,7 @@ class LifecycleRunner:
             )
             state.status = LifecycleStatus.COMPLETED
             state.active_review = None
+            state.completed_provider_turn = None
             state.updated_at = utc_now()
             self._clear_inflight(state)
             self._save_state(state)
@@ -1024,8 +1283,9 @@ class LifecycleRunner:
             return
 
         if active.scope == "batch" and result.verdict == "pass":
-            if active.has_git_target:
-                new_head = active.git_head or head_commit(self.repo)
+            self._record_approved_evidence(state, active)
+            if active.has_git_target and active.git_head:
+                new_head = active.git_head
                 state.last_approved_commit = new_head
                 self._dirty_batch_attempts = 0
                 append_event(
@@ -1058,6 +1318,29 @@ class LifecycleRunner:
         state.next_session = "worker"
         self._persist_after_turn(state)
 
+    def _replay_completed_turn(self, state: LifecycleState) -> None:
+        done = state.completed_provider_turn
+        if done is None:
+            return
+        if done.result_kind == "planner":
+            self._assert_planning_slot_active(state, "planner")
+            self._transition_planner(state, PlannerResult.model_validate(done.result))
+        elif done.result_kind == "worker":
+            self._transition_worker(
+                state,
+                WorkerResult.model_validate(done.result),
+                from_replay=True,
+            )
+        else:
+            slot = done.session_slot
+            if slot == "plan_reviewer":
+                self._assert_planning_slot_active(state, "plan_reviewer")
+            self._transition_reviewer(
+                state,
+                slot,
+                ReviewerResult.model_validate(done.result),
+            )
+
     def run(self) -> RunOutcome:
         self._stop.install()
         try:
@@ -1067,7 +1350,13 @@ class LifecycleRunner:
             clear_active_run(self.repo, self.artifact_root)
 
     def _run_loop(self) -> RunOutcome:
-        state = self._load_or_create_state()
+        try:
+            state = self._load_or_create_state()
+        except GitProtocolError:
+            return RunOutcome(
+                exit_code=ExitCode.GIT_PROTOCOL_ERROR,
+                state=self._load_state(),
+            )
         register_active_run(self.repo, state.lifecycle_id, artifact_root=self.artifact_root)
         prune_run_history(self.repo, self.config, state.lifecycle_id)
         append_event(
@@ -1108,16 +1397,24 @@ class LifecycleRunner:
                     self._mark_limit_reached(state, "max_runtime_minutes")
                     break
                 turns += 1
-                assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
-                slot = state.next_session
-                if slot == "planner":
-                    self._planner_turn(state)
-                elif slot == "plan_reviewer":
-                    self._reviewer_slot_turn(state, "plan_reviewer")
-                elif slot == "worker":
-                    self._worker_turn(state)
+                if (
+                    self.config.git.protect_approved_history
+                    and self._git_usable()
+                    and state.last_approved_commit
+                ):
+                    assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
+                if state.completed_provider_turn is not None and state.inflight is None:
+                    self._replay_completed_turn(state)
                 else:
-                    self._reviewer_slot_turn(state, "reviewer")
+                    slot = state.next_session
+                    if slot == "planner":
+                        self._planner_turn(state)
+                    elif slot == "plan_reviewer":
+                        self._reviewer_slot_turn(state, "plan_reviewer")
+                    elif slot == "worker":
+                        self._worker_turn(state)
+                    else:
+                        self._reviewer_slot_turn(state, "reviewer")
                 state = self._load_state() or state
                 if self._terminal_exit is not None:
                     break

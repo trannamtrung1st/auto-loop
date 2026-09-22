@@ -20,6 +20,7 @@ InstructionMode = Literal["extend", "replace_role"]
 ProviderType = Literal["cursor"]
 AgentMode = Literal["agent", "ask"]
 CursorCommand = Literal["agent", "cursor-agent"]
+GitMode = Literal["required", "optional", "off"]
 
 V1_UNSUPPORTED_MESSAGE = (
     "Unsupported Auto Loop config version 1.\n"
@@ -66,11 +67,25 @@ class InstructionSettings(ManifestModel):
 
 
 class GitPolicySettings(ManifestModel):
-    require_repository: bool = True
-    require_clean_product_start: bool = True
-    require_clean_product_before_review: bool = True
-    require_worker_commits: bool = True
+    """How Git participates in review evidence.
+
+    ``required`` keeps a strict commit workflow. ``optional`` uses Git when a
+    repository and a meaningful range exist, and accepts explicit path or
+    content targets without a commit. ``off`` does not call Git.
+
+    YAML 1.1 parses an unquoted ``off`` as boolean false; that value is accepted
+    as mode ``off``.
+    """
+
+    mode: GitMode = "optional"
     protect_approved_history: bool = True
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def yaml_off_boolean(cls, value: object) -> object:
+        if value is False:
+            return "off"
+        return value
 
 
 class LimitSettings(BaseModel):

@@ -106,10 +106,12 @@ context:
     skills: []
 
 git:
-  require_repository: true
-  require_clean_product_start: true
-  require_clean_product_before_review: true
-  require_worker_commits: true
+  # required: clean commits and Git ranges are mandatory review evidence.
+  # optional: Git is used when present; path and content targets are enough without a commit.
+  # off: do not use Git. Review explicit targets only.
+  # Quote off if you select it: mode: "off" (unquoted off is also accepted).
+  mode: optional
+  # When an approved Git head exists, refuse history rewrites that orphan it.
   protect_approved_history: true
 
 protection:

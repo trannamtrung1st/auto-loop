@@ -70,6 +70,46 @@ def test_ignored_tracked_untracked_classification(tmp_path: Path):
     assert classify_path(repo, ".ai/auto-loop/plan.md") == "control"
 
 
+def test_untracked_path_target_allowed_when_git_optional(tmp_path: Path):
+    repo = _repo(tmp_path)
+    (repo / "loose.py").write_text("x\n", encoding="utf-8")
+    target = normalize_path_target(
+        repo,
+        PathTargetRequest(id="loose", path="loose.py"),
+        scope="batch",
+        git_mode="optional",
+    )
+    assert target.git_classification == "untracked"
+    assert target.fingerprint
+
+
+def test_content_target_is_hashed_without_git_range(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.models import ContentTargetRequest, ReviewRequest
+
+    head = head_commit(repo)
+    targets, _warnings = normalize_work_targets(
+        repo,
+        last_approved_commit=head,
+        git_mode="optional",
+        request=ReviewRequest(
+            scope="batch",
+            target="notes",
+            summary="inline",
+            targets=[
+                ContentTargetRequest(
+                    id="summary",
+                    purpose="Migration notes",
+                    content="keep the public API\n",
+                )
+            ],
+        ),
+    )
+    assert len(targets) == 1
+    assert targets[0].kind == "content"
+    assert targets[0].content_sha256 == sha256_bytes(b"keep the public API\n")
+
+
 def test_untracked_path_target_rejected(tmp_path: Path):
     repo = _repo(tmp_path)
     (repo / "loose.py").write_text("x\n", encoding="utf-8")

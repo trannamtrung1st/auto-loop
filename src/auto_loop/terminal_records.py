@@ -39,9 +39,9 @@ class CompletionRecord(BaseModel):
     planner_model: str | None = None
     worker_model: str | None = None
     reviewer_model: str | None = None
-    initial_base_commit: str
-    final_commit: str
-    last_approved_commit: str
+    initial_base_commit: str | None = None
+    final_commit: str | None = None
+    last_approved_commit: str | None = None
     final_review_file: str
     task_sha256: str
     plan_sha256: str | None = None
@@ -129,11 +129,12 @@ def task_and_plan_hashes(repo: Path, config: AutoLoopConfig) -> tuple[str, str |
 
 
 def completion_still_valid(repo: Path, config: AutoLoopConfig, record: CompletionRecord) -> bool:
-    head = head_commit(repo)
-    if head != record.final_commit:
-        return False
-    if not is_product_tree_clean(repo, excludes=product_excludes(config)):
-        return False
+    if config.git.mode == "required":
+        head = head_commit(repo)
+        if record.final_commit is None or head != record.final_commit:
+            return False
+        if not is_product_tree_clean(repo, excludes=product_excludes(config)):
+            return False
     task_hash, plan_hash = task_and_plan_hashes(repo, config)
     if task_hash != record.task_sha256:
         return False

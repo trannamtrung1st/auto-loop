@@ -9,8 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from auto_loop.config import AutoLoopConfig, ConfigurationError
-from auto_loop.git import is_git_repository
-from auto_loop.product_state import is_product_tree_clean, product_excludes
+from auto_loop.git_policy import git_policy_issues
 from auto_loop.context_manifest import validate_context
 from auto_loop.instructions import validate_custom_instruction_files
 from auto_loop.lifecycle import session_consistency_errors
@@ -155,21 +154,13 @@ def _check_instruction_composition(
 
 
 def _check_git(repo: Path, config: AutoLoopConfig, report: DoctorReport) -> None:
-    if not config.git.require_repository:
-        return
-    if not is_git_repository(repo):
-        report.add("git", Severity.ERROR, "Target path is not a Git repository")
-        return
-    report.add("git", Severity.OK, "Git repository detected")
-    excludes = product_excludes(config)
-    if config.git.require_clean_product_start and not is_product_tree_clean(repo, excludes=excludes):
-        report.add(
-            "git",
-            Severity.WARNING,
-            "Product working tree has uncommitted changes outside the artifact root",
-        )
-    else:
-        report.add("git", Severity.OK, "Product working tree is clean")
+    for issue in git_policy_issues(repo, config):
+        severity = {
+            "ok": Severity.OK,
+            "warning": Severity.WARNING,
+            "error": Severity.ERROR,
+        }[issue.severity]
+        report.add("git", severity, issue.message)
 
 
 def _check_runtime_writable(artifact_root: Path, report: DoctorReport) -> None:

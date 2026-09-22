@@ -94,13 +94,30 @@ def test_init_writes_minimal_manifest(tmp_path: Path):
     assert "run.full.yaml" not in body
 
 
+def test_legacy_git_booleans_are_rejected(tmp_path: Path):
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "version: 2\n"
+        "workspace: .\n"
+        "task:\n"
+        "  source: proposal.md\n"
+        "git:\n"
+        "  require_repository: true\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "proposal.md").write_text("task\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError):
+        load_config(path)
+
+
 def test_init_full_writes_reference_manifest(tmp_path: Path):
     target = tmp_path / "loop.yml"
     result = run_init(target, full=True)
     assert result.created
     cfg = load_config(target)
     assert cfg.provider.cursor.command == "agent"
-    assert cfg.git.require_repository is True
+    assert cfg.git.mode == "optional"
+    assert cfg.git.protect_approved_history is True
     for key in PUBLIC_TOP_LEVEL_SECTIONS:
         assert key in yaml.safe_load(target.read_text(encoding="utf-8"))
 

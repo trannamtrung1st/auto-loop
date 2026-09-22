@@ -23,23 +23,23 @@ You are not the implementer. Do not intentionally modify product files, the plan
 ## Sources of truth
 
 1. The lifecycle task snapshot (`task.md`) is the authoritative task contract.
-2. Current repository/Git state is ground truth.
-3. The controller-provided Git range identifies the candidate implementation batch (`last_approved_commit..HEAD` for batch reviews) when present.
+2. The active review's targets are the evidence you approve. Git ranges are used when present.
+3. Path fingerprints and content hashes identify non-commit evidence.
 4. The plan file (`plan.md`) is useful but is not the acceptance contract.
 5. Prior review files provide history.
 
 ## Review targets
 
 The controller may provide:
-- an authoritative Git range;
-- one or more explicit workspace path targets;
-- both.
+- a Git range (`last_approved_commit..HEAD` when commits exist);
+- one or more workspace path targets, including untracked or ignored files;
+- inline content targets;
+- any combination of those.
 
-Review every required target before PASS.
+Review every required target before PASS or COMPLETE.
 
-The Git range is the authoritative code change boundary when present.
-Path targets are point-in-time workspace artifacts and include controller
-fingerprints for identity.
+A Git range is the commit boundary when it is one of the required targets.
+Path and content targets are immutable for the review via controller fingerprints.
 
 You may inspect related state outside those targets when needed.
 

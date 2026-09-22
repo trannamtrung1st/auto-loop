@@ -1,6 +1,6 @@
 # auto-loop
 
-**auto-loop** is a Python controller for a planner / worker / reviewer lifecycle. A **planner** writes the initial plan, a **plan reviewer** approves it, a **worker** implements scoped batches (and may update the plan), and an **execution reviewer** is the sole completion authority. Git commits are the source of truth for product progress.
+**auto-loop** is a Python controller for a planner / worker / reviewer lifecycle. A **planner** writes the initial plan, a **plan reviewer** approves it, a **worker** implements scoped batches (and may update the plan), and an **execution reviewer** is the sole completion authority. Review evidence is the source of truth for approval. Git ranges are used when they exist and the run's Git mode asks for them.
 
 The operator contract is:
 
@@ -13,7 +13,7 @@ This document describes the current operator experience. Parallel workers, PR bo
 ## Requirements
 
 - **Python 3.12+**
-- A **Git** repository for the product code you want the loop to change
+- **Git** is optional. `git.mode: required` needs a repository; `optional` uses one when present; `off` reviews explicit targets in a plain directory
 - For live runs: the **Cursor agent CLI** (`agent` or `cursor-agent` on `PATH`, configurable in the run YAML) and valid Cursor credentials. The offline test suite does not call live Cursor.
 
 ## Installation
@@ -76,7 +76,6 @@ Then:
 
 ```bash
 cd my-product
-git init   # if needed
 auto-loop run .ai/run.yaml
 auto-loop status .ai/run.yaml
 ```
@@ -172,18 +171,18 @@ The same template ships inside the package as `auto_loop/templates/run.full.yaml
 | 12 | `PROTOCOL_ERROR` | Agent output missing/invalid `AUTO_LOOP_RESULT` after repair budget. |
 | 13 | `PROTECTION_VIOLATION` | Protected control file changed during a turn (not auto-reverted). |
 | 14 | `CONCURRENT_RUN` | Another lifecycle holds the workspace lock. |
-| 15 | `GIT_PROTOCOL_ERROR` | Git/review-range invariant violated. |
+| 15 | `GIT_PROTOCOL_ERROR` | Review evidence or Git-mode invariant violated. |
 | 16 | `SESSION_ERROR` | Resume returned an unexpected session id (identity is not rotated). |
 | 17 | `REVIEW_MUTATION_ERROR` | Reviewer changed product repository state. |
 | 18 | `INTERNAL_ERROR` | Unexpected controller failure. |
 
-## Lifecycle and Git invariants
+## Lifecycle and review invariants
 
-1. **Plan first** — Planner and plan-reviewer sessions run before implementation. Product HEAD stays at the initial baseline until initial plan `PASS`. Those planning sessions then retire.
+1. **Plan first** — Planner and plan-reviewer sessions run before implementation. Those planning sessions then retire. In `git.mode: required`, product HEAD stays at the initial baseline and the product tree stays clean until plan `PASS`. In `optional` or `off`, pre-existing dirt does not block plan review; the planner still must not mutate product files during the turn.
 2. **Execution sessions** — Worker and execution reviewer start fresh after plan PASS. The worker owns `plan.md` and may update it. The task snapshot stays authoritative.
-3. **Batch reviews** — The controller normalizes Git review to `last_approved_commit..HEAD`. Explicit ignored path targets can be reviewed with or without a Git range. Cumulative revision reviews use the full current candidate, so amending an unapproved review-fix commit is allowed.
-4. **Baseline** — Batch `PASS` advances `last_approved_commit` only when a non-empty Git candidate was reviewed. Path-only PASS does not move the baseline.
-5. **Final** — Worker requests `scope: final` only when HEAD equals `last_approved_commit` and the tree is clean; only the execution reviewer may return `COMPLETE`.
+3. **Reviews approve evidence** — A review can include a Git range, workspace path targets (tracked, untracked, or ignored), and inline content. An empty Git range is valid when other targets exist. In `git.mode: required`, product changes are reviewed as `last_approved_commit..HEAD` on a clean tree.
+4. **Baseline** — Batch `PASS` advances the approved Git head only when a Git range was reviewed. Path-only or content-only PASS records that target's fingerprint and does not synthesize a commit.
+5. **Final** — Only the execution reviewer may return `COMPLETE`. In `git.mode: required`, HEAD must equal the approved commit and the product tree must be clean. In `optional` or `off`, completion is the reviewed final evidence, with no commit required.
 6. **Reviews** — Markdown artifacts under `<artifacts.root>/reviews/` are append-only evidence, including review cycle/round and target fingerprints.
 
 ## Persistent sessions and recovery
@@ -268,7 +267,7 @@ Version 2 is the supported public schema. Version 1 files fail with a clear erro
 | `agents.planner` / `agents.worker` / `agents.reviewer` | Optional custom role files and `agent` vs `ask` mode only (not model selection). |
 | `instructions` | Optional shared/planner/worker/reviewer markdown stacks. |
 | `context` | Optional per-role resource and skill lists (`path`, `purpose`, `required`). |
-| `git` | Clean-tree requirements, worker commits, history protection. |
+| `git` | `mode` (`required`, `optional`, or `off`) and approved-history protection. |
 | `protection` | Extra product exclude globs and protected control files. |
 | `logging` | Console verbosity and run history retention. |
 
@@ -279,7 +278,7 @@ Generate a commented manifest with every public section: `auto-loop init PATH --
 | Symptom | Things to check |
 |---------|------------------|
 | `CONFIG_ERROR` on `run` | Pass an explicit version 2 YAML; `doctor RUN_CONFIG`; confirm `task.source` exists and is non-empty. |
-| `GIT_PROTOCOL_ERROR` | Dirty product tree before batch review, empty Git range without path targets, or history rewrite. |
+| `GIT_PROTOCOL_ERROR` | Strict mode saw a dirty tree or missing repository, a review had no evidence, or approved history was rewritten. |
 | `SESSION_ERROR` | Cursor resume id drift; inspect turn logs; do not hand-edit session ids in `state.json`. |
 | `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `run.protocol_retries` only after fixing prompts. |
 | `LIMIT_REACHED` | Raise `max_turns` / runtime or reduce revise loops; check `worker_no_progress_streak`. |

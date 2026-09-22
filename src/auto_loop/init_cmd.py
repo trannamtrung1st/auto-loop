@@ -144,8 +144,13 @@ def bootstrap_workspace(
     force: bool = False,
     minimal: bool = False,
     goal: str = "Test task",
+    git_mode: str = "required",
 ) -> InitResult:
-    """Create a v2 manifest, proposal, and frozen run snapshot. Intended for tests."""
+    """Create a v2 manifest, proposal, and frozen run snapshot. Intended for tests.
+
+    Existing scenario tests keep strict Git behavior via ``git_mode="required"``.
+    Product defaults (when the manifest omits ``git``) are ``mode: optional``.
+    """
     del force, minimal
     ai_dir = repo / ".ai"
     ai_dir.mkdir(parents=True, exist_ok=True)
@@ -154,15 +159,17 @@ def bootstrap_workspace(
         text = goal if goal.endswith("\n") else f"{goal}\n"
         proposal.write_text(text, encoding="utf-8")
     manifest_path = ai_dir / "run.yaml"
-    manifest_path.write_text(
-        _render_template(
-            "run.yaml",
-            workspace="..",
-            task_source=".ai/proposal.md",
-            artifacts_root=".ai/auto-loop",
-        ),
-        encoding="utf-8",
+    body = _render_template(
+        "run.yaml",
+        workspace="..",
+        task_source=".ai/proposal.md",
+        artifacts_root=".ai/auto-loop",
     )
+    if git_mode:
+        body = body.rstrip() + (
+            f'\n\ngit:\n  mode: "{git_mode}"\n  protect_approved_history: true\n'
+        )
+    manifest_path.write_text(body, encoding="utf-8")
     from auto_loop.run_inputs import prepare_repo_for_run
 
     prepared = prepare_repo_for_run(load_run_manifest(manifest_path), resume=False)

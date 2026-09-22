@@ -98,6 +98,36 @@ class InflightMarker(BaseModel):
     head_before: str | None = None
 
 
+class CompletedProviderTurn(BaseModel):
+    """Provider output that was parsed, before controller transition succeeds.
+
+    ``inflight`` means the provider call is still outstanding. This record means
+    the provider finished and the result was parsed. A later validation failure
+    keeps the record so resume does not pretend the turn never happened.
+    """
+
+    session_slot: SessionSlot
+    role: Role
+    turn: int
+    session_id: str | None = None
+    result_kind: Literal["planner", "worker", "reviewer"]
+    result: dict[str, Any]
+    transition_error: str | None = None
+    product_head_before: str | None = None
+    product_changes_before: list[list[str]] | None = None
+
+
+class ApprovedTargetEvidence(BaseModel):
+    """Immutable evidence a reviewer PASS or COMPLETE accepted."""
+
+    id: str
+    kind: Literal["git_range", "path", "content"]
+    fingerprint: str | None = None
+    path: str | None = None
+    git_base: str | None = None
+    git_head: str | None = None
+
+
 class LifecycleState(BaseModel):
     schema_version: Literal[2] = RUNTIME_SCHEMA_VERSION
     lifecycle_id: str
@@ -109,8 +139,10 @@ class LifecycleState(BaseModel):
     initial_approved_plan_sha256: str | None = None
     current_plan_sha256: str | None = None
     planning_completed_at: datetime | None = None
-    initial_base_commit: str
-    last_approved_commit: str
+    initial_base_commit: str | None = None
+    last_approved_commit: str | None = None
+    approved_evidence: list[ApprovedTargetEvidence] = Field(default_factory=list)
+    completed_provider_turn: CompletedProviderTurn | None = None
     active_review: ActiveReview | None = None
     pending_revision: PendingRevision | None = None
     review_cycle_seq: int = 0
@@ -162,7 +194,11 @@ def _empty_sessions() -> dict[str, SessionRecord]:
     }
 
 
-def create_lifecycle(head_commit: str, *, lifecycle_id: str | None = None) -> LifecycleState:
+def create_lifecycle(
+    head_commit: str | None,
+    *,
+    lifecycle_id: str | None = None,
+) -> LifecycleState:
     now = utc_now()
     lid = lifecycle_id or new_lifecycle_id()
     return LifecycleState(

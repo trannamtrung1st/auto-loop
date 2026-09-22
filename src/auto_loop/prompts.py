@@ -13,8 +13,9 @@ class TurnContext:
     task_path: str
     plan_path: str
     latest_review_path: str | None
-    head_commit: str
+    head_commit: str | None
     product_clean: bool
+    git_available: bool = True
     interrupted: bool = False
     protocol_repair: bool = False
     resource_manifest: str = ""
@@ -36,6 +37,12 @@ def _append_manifest(body: str, manifest: str) -> str:
 
 def _format_review_path(path: str | None) -> str:
     return path or "(none yet)"
+
+
+def _tree_label(ctx: TurnContext) -> str:
+    if not ctx.git_available:
+        return "n/a"
+    return "clean" if ctx.product_clean else "dirty"
 
 
 def _plan_hash_lines(ctx: TurnContext) -> list[str]:
@@ -69,9 +76,9 @@ def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
         "Durable state:",
         f"- task: {ctx.task_path}",
         f"- plan: {ctx.plan_path}",
-        f"- initial product HEAD: {state.initial_base_commit}",
-        f"- current HEAD: {ctx.head_commit}",
-        f"- product tree: {'clean' if ctx.product_clean else 'dirty'}",
+        f"- initial product HEAD: {state.initial_base_commit or 'n/a'}",
+        f"- current HEAD: {ctx.head_commit or 'n/a'}",
+        f"- product tree: {_tree_label(ctx)}",
         f"- latest plan review: {_format_review_path(ctx.latest_review_path)}",
         "- planning phase only; do not implement product changes",
         "",
@@ -124,9 +131,9 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
             f"- plan: {ctx.plan_path}",
             f"- latest review: {_format_review_path(ctx.latest_review_path)}",
             f"- plan approved: {'true' if state.plan_approved else 'false'}",
-            f"- last approved product commit: {state.last_approved_commit}",
-            f"- current HEAD: {ctx.head_commit}",
-            f"- product working tree: {'clean' if ctx.product_clean else 'dirty'}",
+            f"- last approved product commit: {state.last_approved_commit or 'n/a'}",
+            f"- current HEAD: {ctx.head_commit or 'n/a'}",
+            f"- product working tree: {_tree_label(ctx)}",
         ]
     )
     lines.extend(_plan_hash_lines(ctx))
@@ -172,6 +179,14 @@ def _format_targets(review: ActiveReview) -> list[str]:
             lines.append(
                 f"- {target.id}: Git range {target.base_commit}..{target.head_commit}"
             )
+        elif target.kind == "content":
+            lines.append(
+                f"- {target.id}: content sha256 {target.content_sha256}"
+                + (f" ({target.purpose})" if target.purpose else "")
+            )
+            lines.append("```")
+            lines.append(target.content)
+            lines.append("```")
         else:
             exists = "exists" if target.exists else "missing"
             lines.append(
@@ -228,9 +243,12 @@ def build_reviewer_prompt(
                 "Perform a whole-task final review.",
                 "",
                 "Do not limit yourself to the most recent diff.",
-                f"Re-read `{ctx.task_path}` and evaluate the entire repository at HEAD "
-                f"{ctx.head_commit}.",
-                "The current HEAD is already the last scoped-review-approved commit.",
+                f"Re-read `{ctx.task_path}` and evaluate the approved review evidence.",
+                (
+                    f"Current HEAD is {ctx.head_commit}."
+                    if ctx.head_commit
+                    else "This review does not depend on a Git commit."
+                ),
                 "",
                 "Only return COMPLETE if the whole task is satisfied with zero findings.",
                 "",

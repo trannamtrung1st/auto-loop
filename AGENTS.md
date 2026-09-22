@@ -8,7 +8,7 @@ This file and `.agents/skills/` are a **contributor harness** for humans and cod
 
 - Reviewer remains the sole completion authority. Planning `PASS` is not task completion.
 - Persistent session identity is a protocol invariant. Never silently rotate sessions.
-- Git approved-baseline ancestry is a hard safety invariant. Never rewrite approved history.
+- When an approved Git head exists and history protection is enabled, that baseline's ancestry is a hard safety invariant. Never rewrite approved history. Git is review evidence, not the only way a review can pass.
 - Planning and execution reviewer sessions are intentionally isolated (`plan_reviewer` vs `reviewer`).
 - `plan.md` is planner-owned before initial PASS and worker-owned after handoff. `task.md` stays authoritative.
 - Prefer changing existing modules over introducing parallel orchestration abstractions.
