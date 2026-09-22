@@ -235,7 +235,9 @@ def missing_pass_targets(required_ids: list[str], reviewed_ids: list[str]) -> Pr
     return ProtocolParseError(
         ProtocolDiagnostic(
             code=ProtocolDiagnosticCode.SCHEMA_VIOLATION,
-            message="PASS requires reviewed_target_ids to include every active review target",
+            message=(
+                "Approval requires reviewed_target_ids to include every active review target"
+            ),
             detail=f"missing={missing}",
         )
     )

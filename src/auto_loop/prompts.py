@@ -210,7 +210,9 @@ def _format_targets(review: ActiveReview) -> list[str]:
                 f"- {target.id}: path `{target.path}` fingerprint {target.fingerprint} "
                 f"({target.git_classification}, {exists})"
             )
-    lines.append("For PASS, include every required target id in reviewed_target_ids.")
+    lines.append(
+        "Include every required target id in reviewed_target_ids when approving the review."
+    )
     return lines
 
 

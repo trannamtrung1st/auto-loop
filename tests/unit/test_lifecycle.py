@@ -148,7 +148,7 @@ def test_final_reviewer_prompt_lists_required_targets():
 def test_reviewer_prompt_surfaces_controller_repair_reason():
     state = create_lifecycle("base")
     state.plan_approved = True
-    reason = "PASS requires reviewed_target_ids to include every active review target"
+    reason = "Approval requires reviewed_target_ids to include every active review target"
     ctx = TurnContext(
         task_path=".ai/auto-loop/task.md",
         plan_path=".ai/auto-loop/plan.md",
