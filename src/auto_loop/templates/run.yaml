@@ -8,6 +8,7 @@ version: 2
 workspace: {{workspace}}
 
 task:
+  # Auto Loop entry for this run. Add task.resources for authoritative specs.
   source: {{task_source}}
 
 artifacts:

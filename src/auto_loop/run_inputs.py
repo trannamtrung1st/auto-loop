@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NoReturn
 
 from auto_loop.config import (
     AutoLoopConfig,
@@ -17,6 +19,13 @@ from auto_loop.exits import ExitCode
 from auto_loop.init_cmd import materialize_artifact_layout, reset_run_scoped_workspace
 from auto_loop.manifest import RunManifestSource, derive_protection
 from auto_loop.paths import PathContainmentError, assert_contained, posix_rel, resolved_artifact_root
+from auto_loop.task_resources import (
+    TaskResourceError,
+    assert_frozen_task_resources,
+    materialize_task_resource_snapshots,
+    resolve_task_resources,
+    task_resources_root,
+)
 
 
 class RunInputError(Exception):
@@ -137,6 +146,27 @@ def _archive_repo_file(
         resolved_source.unlink()
 
 
+def _iter_archive_files(root: Path) -> list[Path]:
+    if root.is_symlink():
+        return [root]
+    if not root.exists():
+        return []
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        kept: list[str] = []
+        for name in dirnames:
+            child = current / name
+            if child.is_symlink():
+                files.append(child)
+            else:
+                kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
+            files.append(current / name)
+    return files
+
+
 def _assert_archive_paths_contained(repo: Path, config: AutoLoopConfig) -> None:
     from auto_loop.config import resolved_config_snapshot_path
     from auto_loop.runtime import state_path
@@ -155,6 +185,7 @@ def _assert_archive_paths_contained(repo: Path, config: AutoLoopConfig) -> None:
     reviews = repo / config.reviews_dir
     if reviews.is_dir():
         candidates.extend(path for path in reviews.iterdir() if path.is_file())
+    candidates.extend(_iter_archive_files(task_resources_root(artifact_root)))
 
     repo_root = repo.resolve()
     for source in candidates:
@@ -203,6 +234,7 @@ def clear_prior_run_for_new_goal(
     for rel in (config.plan_file, config.task_file):
         _archive_repo_file(repo, archive_dir, repo / rel)
 
+    _archive_task_resources(repo, archive_dir, root)
     _archive_repo_file(repo, archive_dir, repo / config.event_log)
     _archive_repo_file(repo, archive_dir, state_path(repo, root))
 
@@ -212,6 +244,20 @@ def clear_prior_run_for_new_goal(
         resolved_config_snapshot_path(root),
     ):
         _archive_repo_file(repo, archive_dir, path)
+
+
+def _archive_task_resources(repo: Path, archive_dir: Path, artifact_root: Path) -> None:
+    """Move the previous lifecycle's frozen task resources into its archive."""
+    root = task_resources_root(artifact_root)
+    if not root.exists() and not root.is_symlink():
+        return
+    for path in _iter_archive_files(root):
+        _archive_repo_file(repo, archive_dir, path, move=True)
+    if root.is_symlink():
+        root.unlink()
+        return
+    if root.exists():
+        shutil.rmtree(root)
 
 
 def _prior_run_archive_label(repo: Path, artifact_root: Path) -> str:
@@ -273,11 +319,19 @@ def validate_task_source(source: RunManifestSource) -> str:
     return text
 
 
+def _reraise_task_resource(exc: TaskResourceError) -> NoReturn:
+    raise RunInputError(str(exc)) from exc
+
+
 def validate_manifest_inputs(source: RunManifestSource) -> str:
-    """Validate task, context, and instructions before mutating run state."""
+    """Validate task, task resources, context, and instructions before mutating run state."""
     from auto_loop.instructions import validate_custom_instruction_files
 
     goal_text = validate_task_source(source)
+    try:
+        resolve_task_resources(source.workspace, source.config.task.resources)
+    except TaskResourceError as exc:
+        _reraise_task_resource(exc)
     context = validate_context(source.workspace, source.config.context)
     if not context.ok_for_run:
         messages = [issue.message for issue in context.issues if issue.severity == "error"]
@@ -325,6 +379,10 @@ def prepare_repo_for_run(
                 "A previous run exists but its stored task snapshot is missing. "
                 "Inspect the artifact root or start a new repository checkout."
             )
+        try:
+            assert_frozen_task_resources(artifact_root, frozen.task.resources)
+        except TaskResourceError as exc:
+            _reraise_task_resource(exc)
         return PreparedRun(
             config=frozen,
             goal_text=stored,
@@ -342,7 +400,11 @@ def prepare_repo_for_run(
         raise RunInputError(NO_RESUME_MESSAGE.format(config=config_label))
 
     goal_text = validate_manifest_inputs(source)
-    frozen_config = derive_protection(source)
+    try:
+        resources = resolve_task_resources(repo, source.config.task.resources)
+        frozen_config = derive_protection(source)
+    except TaskResourceError as exc:
+        _reraise_task_resource(exc)
 
     if has_terminal_record(repo, artifact_root) or has_lifecycle:
         prior = load_resolved_config_optional(artifact_root) or frozen_config
@@ -351,6 +413,10 @@ def prepare_repo_for_run(
 
     materialize_artifact_layout(source)
     snapshot_task(artifact_root, goal_text)
+    try:
+        materialize_task_resource_snapshots(repo, artifact_root, resources)
+    except TaskResourceError as exc:
+        _reraise_task_resource(exc)
     write_resolved_config(repo, frozen_config)
 
     return PreparedRun(

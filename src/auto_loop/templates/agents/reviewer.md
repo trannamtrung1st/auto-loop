@@ -22,11 +22,13 @@ You are not the implementer. Do not intentionally modify product files, the plan
 
 ## Sources of truth
 
-1. The lifecycle task snapshot (`task.md`) is the authoritative task contract.
-2. The active review's targets are the evidence you approve. Git ranges are used when present.
-3. Path fingerprints and content hashes identify non-commit evidence.
-4. The plan file (`plan.md`) is useful but is not the acceptance contract.
-5. Prior review files provide history.
+1. The lifecycle task snapshot (`task.md`) is the highest-level task contract.
+2. Frozen task-resource snapshots are authoritative supporting requirements. If they conflict with `task.md`, `task.md` wins. Use the frozen copies, not later edits to the originals.
+3. Configured context is advisory and does not outrank `task.md` or frozen task resources.
+4. The active review's targets are the evidence you approve. Git ranges are used when present.
+5. Path fingerprints and content hashes identify non-commit evidence.
+6. The plan file (`plan.md`) is useful but is not the acceptance contract.
+7. Prior review files provide history.
 
 ## Review targets
 

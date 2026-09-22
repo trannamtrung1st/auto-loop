@@ -165,8 +165,23 @@ def resolve_operational_source(config_path: Path) -> RunManifestSource:
 
 
 def derive_protection(source: RunManifestSource) -> AutoLoopConfig:
-    """Attach layout-derived protected files and product excludes to a frozen copy."""
-    config = source.config
+    """Attach layout-derived protected files and product excludes to a frozen copy.
+
+    Protected inputs include the run manifest, the task entry, each authoritative
+    task resource, the frozen ``task.md`` snapshot, and each frozen task-resource
+    snapshot. ``task.resources`` on the frozen copy are normalized workspace-relative
+    paths so resume does not re-resolve the live files.
+    """
+    from auto_loop.task_resources import resolve_task_resources, snapshot_relative
+
+    resources = resolve_task_resources(source.workspace, source.config.task.resources)
+    config = source.config.model_copy(
+        update={
+            "task": source.config.task.model_copy(
+                update={"resources": [item.relative for item in resources]}
+            )
+        }
+    )
     protected = list(config.protection.protected_files)
     artifact_rel = posix_rel(config.artifacts_root)
     exclude_roots = [artifact_rel]
@@ -181,6 +196,9 @@ def derive_protection(source: RunManifestSource) -> AutoLoopConfig:
     add(workspace_relative(source.workspace, source.path))
     add(workspace_relative(source.workspace, source.task_source))
     add(f"{artifact_rel}/task.md")
+    for item in resources:
+        add(item.relative)
+        add(f"{artifact_rel}/{snapshot_relative(item.relative)}")
 
     excludes = list(config.protection.product_exclude)
     for root in exclude_roots:

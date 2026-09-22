@@ -4,7 +4,7 @@
 
 The operator contract is:
 
-> **one explicit run manifest + one task document + one command**
+> **one run manifest + one user-prepared Auto Loop task entry + optional authoritative task resources + one command**
 
 Auto Loop writes all generated plan, review, and runtime state under the configured artifact root. You do not edit that directory for normal use.
 
@@ -43,12 +43,27 @@ Create two files. A typical layout:
 
 ```text
 my-product/
+├── proposal.md              # ordinary requirements
 ├── src/
 ├── tests/
 └── .ai/
     ├── run.yaml
-    └── proposal.md
+    └── task.md              # Auto Loop entry point
 ```
+
+`.ai/task.md` is the Auto Loop entry for this run. It can be prepared by a person or another agent before `auto-loop run`, and it can point at ordinary repository documents:
+
+```markdown
+# Task
+
+Implement the requirements in `proposal.md`.
+
+Additional constraints:
+- preserve backward compatibility
+- add appropriate tests
+```
+
+`proposal.md` stays a normal project document. It does not need Auto Loop protocol language. Declare it under `task.resources` when it should be an authoritative input.
 
 `.ai/run.yaml`:
 
@@ -57,7 +72,9 @@ version: 2
 workspace: ..
 
 task:
-  source: .ai/proposal.md
+  source: .ai/task.md
+  resources:
+    - proposal.md
 
 artifacts:
   root: .ai/auto-loop
@@ -103,10 +120,11 @@ auto-loop run .ai/run.yaml
 | Setting | Meaning |
 |---------|---------|
 | `workspace` | Repository Auto Loop is allowed to modify. Relative values are resolved from the directory that contains the run YAML. |
-| `task.source` | User-owned task/goal file. Relative values are resolved from `workspace`. |
-| `artifacts.root` | Where Auto Loop stores plan, reviews, and runtime state. Must stay inside `workspace`. |
+| `task.source` | User-owned Auto Loop entry for this run. Any filename is allowed. Relative values are resolved from `workspace`. |
+| `task.resources` | Optional authoritative requirement or spec files. Ordinary project documents, not Auto Loop protocol files. |
+| `artifacts.root` | Where Auto Loop stores the frozen task snapshot, plan, reviews, and runtime state. Must stay inside `workspace`. |
 
-All other paths in the run YAML (`task.source`, `artifacts.root`, context resources, custom instruction files, protected paths) are relative to `workspace` unless they are absolute. Moving the YAML file does not silently change repository paths.
+All other paths in the run YAML (`task.source`, `task.resources`, `artifacts.root`, context resources, custom instruction files, protected paths) are relative to `workspace` unless they are absolute. Moving the YAML file does not silently change repository paths.
 
 The filename and location of the run YAML are arbitrary:
 
@@ -125,7 +143,7 @@ There is no implicit discovery of a root `auto-loop.yaml`, `context.yaml`, `goal
 | `auto-loop run RUN_CONFIG` | Start a new lifecycle from the explicit run YAML. Rejects if a run is already active. |
 | `auto-loop resume RUN_CONFIG` | Resume the stored run using the frozen snapshot under the artifact root. |
 | `auto-loop status RUN_CONFIG` | Summarize run, phase, planner/worker/reviewer, and where to inspect the plan/reviews. |
-| `auto-loop doctor RUN_CONFIG` | Check the manifest, workspace, Git, task source, context, instructions, Cursor CLI, lock, and current run state. |
+| `auto-loop doctor RUN_CONFIG` | Check the manifest, workspace, Git, task source, task resources, context, instructions, Cursor CLI, lock, and current run state. |
 | `auto-loop logs RUN_CONFIG` | Show per-turn provider logs (`--turn`, `--raw`, `--follow`). |
 | `auto-loop stop RUN_CONFIG` | Request graceful stop of the active run (also respects SIGINT/SIGTERM during `run`). |
 | `auto-loop init PATH` | Optional starter YAML only (`--force` to overwrite). Not required to run. |
@@ -137,11 +155,14 @@ Operational flags such as `--verbose` / `--quiet` and `logs --follow` remain. Mo
 | Path | Owner | User edits normally? |
 |------|--------|---------------------:|
 | run YAML (any name) | you | yes — the one manifest you pass to the CLI |
-| task/proposal file | you | yes — referenced by `task.source` |
-| optional context resources / custom instruction files | you | yes — listed in the run YAML |
+| `task.source` entry (often `.ai/task.md`) | you | yes — prepared before `auto-loop run`; any filename |
+| `task.resources` (proposal, requirements, ticket, …) | you | yes — ordinary project files declared explicitly |
+| optional context resources / custom instruction files | you | yes — useful context, not task authority |
+| `<artifacts.root>/task.md` | Auto Loop | no — frozen task-entry snapshot; filename is fixed |
+| `<artifacts.root>/task-resources/` | Auto Loop | no — frozen copies of `task.resources` |
 | `<artifacts.root>/` | Auto Loop | no — tool-managed plan, reviews, runtime |
 
-On a new run Auto Loop copies the task source into `<artifacts.root>/task.md` and freezes a resolved snapshot at `<artifacts.root>/runtime/config.resolved.yaml`. Editing the source YAML or proposal does not change an **active** lifecycle. After a **terminal** run, `auto-loop run RUN_CONFIG` again archives the prior artifacts and starts a fresh lifecycle from the current YAML and task file.
+On a new lifecycle Auto Loop copies `task.source` into `<artifacts.root>/task.md` and each `task.resources` entry into `<artifacts.root>/task-resources/<workspace-relative-path>`. It also freezes a resolved snapshot at `<artifacts.root>/runtime/config.resolved.yaml`. Editing the source YAML, the task entry, or the original requirement files does not change an **active** lifecycle. Resume uses those frozen copies and does not fall back to the live files if a snapshot is missing. After a **terminal** run, `auto-loop run RUN_CONFIG` again archives the prior artifacts, including frozen task resources, and starts a fresh lifecycle from the current YAML, task entry, and task resources.
 
 ## Full configuration example
 
@@ -196,7 +217,7 @@ The same template ships inside the package as `auto_loop/templates/run.full.yaml
 
 ## Instruction layering
 
-Default role prompts and instruction stacks ship in the package. A fresh install can run with only the run YAML and a proposal.
+Default role prompts and instruction stacks ship in the package. A fresh install can run with only the run YAML and a task entry.
 
 Config key `instructions.*.mode` is `extend` (default) or `replace_role`. Shared protocol text is composed with role-specific instructions each first session turn. Point `instructions.*.files` at your own markdown when you want extra guidance:
 
@@ -207,7 +228,28 @@ instructions:
       - .ai/instructions/worker.md
 ```
 
-## Context and task resources
+## Task inputs and context
+
+`task.source` is the Auto Loop entry for one run. It is not required to be named `proposal.md`, and a requirements file does not need to contain Auto Loop protocol language. Authoritative supporting files are listed explicitly:
+
+```yaml
+task:
+  source: .ai/task.md
+  resources:
+    - proposal.md
+    - requirements/api.md
+```
+
+A Markdown link inside `.ai/task.md` is informational. Auto Loop does not discover task dependencies by parsing links. Omitting `task.resources` is valid; existing manifests that only set `task.source` keep working.
+
+Authority, highest first:
+
+1. Frozen `<artifacts.root>/task.md` — task intent and constraints.
+2. Frozen `<artifacts.root>/task-resources/**` — authoritative requirements and specs.
+3. Configured `context` resources — useful background, not task authority.
+4. Repository discovery — supporting implementation context.
+
+If `task.md` conflicts with a task resource, `task.md` wins. Agents are given paths to the frozen snapshots and should use those copies while a lifecycle is active.
 
 Optional context lives in the run YAML. There is no standalone user `context.yaml`.
 
@@ -226,9 +268,9 @@ context:
       - tests/
 ```
 
-Plan-reviewer receives shared + reviewer resources. Validate with `doctor`. The run **task source** is the user-facing intent; internally it is snapshotted for the planner/worker/reviewer protocol.
+Plan-reviewer receives shared + reviewer context. Validate task inputs with `doctor`. The internal `task.md` filename stays fixed even when `task.source` uses another name.
 
-If the run YAML or task source is inside the workspace, Auto Loop treats those paths as protected during agent turns. Mutations stop the run with **`PROTECTION_VIOLATION`**; auto-loop does not revert files for you.
+If the run YAML, task entry, or a task resource is inside the workspace, Auto Loop protects that path and its frozen snapshot during agent turns. Mutations stop the run with **`PROTECTION_VIOLATION`**; auto-loop does not revert files for you. Agents must not rewrite a proposal or spec to make an implementation pass.
 
 The artifact root is excluded from product cleanliness and worker production-change calculations even if it is not gitignored. `doctor` warns when an in-repo artifact root is not listed in `.gitignore`.
 
@@ -251,8 +293,8 @@ Use `auto-loop status RUN_CONFIG` and `auto-loop logs RUN_CONFIG` for operator-f
 - `auto-loop stop RUN_CONFIG` signals a live controller. The first request is graceful. If that controller does not exit, stop force-kills the verified provider and then the controller. A dead controller does not count as stopped while its recorded provider is still the process Auto Loop launched: stop terminates that process, clears `active_run.json` and the workspace lock, and persists **STOPPED**. The inflight marker is kept.
 - Ctrl+C requests the same graceful stop (`Stopping active agent…`). A second Ctrl+C force-stops the provider (`Force stopping…`). The signal handler only sets that request and sends a non-blocking signal. Provider supervision performs the wait, persists **STOPPED**, and releases ownership.
 - `auto-loop run` and `auto-loop resume` reconcile a dead **local** controller before taking the workspace lock, so a stale lock or a reused PID is not reported as a concurrent run. A PID is signaled or killed only when hostname, PID, and process start time all match the recorded process. Remote ownership (`active_run.json` / `lock.json` from another host) and legacy unverified metadata are left unchanged; `doctor` reports that state instead of mutating it. `run`, `resume`, and `stop` exit with **`CONCURRENT_RUN`** when another host or unverified metadata blocks local control.
-- `auto-loop resume RUN_CONFIG` continues from durable state (same session ids, reconciled inflight). Changing the source proposal does not replace an in-progress run.
-- After a **terminal** run (`completion.json` or `blocked.json`), `auto-loop run RUN_CONFIG` again archives the prior run’s plan, task snapshot, reviews, and runtime notes under `<artifacts.root>/runtime/archives/<lifecycle-id>/` using each file’s workspace-relative path. Active (non-terminal) runs must be resumed, not replaced. `auto-loop resume` on a blocked terminal run exits with `BLOCKED` and the saved summary rather than re-entering the loop.
+- `auto-loop resume RUN_CONFIG` continues from durable state (same session ids, reconciled inflight). Changing the task entry or task resources does not replace an in-progress run. A missing frozen task resource fails resume instead of reading the live file.
+- After a **terminal** run (`completion.json` or `blocked.json`), `auto-loop run RUN_CONFIG` again archives the prior run’s plan, task snapshot, frozen task resources, reviews, and runtime notes under `<artifacts.root>/runtime/archives/<lifecycle-id>/` using each file’s workspace-relative path. Active (non-terminal) runs must be resumed, not replaced. `auto-loop resume` on a blocked terminal run exits with `BLOCKED` and the saved summary rather than re-entering the loop.
 - Defaults: `run.max_turns`, `run.max_runtime_minutes`, `run.max_consecutive_worker_no_progress` — tune them in the run YAML.
 
 ## Configuration reference (high level)
@@ -262,8 +304,9 @@ Version 2 is the supported public schema. Version 1 files fail with a clear erro
 | Section | Role |
 |---------|------|
 | `workspace` | Product repository; the only path resolved relative to the YAML file. |
-| `task.source` | User-owned task/goal file. |
-| `artifacts.root` | Tool-managed output tree (`task.md`, `plan.md`, `reviews/`, `runtime/`). |
+| `task.source` | User-owned Auto Loop entry. Snapshotted to `<artifacts.root>/task.md` at lifecycle start. |
+| `task.resources` | Optional authoritative requirement/spec files. Snapshotted under `<artifacts.root>/task-resources/`. |
+| `artifacts.root` | Tool-managed output tree (`task.md`, `task-resources/`, `plan.md`, `reviews/`, `runtime/`). |
 | `models.planner` / `models.worker` / `models.reviewer` | Per-role model ids (canonical; plan-reviewer uses `models.reviewer`). |
 | `run.*` | Turns, runtime, agent timeouts, provider/protocol retries, no-progress streak (canonical). |
 | `provider.cursor` | CLI command (`agent` / `cursor-agent`), extra args per role. |
@@ -280,7 +323,7 @@ Generate a commented manifest with every public section: `auto-loop init PATH --
 
 | Symptom | Things to check |
 |---------|------------------|
-| `CONFIG_ERROR` on `run` | Pass an explicit version 2 YAML; `doctor RUN_CONFIG`; confirm `task.source` exists and is non-empty. |
+| `CONFIG_ERROR` on `run` | Pass an explicit version 2 YAML; `doctor RUN_CONFIG`; confirm `task.source` exists and is non-empty, and every `task.resources` entry is a readable file inside the workspace. On resume, a missing frozen task resource is also a config error. |
 | `GIT_PROTOCOL_ERROR` | Strict mode saw a dirty tree or missing repository, a review had no evidence, or approved history was rewritten. |
 | `SESSION_ERROR` | Cursor resume id drift; inspect turn logs; do not hand-edit session ids in `state.json`. |
 | `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `run.protocol_retries` only after fixing prompts. |

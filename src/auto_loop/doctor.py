@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from auto_loop.config import AutoLoopConfig, ConfigurationError
+from auto_loop.config import AutoLoopConfig, ConfigurationError, load_resolved_config_optional
 from auto_loop.git_policy import git_policy_issues
 from auto_loop.context_manifest import validate_context
 from auto_loop.instructions import validate_custom_instruction_files
@@ -19,6 +19,11 @@ from auto_loop.locking import describe_lock_status
 from auto_loop.runtime import RuntimeStateError, load_lifecycle_state
 from auto_loop.stop_control import reconcile_stale_runtime
 from auto_loop.run_inputs import validate_task_source
+from auto_loop.task_resources import (
+    TaskResourceError,
+    frozen_task_resource_issues,
+    resolve_task_resources,
+)
 
 
 class Severity(StrEnum):
@@ -105,6 +110,33 @@ def _check_task_source(source: RunManifestSource, report: DoctorReport) -> None:
         report.add("task", Severity.ERROR, str(exc))
         return
     report.add("task", Severity.OK, f"Task source is readable: {source.task_source}")
+
+
+def _check_task_resources(source: RunManifestSource, report: DoctorReport) -> None:
+    try:
+        resolve_task_resources(source.workspace, source.config.task.resources)
+    except TaskResourceError as exc:
+        report.add("task:resource", Severity.ERROR, str(exc))
+        return
+    count = len(source.config.task.resources)
+    report.add("task:resource", Severity.OK, f"Task resources validated ({count})")
+
+
+def _check_frozen_task_resources(source: RunManifestSource, report: DoctorReport) -> None:
+    """When a lifecycle exists, frozen snapshots are required and live files are not a fallback."""
+    frozen = load_resolved_config_optional(source.artifact_root)
+    if frozen is None or not frozen.task.resources:
+        return
+    issues = frozen_task_resource_issues(source.artifact_root, frozen.task.resources)
+    if issues:
+        for message in issues:
+            report.add("task:frozen-resource", Severity.ERROR, message)
+        return
+    report.add(
+        "task:frozen-resource",
+        Severity.OK,
+        f"Frozen task resources are present ({len(frozen.task.resources)})",
+    )
 
 
 def _check_role_and_runtime_files(
@@ -291,6 +323,7 @@ def run_doctor(source: RunManifestSource, *, verbose: bool = False) -> DoctorRep
         report.add("config", Severity.ERROR, str(exc))
         return report
     _check_task_source(source, report)
+    _check_task_resources(source, report)
     _check_git(source.workspace, config, report)
     _check_cursor_cli(config, report)
     _check_context_manifest(source.workspace, config, report)
@@ -303,6 +336,8 @@ def run_doctor(source: RunManifestSource, *, verbose: bool = False) -> DoctorRep
     _check_role_and_runtime_files(
         source, config, report, require_task_snapshot=state is not None
     )
+    if state is not None:
+        _check_frozen_task_resources(source, report)
     _check_runtime_writable(source.artifact_root, report)
     _check_stale_runtime(source.workspace, source.artifact_root, report)
     _check_workspace_lock(source.workspace, source.artifact_root, report)

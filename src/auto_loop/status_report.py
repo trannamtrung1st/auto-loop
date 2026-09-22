@@ -84,6 +84,14 @@ def _run_label(status: str) -> str:
     return mapping.get(status, status)
 
 
+def _task_resource_line(config: AutoLoopConfig) -> list[str]:
+    count = len(config.task.resources)
+    if count == 0:
+        return []
+    label = "task resource" if count == 1 else "task resources"
+    return [f"Task inputs: {config.task.source} (+{count} {label})"]
+
+
 def _config_label(source: RunManifestSource) -> str:
     rel = workspace_relative(source.workspace, source.path)
     return rel if rel is not None else str(source.path)
@@ -106,6 +114,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         lines = [
             "Run:        complete",
             f"Config:     {config_rel}",
+            *_task_resource_line(config),
             f"Plan:       {plan_rel}",
             f"Reviews:    {reviews_rel}/" if not reviews_rel.endswith("/") else f"Reviews:    {reviews_rel}",
             "",
@@ -125,6 +134,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
             [
                 "Run:        idle",
                 f"Config:     {config_rel}",
+                *_task_resource_line(config),
                 "",
                 "status: idle",
                 "lifecycle: (none)",
@@ -142,6 +152,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         f"Worker:     {_session_label(state.sessions['worker'].status, state.sessions['worker'].session_id)}",
         f"Reviewer:   {_session_label(state.sessions['reviewer'].status, state.sessions['reviewer'].session_id)}",
         f"Plan:       {plan_rel}",
+        *_task_resource_line(config),
         f"Reviews:    {reviews_display}",
         "",
         f"status: {state.status.value}",

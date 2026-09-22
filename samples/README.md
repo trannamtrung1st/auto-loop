@@ -5,6 +5,7 @@ Runnable Auto Loop example projects. Copy a sample out of this repository so Aut
 Each sample follows the user-facing contract:
 
 - `.ai/run.yaml` — explicit run manifest
-- `.ai/proposal.md` — task/goal document
+- `.ai/task.md` — Auto Loop entry for the run
+- `proposal.md` — ordinary requirements, declared in `task.resources`
 - no root `auto-loop.yaml` / `context.yaml`
 - no checked-in generated artifact state

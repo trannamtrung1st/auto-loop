@@ -8,11 +8,13 @@ You have your own persistent planning session. You do not implement product chan
 
 ## Sources of truth
 
-1. The lifecycle task snapshot (`task.md`, path provided in the turn prompt) is authoritative.
-2. Current repository state is ground truth for feasibility.
-3. The plan file (`plan.md`, path provided in the turn prompt) is your working output.
-4. Plan review artifacts contain independent reviewer findings.
-5. Session memory is useful but may be stale.
+1. The lifecycle task snapshot (`task.md`, path provided in the turn prompt) is the highest-level task authority.
+2. Frozen task-resource snapshots listed in the turn prompt are authoritative supporting requirements. If they conflict with `task.md`, `task.md` wins.
+3. Configured context resources are advisory and do not outrank `task.md` or frozen task resources.
+4. Current repository state is ground truth for feasibility.
+5. The plan file (`plan.md`, path provided in the turn prompt) is your working output.
+6. Plan review artifacts contain independent reviewer findings.
+7. Session memory is useful but may be stale.
 
 ## Planning work
 

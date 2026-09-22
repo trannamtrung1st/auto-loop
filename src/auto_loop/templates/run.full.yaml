@@ -8,10 +8,11 @@
 #
 # Path rules:
 # - workspace is resolved relative to this YAML file's directory.
-# - task.source, artifacts.root, context paths, instruction files, and protection
-#   paths are resolved relative to workspace unless absolute.
-# - User-owned: this YAML, task.source, optional context/instruction files.
-# - Tool-managed: everything under artifacts.root (plan, reviews, runtime state).
+# - task.source, task.resources, artifacts.root, context paths, instruction files,
+#   and protection paths are resolved relative to workspace unless absolute.
+# - User-owned: this YAML, task.source, task.resources, optional context/instruction files.
+# - Tool-managed: everything under artifacts.root, including frozen task.md and
+#   task-resources snapshots. Do not edit those for a normal run.
 
 version: 2
 
@@ -19,8 +20,19 @@ version: 2
 workspace: {{workspace}}
 
 task:
-  # User-owned goal/task document (copied to artifacts.root/task.md on run start).
+  # Auto Loop entry for this run. Any filename is allowed.
+  # Prepare it before `auto-loop run` (by hand or with another agent).
+  # It may refer to ordinary project documents such as proposal.md.
+  # Snapshotted to artifacts.root/task.md when a lifecycle starts.
+  # An active lifecycle does not re-read this file.
   source: {{task_source}}
+  # Authoritative requirement/spec files. They are not Auto Loop protocol files.
+  # Snapshotted under artifacts.root/task-resources/<workspace-relative-path>.
+  # Markdown links in the task entry are not discovered automatically.
+  resources: []
+  # resources:
+  #   - proposal.md
+  #   - requirements/api.md
 
 artifacts:
   # Generated plan, reviews, and runtime state. Must stay inside workspace.

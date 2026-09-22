@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Protocol
 
 from auto_loop.config import AutoLoopConfig
-from auto_loop.context_manifest import render_resource_manifest, validate_context
+from auto_loop.context_manifest import validate_context
+from auto_loop.task_resources import compose_turn_resource_manifest
 from auto_loop.exits import ExitCode
 from auto_loop.git import (
     GitProtocolError,
@@ -327,7 +328,7 @@ class LifecycleRunner:
         validation = validate_context(self.repo, document)
         if not validation.ok_for_run:
             raise RunPreconditionError("context resources failed validation")
-        return render_resource_manifest(document, role)
+        return compose_turn_resource_manifest(self.config, role)
 
     def _latest_review_path(self) -> str | None:
         reviews = sorted((self.repo / self.config.reviews_dir).glob("*.md"))

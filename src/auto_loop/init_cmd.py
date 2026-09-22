@@ -54,8 +54,8 @@ def _workspace_rel_from_yaml(yaml_path: Path) -> str:
 def _default_init_paths(path: Path) -> tuple[str, str, str]:
     workspace_rel = _workspace_rel_from_yaml(path)
     workspace = path.parent.resolve() if workspace_rel == "." else (path.parent / workspace_rel).resolve()
-    proposal = path.parent / "proposal.md"
-    task_rel = workspace_relative(workspace, proposal) or "proposal.md"
+    task_file = path.parent / "task.md"
+    task_rel = workspace_relative(workspace, task_file) or "task.md"
     artifact_dir = path.parent / "auto-loop"
     artifact_rel = workspace_relative(workspace, artifact_dir) or ".ai/auto-loop"
     return workspace_rel, task_rel, artifact_rel
@@ -93,7 +93,7 @@ def run_init(target: Path, *, force: bool = False, full: bool = False) -> InitRe
             "Created full Auto Loop run config reference.\n"
             "\n"
             f"Config: {path}\n"
-            f"Suggested task file: {path.parent / 'proposal.md'}\n"
+            f"Suggested task file: {path.parent / 'task.md'}\n"
             "\n"
             "Next:\n"
             f"  auto-loop doctor {path}\n"
@@ -106,7 +106,7 @@ def run_init(target: Path, *, force: bool = False, full: bool = False) -> InitRe
             "Created Auto Loop run config.\n"
             "\n"
             f"Config: {path}\n"
-            f"Suggested task file: {path.parent / 'proposal.md'}\n"
+            f"Suggested task file: {path.parent / 'task.md'}\n"
             "\n"
             "Next:\n"
             f"  auto-loop doctor {path}\n"

@@ -128,7 +128,23 @@ class RunSettings(ManifestModel):
 
 
 class TaskSettings(ManifestModel):
+    """User-owned task entry plus optional authoritative supporting files.
+
+    ``source`` is snapshotted to ``<artifacts.root>/task.md``. ``resources`` are
+    snapshotted under ``<artifacts.root>/task-resources/``. Neither is re-read
+    on resume. ``resources`` defaults to an empty list so version 2 manifests
+    that only set ``source`` stay valid.
+    """
+
     source: str
+    resources: list[str] = Field(default_factory=list)
+
+    @field_validator("resources", mode="before")
+    @classmethod
+    def empty_resources(cls, value: object) -> object:
+        if value is None:
+            return []
+        return value
 
 
 class ArtifactSettings(ManifestModel):
@@ -242,6 +258,10 @@ class AutoLoopConfig(ManifestModel):
         return f"{self.artifacts_root}/task.md"
 
     @property
+    def task_resources_dir(self) -> str:
+        return f"{self.artifacts_root}/task-resources"
+
+    @property
     def plan_file(self) -> str:
         return f"{self.artifacts_root}/plan.md"
 
@@ -254,7 +274,7 @@ class AutoLoopConfig(ManifestModel):
         return f"{self.artifacts_root}/runtime/events.jsonl"
 
 
-def default_config(*, task_source: str = ".ai/proposal.md") -> AutoLoopConfig:
+def default_config(*, task_source: str = ".ai/task.md") -> AutoLoopConfig:
     return AutoLoopConfig(
         version=CONFIG_VERSION,
         workspace=".",

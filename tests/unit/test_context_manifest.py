@@ -115,7 +115,8 @@ def test_manifest_appended_on_resume_turn(tmp_path: Path):
         resource_manifest=manifest,
     )
     prompt = build_worker_prompt(state, ctx)
-    assert "AVAILABLE TASK RESOURCES" in prompt
+    assert "AVAILABLE CONTEXT" in prompt
+    assert "frozen task resources" in prompt
 
 
 def test_bootstrapped_context_defaults_empty(tmp_path: Path):

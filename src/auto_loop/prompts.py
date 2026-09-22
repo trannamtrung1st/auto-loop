@@ -129,7 +129,8 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
             "- planning review artifact",
             "- current repository state",
             "",
-            "Treat task.md as authoritative.",
+            "Treat task.md as the highest-level authority.",
+            "Frozen task resources are authoritative supporting requirements; task.md wins on conflict.",
             "You now own plan.md and may revise it whenever implementation reality requires.",
             "",
         ]
@@ -165,8 +166,8 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
         [
             "",
             "Reconcile this durable state with your session memory, applicable repository "
-            "instructions/skills, and declared task resources, then perform the single best "
-            "next worker turn according to your role instructions.",
+            "instructions/skills, frozen task resources, and advisory context, then perform "
+            "the single best next worker turn according to your role instructions.",
             "",
         ]
     )

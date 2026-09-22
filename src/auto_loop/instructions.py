@@ -9,8 +9,9 @@ from auto_loop.config import AutoLoopConfig, InstructionMode, InstructionRoleSet
 
 REPOSITORY_GUIDANCE_REMINDER = (
     "Follow applicable repository-level agent instructions and skills in addition to "
-    "the auto-loop role instructions. If they conflict with task.md or the auto-loop "
-    "protocol contract, task.md/protocol wins as appropriate."
+    "the auto-loop role instructions. If they conflict with task.md, frozen task "
+    "resources, or the auto-loop protocol contract, task.md and the protocol win; "
+    "frozen task resources outrank advisory context."
 )
 
 

@@ -22,7 +22,8 @@ def test_default_init_creates_run_yaml_only(tmp_path: Path, monkeypatch):
     assert not (tmp_path / "proposal.md").exists()
     assert not (tmp_path / ".ai" / "auto-loop" / "task.md").exists()
     assert "auto-loop run" in result.message
-    assert "proposal.md" in result.message
+    assert "task.md" in result.message
+    assert "proposal.md" not in result.message
     assert result.created
 
 

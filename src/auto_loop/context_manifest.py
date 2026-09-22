@@ -181,7 +181,7 @@ def _entries_for_role(document: ContextDocument, role: RoleName) -> list[tuple[s
 
 def render_resource_manifest(document: ContextDocument, role: RoleName) -> str:
     entries = _entries_for_role(document, role)
-    lines = ["AVAILABLE TASK RESOURCES", ""]
+    lines = ["AVAILABLE CONTEXT", ""]
     current_label: str | None = None
     for label, entry in entries:
         if label != current_label:
@@ -193,7 +193,8 @@ def render_resource_manifest(document: ContextDocument, role: RoleName) -> str:
     lines.extend(
         [
             "",
-            "Read/use these when relevant. Do not assume they are authoritative over task.md.",
+            "Read/use these when relevant. Do not assume they are authoritative over "
+            "task.md or frozen task resources.",
         ]
     )
     return "\n".join(lines)

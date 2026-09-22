@@ -34,7 +34,10 @@ def test_default_config_round_trip():
     assert cfg.agents["worker"].mode == "agent"
     assert cfg.agents["reviewer"].mode == "ask"
     assert cfg.limits.max_turns == 100
+    assert cfg.task.source == ".ai/task.md"
+    assert cfg.task.resources == []
     assert cfg.task_file == f"{DEFAULT_ARTIFACTS_ROOT}/task.md"
+    assert cfg.task_resources_dir == f"{DEFAULT_ARTIFACTS_ROOT}/task-resources"
     reloaded = AutoLoopConfig.model_validate(yaml.safe_load(dump_config(cfg)))
     assert reloaded.version == cfg.version
     assert reloaded.task.source == cfg.task.source

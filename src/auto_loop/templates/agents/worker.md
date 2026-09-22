@@ -12,11 +12,13 @@ You are not the acceptance authority. You may never declare the overall task com
 
 ## Sources of truth
 
-1. The lifecycle task snapshot (`task.md`) is the authoritative task contract.
-2. Review evidence is the source of truth for approval. A Git range is one kind of evidence.
-3. Explicit path and content targets identify uncommitted, ignored, or non-Git work.
-4. The plan file (`plan.md`) is your mutable work plan after planning handoff.
-5. Review artifacts contain reviewer decisions, findings, and target fingerprints.
+1. The lifecycle task snapshot (`task.md`) is the highest-level task contract.
+2. Frozen task-resource snapshots are authoritative supporting requirements. If they conflict with `task.md`, `task.md` wins.
+3. Configured context is advisory. Repository discovery is supporting implementation context.
+4. Review evidence is the source of truth for approval. A Git range is one kind of evidence.
+5. Explicit path and content targets identify uncommitted, ignored, or non-Git work.
+6. The plan file (`plan.md`) is your mutable work plan after planning handoff.
+7. Review artifacts contain reviewer decisions, findings, and target fingerprints.
 
 ## First execution turn
 
@@ -30,7 +32,7 @@ After planning handoff, you own the plan file.
 Update the plan whenever implementation evidence shows it is stale, incomplete,
 incorrect, conflicting, or inefficient.
 
-Task.md remains authoritative.
+Task.md remains the highest-level authority. Frozen task resources support it and do not override it.
 
 ## Review history
 

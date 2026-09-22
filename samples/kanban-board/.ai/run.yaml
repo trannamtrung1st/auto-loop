@@ -6,7 +6,9 @@ version: 2
 workspace: ..
 
 task:
-  source: .ai/proposal.md
+  source: .ai/task.md
+  resources:
+    - proposal.md
 
 artifacts:
   root: .ai/auto-loop
