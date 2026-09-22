@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from auto_loop.console_output import console_color_enabled, render_log_header
-from auto_loop.lifecycle import LifecycleStatus
+from auto_loop.lifecycle import LifecycleState, LifecycleStatus
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.turn_logs import (
     latest_turn_with_logs,
@@ -31,10 +31,24 @@ def _use_color(color: bool | None) -> bool:
     return color
 
 
-def _log_header(turn: int, role: str, *, raw: bool, color: bool | None) -> str:
+def _session_model_for_log_role(state: LifecycleState, role: str) -> str | None:
+    session = state.sessions.get(role)
+    if session is None:
+        return None
+    return session.model
+
+
+def _log_header(
+    turn: int,
+    role: str,
+    *,
+    raw: bool,
+    color: bool | None,
+    model: str | None = None,
+) -> str:
     if raw:
         return f"=== turn {turn:04d} {role} ===\n"
-    return render_log_header(turn, role, color=_use_color(color))
+    return render_log_header(turn, role, model=model, color=_use_color(color))
 
 
 def stream_follow_logs(
@@ -74,7 +88,15 @@ def stream_follow_logs(
     if not target.is_file():
         emit(f"Waiting for {target.name}...")
     else:
-        emit(_log_header(selected, role, raw=raw, color=color))
+        emit(
+            _log_header(
+                selected,
+                role,
+                raw=raw,
+                color=color,
+                model=None if raw else _session_model_for_log_role(state, role),
+            )
+        )
         header_sent = True
     last_size = 0
 
@@ -88,7 +110,20 @@ def stream_follow_logs(
                 text = target.read_text(encoding="utf-8")
                 if len(text) > last_size:
                     if not header_sent:
-                        emit(_log_header(selected, role, raw=raw, color=color))
+                        current_state = load_lifecycle_state(repo, artifact_root) or state
+                        emit(
+                            _log_header(
+                                selected,
+                                role,
+                                raw=raw,
+                                color=color,
+                                model=(
+                                    None
+                                    if raw
+                                    else _session_model_for_log_role(current_state, role)
+                                ),
+                            )
+                        )
                         header_sent = True
                     emit(text[last_size:])
                     last_size = len(text)
@@ -154,11 +189,21 @@ def render_logs(
         )
 
     styled = _use_color(color)
+
+    def header(turn_no: int, role_name: str) -> str:
+        session_model = _session_model_for_log_role(state, role_name)
+        return render_log_header(
+            turn_no,
+            role_name,
+            model=session_model,
+            color=styled,
+        )
+
     return read_turn_logs(
         repo,
         lifecycle_id,
         selected,
         raw=False,
         artifact_root=artifact_root,
-        header=lambda turn_no, role_name: render_log_header(turn_no, role_name, color=styled),
+        header=header,
     )

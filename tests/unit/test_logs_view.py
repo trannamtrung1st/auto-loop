@@ -42,12 +42,46 @@ def test_render_logs_discovers_latest_planner_turn(tmp_path: Path):
     from auto_loop.git import head_commit
 
     state = create_lifecycle(head_commit(repo))
+    state.sessions["planner"] = RoleSession(session_id="p1", model="claude-4.5-sonnet")
     save_lifecycle_state(repo, state)
     _write_role_turn_log(repo, state.lifecycle_id, 3, "planner", "planner turn log")
     output = render_logs(repo, color=False)
     assert "planner turn log" in output
     assert "PLANNER" in output
     assert "turn 0003" in output
+    assert "claude-4.5-sonnet" in output
+
+
+def test_render_logs_readable_includes_session_model(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    state.sessions["worker"] = RoleSession(session_id="w1", model="auto")
+    state.status = LifecycleStatus.COMPLETED
+    save_lifecycle_state(repo, state)
+    _write_role_turn_log(repo, state.lifecycle_id, 1, "worker", "worker body")
+    output = render_logs(repo, color=False)
+    assert "WORKER · auto" in output
+    assert "worker body" in output
+
+
+def test_stream_follow_readable_includes_session_model(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    state.sessions["plan_reviewer"] = RoleSession(session_id="pr1", model="gpt-5.6")
+    state.status = LifecycleStatus.COMPLETED
+    save_lifecycle_state(repo, state)
+    _write_role_turn_log(
+        repo, state.lifecycle_id, 2, "plan_reviewer", "plan reviewer follow log"
+    )
+    chunks: list[str] = []
+    stream_follow_logs(repo, write=chunks.append, follow_idle_seconds=0.15, color=False)
+    body = "".join(chunks)
+    assert "gpt-5.6" in body
+    assert "plan reviewer follow log" in body
 
 
 def test_stream_follow_discovers_plan_reviewer_turn(tmp_path: Path):
@@ -233,13 +267,21 @@ def test_stream_follow_uses_worker_log_when_next_actor_is_reviewer(tmp_path: Pat
     assert "reviewer" not in body.split("===")[0]
 
 
-def _write_provider_log(repo: Path, *, text: str, raw_line: str | None = None) -> None:
+def _write_provider_log(
+    repo: Path,
+    *,
+    text: str,
+    raw_line: str | None = None,
+    role: str = "reviewer",
+    model: str = "gpt-5.6",
+) -> None:
     from auto_loop.git import head_commit
 
     state = create_lifecycle(head_commit(repo))
+    state.sessions[role] = RoleSession(session_id=f"{role}-1", model=model)
     state.status = LifecycleStatus.COMPLETED
     save_lifecycle_state(repo, state)
-    jsonl_path, log_path = turn_log_paths(repo, state.lifecycle_id, 4, "reviewer")
+    jsonl_path, log_path = turn_log_paths(repo, state.lifecycle_id, 4, role)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     jsonl_path.write_text(raw_line or '{"type":"assistant","text":"provider"}\n', encoding="utf-8")
     log_path.write_text(text, encoding="utf-8")
@@ -253,6 +295,7 @@ def test_raw_logs_keep_literal_provider_text_without_ansi(tmp_path: Path):
     assert "\x1b" not in output
     assert markup.strip() in output
     assert "=== turn 4 reviewer ===" in output
+    assert "gpt-5.6" not in output
     assert "━" not in output
 
 
@@ -263,6 +306,7 @@ def test_human_logs_style_framing_and_leave_provider_text_literal(tmp_path: Path
     plain = render_logs(repo, color=False)
     assert "\x1b" not in plain
     assert "REVIEWER" in plain
+    assert "gpt-5.6" in plain
     assert "turn 0004" in plain
     assert markup.strip() in plain
     assert "━" in plain

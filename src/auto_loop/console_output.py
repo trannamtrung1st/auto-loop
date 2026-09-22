@@ -134,6 +134,7 @@ def render_log_header(
     turn: int,
     role: str,
     *,
+    model: str | None = None,
     color: bool | None = None,
     stream: TextIO | None = None,
 ) -> str:
@@ -148,6 +149,9 @@ def render_log_header(
     title = Text()
     title.append(f"turn {turn:04d} · ")
     title.append(role_label(role), style=role_style(role))
+    if model:
+        title.append(" · ")
+        title.append(_single_line(model), style=_META_STYLE)
     console.print(Rule(title, style=role_style(role), characters=_RULE_CHAR))
     return buffer.getvalue()
 

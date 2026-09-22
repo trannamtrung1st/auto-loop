@@ -378,6 +378,17 @@ def test_resolved_model_uses_session_model_for_resumed_slot(tmp_path: Path):
     assert runner._resolved_model("reviewer", state) == "gpt-5.6"
 
 
+def test_render_log_header_includes_optional_model():
+    from auto_loop.console_output import render_log_header
+
+    with_model = render_log_header(3, "worker", model="auto", color=False)
+    assert "WORKER · auto" in with_model
+    assert with_model.count(" · ") >= 2
+    without_model = render_log_header(1, "planner", color=False)
+    assert "PLANNER" in without_model
+    assert without_model.count(" · ") == 1
+
+
 def test_redirected_provider_trace_has_no_ansi():
     console, stream = _console()
     console.provider_trace(TraceEvent(TraceEventKind.MESSAGE, text="plain"))
