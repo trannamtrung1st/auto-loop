@@ -7,6 +7,7 @@ the task entry are informational only and are never discovered from here.
 from __future__ import annotations
 
 import os
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,14 +97,11 @@ def materialize_task_resource_snapshots(
     artifact_root: Path,
     resources: list[TaskResource],
 ) -> None:
-    """Copy validated resources into the tool-managed snapshot tree."""
+    """Replace the tool-managed snapshot tree with the current resource list."""
+    root = _contained_artifact_root(workspace, artifact_root)
+    _clear_snapshot_tree(root)
     if not resources:
         return
-    root = artifact_root.resolve()
-    try:
-        assert_contained(workspace, root, label="Task resource snapshot")
-    except PathContainmentError as exc:
-        raise TaskResourceError(str(exc)) from exc
     dest_root = task_resources_root(root)
     _ensure_directory(root, dest_root)
     for resource in resources:
@@ -233,6 +231,31 @@ def _relative_escapes(relative: str) -> bool:
     if not relative or relative.startswith("/") or "\\" in relative:
         return True
     return any(part == ".." for part in relative.split("/"))
+
+
+def _contained_artifact_root(workspace: Path, artifact_root: Path) -> Path:
+    root = artifact_root.resolve()
+    try:
+        assert_contained(workspace, root, label="Task resource snapshot")
+    except PathContainmentError as exc:
+        raise TaskResourceError(str(exc)) from exc
+    return root
+
+
+def _clear_snapshot_tree(artifact_root: Path) -> None:
+    """Remove a previous snapshot tree without following an escaping symlink."""
+    dest_root = task_resources_root(artifact_root)
+    _assert_lexical_child(artifact_root, dest_root)
+    if dest_root.is_symlink() or dest_root.is_file():
+        dest_root.unlink()
+        return
+    if not dest_root.exists():
+        return
+    try:
+        assert_contained(artifact_root, dest_root, label="Task resource snapshot")
+    except PathContainmentError as exc:
+        raise TaskResourceError(str(exc)) from exc
+    shutil.rmtree(dest_root)
 
 
 def _assert_lexical_child(root: Path, path: Path) -> None:

@@ -112,11 +112,32 @@ def _check_task_source(source: RunManifestSource, report: DoctorReport) -> None:
     report.add("task", Severity.OK, f"Task source is readable: {source.task_source}")
 
 
-def _check_task_resources(source: RunManifestSource, report: DoctorReport) -> None:
+def _check_task_resources(
+    source: RunManifestSource,
+    report: DoctorReport,
+    *,
+    lifecycle_active: bool,
+) -> None:
     try:
         resolve_task_resources(source.workspace, source.config.task.resources)
     except TaskResourceError as exc:
-        report.add("task:resource", Severity.ERROR, str(exc))
+        message = str(exc)
+        # An active lifecycle reads frozen snapshots. A missing live original is
+        # a warning for the next run, not a failure of the current one.
+        live_file_problem = (
+            "missing or unreadable" in message
+            or "must be a file" in message
+            or "not a regular file" in message
+        )
+        if lifecycle_active and live_file_problem and "escapes workspace" not in message:
+            report.add(
+                "task:resource",
+                Severity.WARNING,
+                f"{message}\n"
+                "The active lifecycle uses its frozen task snapshots and does not read this live file.",
+            )
+            return
+        report.add("task:resource", Severity.ERROR, message)
         return
     count = len(source.config.task.resources)
     report.add("task:resource", Severity.OK, f"Task resources validated ({count})")
@@ -323,16 +344,16 @@ def run_doctor(source: RunManifestSource, *, verbose: bool = False) -> DoctorRep
         report.add("config", Severity.ERROR, str(exc))
         return report
     _check_task_source(source, report)
-    _check_task_resources(source, report)
-    _check_git(source.workspace, config, report)
-    _check_cursor_cli(config, report)
-    _check_context_manifest(source.workspace, config, report)
-    _check_instruction_composition(source.workspace, config, report)
     state = None
     try:
         state = load_lifecycle_state(source.workspace, source.artifact_root)
     except RuntimeStateError:
         state = None
+    _check_task_resources(source, report, lifecycle_active=state is not None)
+    _check_git(source.workspace, config, report)
+    _check_cursor_cli(config, report)
+    _check_context_manifest(source.workspace, config, report)
+    _check_instruction_composition(source.workspace, config, report)
     _check_role_and_runtime_files(
         source, config, report, require_task_snapshot=state is not None
     )

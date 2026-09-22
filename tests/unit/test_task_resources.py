@@ -221,6 +221,44 @@ def test_new_run_snapshots_source_and_collision_safe_resources(tmp_path: Path):
     assert prepared.config.task.resources == ["proposal.md", "requirements/api.md", "link.md"]
 
 
+def test_new_snapshot_tree_drops_stale_files(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    _write_specs(repo)
+    stale = repo / ".ai" / "auto-loop" / "task-resources" / "old.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale\n", encoding="utf-8")
+    yaml_path = _manifest(repo, resources=["proposal.md"])
+    prepare_repo_for_run(load_run_manifest(yaml_path))
+    root = repo / ".ai" / "auto-loop" / "task-resources"
+    assert not (root / "old.md").exists()
+    assert (root / "proposal.md").read_text(encoding="utf-8") == "spec v1\n"
+
+    yaml_path = _manifest(repo, resources=[], include_resources_key=True)
+    prepare_repo_for_run(load_run_manifest(yaml_path))
+    assert not root.exists()
+
+
+def test_archive_does_not_move_symlink_target(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    _write_specs(repo)
+    yaml_path = _manifest(repo, resources=["proposal.md"])
+    source = load_run_manifest(yaml_path)
+    prepare_repo_for_run(source)
+    _complete(repo, source)
+    snapshot = repo / ".ai" / "auto-loop" / "task-resources" / "proposal.md"
+    snapshot.unlink()
+    snapshot.symlink_to(repo / "proposal.md")
+    (repo / "proposal.md").write_text("spec v2\n", encoding="utf-8")
+    prepared = prepare_repo_for_run(load_run_manifest(yaml_path))
+    assert (repo / "proposal.md").is_file()
+    assert (repo / "proposal.md").read_text(encoding="utf-8") == "spec v2\n"
+    frozen = repo / ".ai" / "auto-loop" / "task-resources" / "proposal.md"
+    assert frozen.is_file()
+    assert not frozen.is_symlink()
+    assert frozen.read_text(encoding="utf-8") == "spec v2\n"
+    assert prepared.config.task.resources == ["proposal.md"]
+
+
 def test_duplicate_resources_fail_before_snapshot(tmp_path: Path):
     repo = git_repo(tmp_path)
     _write_specs(repo)
@@ -394,3 +432,22 @@ def test_doctor_distinguishes_task_input_failures(tmp_path: Path, monkeypatch):
     assert frozen
     assert any("Frozen task resource is missing" in message for message in frozen)
     assert any("will not fall back" in message for message in frozen)
+
+    snapshot = repo / ".ai" / "auto-loop" / "task-resources" / "proposal.md"
+    snapshot.write_text("spec v1\n", encoding="utf-8")
+    (repo / "proposal.md").unlink()
+    report = run_doctor(load_run_manifest(yaml_path))
+    assert any(
+        check.check_id == "task:resource"
+        and check.severity == Severity.WARNING
+        and "missing or unreadable" in check.message
+        for check in report.checks
+    )
+    assert any(
+        check.check_id == "task:frozen-resource" and check.severity == Severity.OK
+        for check in report.checks
+    )
+    assert not any(
+        check.check_id == "task:resource" and check.severity == Severity.ERROR
+        for check in report.checks
+    )

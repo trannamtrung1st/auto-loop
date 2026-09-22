@@ -252,6 +252,9 @@ def _archive_task_resources(repo: Path, archive_dir: Path, artifact_root: Path) 
     if not root.exists() and not root.is_symlink():
         return
     for path in _iter_archive_files(root):
+        if path.is_symlink():
+            path.unlink()
+            continue
         _archive_repo_file(repo, archive_dir, path, move=True)
     if root.is_symlink():
         root.unlink()
