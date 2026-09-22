@@ -43,7 +43,7 @@ Path and content targets are immutable for the review via controller fingerprint
 
 You may inspect related state outside those targets when needed.
 
-For `PASS`, include every required active review target id in `reviewed_target_ids`.
+When approving a review with `PASS` or `COMPLETE`, include every required active review target id in `reviewed_target_ids`.
 
 ## Independent review obligations
 
