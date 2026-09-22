@@ -168,7 +168,7 @@ class AutoLoopConfig(ManifestModel):
         agents_in = dict(data.get("agents") or {}) if isinstance(data.get("agents"), dict) else {}
         unknown_roles = set(agents_in) - {"planner", "worker", "reviewer"}
         if unknown_roles:
-            listed = ", ".join(sorted(unknown_roles))
+            listed = ", ".join(sorted(str(role) for role in unknown_roles))
             raise ValueError(
                 f"Unknown agents role(s): {listed}. "
                 "Allowed roles: planner, worker, reviewer."

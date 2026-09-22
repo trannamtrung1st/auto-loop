@@ -172,6 +172,17 @@ def test_rejects_unknown_agents_role(tmp_path: Path):
         load_config(path)
 
 
+def test_rejects_unknown_agents_role_numeric_key(tmp_path: Path):
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
+        "agents:\n  123:\n    mode: agent\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="Unknown agents role"):
+        load_config(path)
+
+
 def test_rejects_unknown_agents_worker_field(tmp_path: Path):
     path = tmp_path / "run.yaml"
     path.write_text(
