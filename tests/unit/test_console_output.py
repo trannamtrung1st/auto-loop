@@ -252,7 +252,7 @@ def test_tool_events_close_an_open_text_line():
     console.finish_provider_trace()
     assert stream.getvalue() == (
         "[thinking] wait\n"
-        '[tool:start] read_file  {"path":"src/a.py"}\n'
+        '[tool:start] read_file  src/a.py\n'
         "[tool:end]   read_file  completed · 12 chars\n"
         "[thinking] now\n"
     )
@@ -279,7 +279,7 @@ def test_provider_trace_colors_match_event_kind():
     assert "[message]" in raw
     assert "[tool:start]" in raw
     assert raw.count("[tool:end]") == 2
-    assert "35" in raw
+    assert "\x1b[2m" in raw
     assert "97" in raw
     assert "33" in raw
     assert "32" in raw
@@ -317,7 +317,7 @@ def test_no_color_keeps_trace_labels_without_ansi(monkeypatch):
     console.finish_provider_trace()
     text = stream.getvalue()
     assert "[thinking] secret" in text
-    assert "[tool:end]   read_file  error · boom" in text
+    assert "[tool:end]   read_file  failed · boom" in text
     assert "\x1b[" not in text
 
 

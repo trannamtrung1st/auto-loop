@@ -152,7 +152,7 @@ def test_stream_follow_sees_live_thinking_message_and_tool_events(tmp_path: Path
     assert "[thinking] I need to inspect" in body
     assert body.count("[thinking]") == 1
     assert "[message] hello" in body
-    assert '[tool:start] read_file  {"path":"src/a.py"}' in body
+    assert '[tool:start] read_file  src/a.py' in body
     raw = writer.jsonl_path.read_text(encoding="utf-8")
     assert raw.count("\n") == 4
     assert "[thinking]" not in raw

@@ -248,7 +248,7 @@ def test_partial_cursor_stream_skips_buffered_assistant_copies(tmp_path: Path):
     readable = writer.log_path.read_text(encoding="utf-8").strip()
     assert readable == (
         "[message] I will read the file\n"
-        '[tool:start] read_file  {"path":"src/a.py"}\n'
+        '[tool:start] read_file  src/a.py\n'
         "[tool:end]   read_file  completed · 2 chars\n"
         "[message] Hello world!"
     )
@@ -290,12 +290,12 @@ def test_tool_call_status_maps_to_start_and_end():
     assert completed[0].status == "completed"
     assert failed[0].status == "error"
     assert format_tool_trace(started[0]) == (
-        '[tool:start] read_file  {"path":"src/auto_loop/loop.py"}'
+        "[tool:start] read_file  src/auto_loop/loop.py"
     )
     assert format_tool_trace(completed[0]) == (
         "[tool:end]   read_file  completed · 18432 chars"
     )
-    assert format_tool_trace(failed[0]) == "[tool:end]   read_file  error · not found"
+    assert format_tool_trace(failed[0]) == "[tool:end]   read_file  failed · not found"
 
 
 def test_nested_cli_tool_call_is_generic():
@@ -316,11 +316,45 @@ def test_nested_cli_tool_call_is_generic():
         }
     )
     assert started[0].kind is TraceEventKind.TOOL_START
-    assert started[0].tool_name == "readToolCall"
+    assert started[0].tool_name == "read_file"
+    assert started[0].args == {"path": "src/auto_loop/loop.py"}
+    assert format_tool_trace(started[0]) == "[tool:start] read_file  src/auto_loop/loop.py"
     assert started[0].status == "running"
     assert failed[0].kind is TraceEventKind.TOOL_END
     assert failed[0].status == "error"
     assert "missing" in format_tool_trace(failed[0])
+
+
+def test_cursor_tool_call_with_metadata_uses_wrapper_name():
+    started = _events(
+        {
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "call-1",
+            "tool_call": {
+                "grepToolCall": {"args": {"pattern": "AUTO_LOOP_RESULT", "path": "src"}},
+                "hookAdditionalContexts": [],
+                "toolCallId": "call-1",
+                "startedAtMs": "1",
+            },
+        }
+    )
+    shell = _events(
+        {
+            "type": "tool_call",
+            "subtype": "started",
+            "tool_call": {
+                "shellToolCall": {
+                    "args": {"command": "pytest -q", "toolCallId": "call-2", "timeout": 30}
+                },
+                "hookAdditionalContexts": [],
+            },
+        }
+    )
+    assert started[0].tool_name == "grep"
+    assert "AUTO_LOOP_RESULT" in format_tool_trace(started[0])
+    assert shell[0].tool_name == "run_terminal_cmd"
+    assert format_tool_trace(shell[0]) == "[tool:start] run_terminal_cmd  pytest -q"
 
 
 def test_malformed_system_result_and_tool_result_do_not_crash():
@@ -517,7 +551,7 @@ def test_buffered_only_stream_is_visible_before_invoke_returns(tmp_path: Path, m
     assert rendered.count("[message]") == 2
     assert f"[message] {message}" in rendered
     assert "[message] and add tests." in rendered
-    assert '[tool:start] read_file  {"path":"src/auto_loop/loop.py"}' in rendered
+    assert '[tool:start] read_file  src/auto_loop/loop.py' in rendered
     assert "[tool:end]   read_file  completed" in rendered
     assert rendered.count(message) == 1
     readable = log_path.read_text(encoding="utf-8")

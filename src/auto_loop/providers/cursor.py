@@ -313,15 +313,15 @@ def trace_events_from_stream_line(
 
 
 def format_tool_trace(event: TraceEvent, *, payload_limit: int = TRACE_PAYLOAD_LIMIT) -> str:
-    """Single-line tool trace. Args and error text are capped; results are not dumped."""
+    """Single-line tool trace. Args are a short summary; results are not dumped."""
     name = event.tool_name or "tool"
     if event.kind is TraceEventKind.TOOL_START:
-        rendered = _compact_payload(event.args, payload_limit)
+        rendered = _tool_arg_summary(event.args, payload_limit)
         if rendered:
             return f"[tool:start] {name}  {rendered}"
         return f"[tool:start] {name}"
     if event.status == "error":
-        label = f"[tool:end]   {name}  error"
+        label = f"[tool:end]   {name}  failed"
         detail = _compact_payload(_error_text(event.result), payload_limit)
         if detail:
             return f"{label} · {detail}"
@@ -553,6 +553,99 @@ def _tool_trace_event(event: dict[str, Any]) -> TraceEvent | None:
     return None
 
 
+_TOOL_METADATA_KEYS = frozenset(
+    {
+        "hookAdditionalContexts",
+        "toolCallId",
+        "startedAtMs",
+        "completedAtMs",
+    }
+)
+_ARG_NOISE_KEYS = frozenset(
+    {
+        "toolCallId",
+        "simpleCommands",
+        "timeout",
+        "workingDirectory",
+        "caseInsensitive",
+        "multiline",
+        "headLimit",
+        "offset",
+    }
+)
+_CURSOR_TOOL_NAMES = {
+    "readToolCall": "read_file",
+    "grepToolCall": "grep",
+    "shellToolCall": "run_terminal_cmd",
+    "globToolCall": "glob",
+    "writeToolCall": "write_file",
+    "editToolCall": "edit_file",
+    "strReplaceToolCall": "edit_file",
+    "deleteToolCall": "delete_file",
+    "updateTodosToolCall": "update_todos",
+    "getMcpToolsToolCall": "get_mcp_tools",
+}
+_SUMMARY_KEYS = ("path", "file_path", "target_file", "command", "pattern", "globPattern", "glob_pattern", "query")
+
+
+def _display_tool_name(raw: str) -> str:
+    mapped = _CURSOR_TOOL_NAMES.get(raw)
+    if mapped:
+        return mapped
+    if raw.endswith("ToolCall") and len(raw) > len("ToolCall"):
+        stem = raw[: -len("ToolCall")]
+        parts: list[str] = []
+        chunk = ""
+        for char in stem:
+            if char.isupper() and chunk:
+                parts.append(chunk)
+                chunk = char.lower()
+            else:
+                chunk += char.lower()
+        if chunk:
+            parts.append(chunk)
+        if parts:
+            return "_".join(parts)
+    return raw
+
+
+def _tool_wrapper(nested: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    wrappers: list[tuple[str, dict[str, Any]]] = []
+    for key, value in nested.items():
+        if key in _TOOL_METADATA_KEYS or not isinstance(value, dict):
+            continue
+        if key.endswith("ToolCall") or "args" in value or "result" in value:
+            wrappers.append((key, value))
+    if not wrappers:
+        return None
+    for key, value in wrappers:
+        if key.endswith("ToolCall"):
+            return key, value
+    return wrappers[0]
+
+
+def _tool_arg_summary(args: object, limit: int) -> str:
+    if not isinstance(args, dict):
+        return _compact_payload(args, limit)
+    useful = {
+        key: value
+        for key, value in args.items()
+        if key not in _ARG_NOISE_KEYS and value not in (None, "", [], {})
+    }
+    highlights = [(key, useful[key]) for key in _SUMMARY_KEYS if key in useful]
+    if len(highlights) == 1:
+        return _compact_payload(highlights[0][1], limit)
+    if highlights:
+        rendered = " ".join(
+            f"{key}={_compact_payload(value, max(limit // len(highlights), 16))}"
+            for key, value in highlights
+        )
+        return _compact_payload(rendered, limit)
+    if not useful:
+        return ""
+    return _compact_payload(useful, limit)
+
+
 def _tool_fields(
     event: dict[str, Any],
 ) -> tuple[str, str | None, object | None, object | None]:
@@ -570,28 +663,20 @@ def _tool_fields(
             inner_name = nested.get("name") or nested.get("tool_name")
             if isinstance(inner_name, str):
                 name = inner_name
-        body = _nested_tool_body(nested, name if isinstance(name, str) else None)
-        if body is not None:
-            if not isinstance(name, str) and len(nested) == 1:
-                name = next(iter(nested))
-            if args is None and "args" in body:
+        wrapped = _tool_wrapper(nested)
+        if wrapped is not None:
+            wrapper_name, body = wrapped
+            if not isinstance(name, str):
+                name = wrapper_name
+            if args is None and isinstance(body.get("args"), (dict, str, list)):
                 args = body.get("args")
             if result is None and "result" in body:
                 result = body.get("result")
     if not isinstance(name, str) or not name:
         name = "tool"
+    else:
+        name = _display_tool_name(name)
     return name, call_id, args, result
-
-
-def _nested_tool_body(nested: dict[str, Any], name: str | None) -> dict[str, Any] | None:
-    if name and isinstance(nested.get(name), dict):
-        body = nested[name]
-        return body if isinstance(body, dict) else None
-    if len(nested) == 1:
-        body = next(iter(nested.values()))
-        if isinstance(body, dict):
-            return body
-    return None
 
 
 def _tool_status(event: dict[str, Any]) -> str | None:

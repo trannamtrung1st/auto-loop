@@ -56,7 +56,7 @@ STATUS_STYLES = {
 }
 
 _TRACE_TEXT_STYLES = {
-    TraceEventKind.THINKING: "dim magenta",
+    TraceEventKind.THINKING: "dim",
     TraceEventKind.MESSAGE: "bright_white",
 }
 
