@@ -142,6 +142,7 @@ def _plant_orphan(
         active_run_path(repo, artifact_root),
         {
             "controller_pid": controller_pid,
+            "controller_hostname": socket.gethostname(),
             "controller_started_at": controller_started_at,
             "lifecycle_id": state.lifecycle_id,
             "provider_pid": provider.pid,

@@ -59,6 +59,8 @@ class RuntimeReconcileResult:
     lock_cleared: bool = False
     state_marked_stopped: bool = False
     unverified_provider_skipped: bool = False
+    remote_ownership: bool = False
+    unverified_ownership: bool = False
     message: str = ""
 
     @property
@@ -160,7 +162,7 @@ def controller_is_verified_local(
     """True when this host still runs the recorded controller process."""
     if pid <= 0:
         return False
-    if hostname is not None and hostname != socket.gethostname():
+    if hostname is None or hostname != socket.gethostname():
         return False
     if create_time is None:
         return False
@@ -169,14 +171,36 @@ def controller_is_verified_local(
 
 def controller_is_alive(pid: int, create_time: float | None) -> bool:
     """Deprecated alias; prefer :func:`controller_is_verified_local` with hostname."""
-    return controller_is_verified_local(pid, create_time, socket.gethostname())
+    return controller_is_verified_local(pid, create_time, None)
 
 
 def provider_is_verified(record: ActiveRunRecord) -> bool:
     """True when the recorded provider PID is still the process Auto Loop started."""
     if record.provider_pid is None or record.provider_create_time is None:
         return False
+    if record.controller_hostname is None or record.controller_hostname != socket.gethostname():
+        return False
     return process_matches(record.provider_pid, record.provider_create_time)
+
+
+def _local_hostname() -> str:
+    return socket.gethostname()
+
+
+def _ownership_blocks_local_reconciliation(
+    active: ActiveRunRecord | None,
+    lock,
+) -> tuple[bool, bool, str | None]:
+    """Return (remote, unverified, message) when local reconciliation must not run."""
+    if active is not None and active.controller_hostname is not None:
+        if active.controller_hostname != _local_hostname():
+            host = active.controller_hostname
+            return True, False, f"Lifecycle owned by another host ({host})."
+    if lock is not None and lock.hostname != _local_hostname():
+        return True, False, f"Lifecycle owned by another host ({lock.hostname})."
+    if active is not None and active.controller_hostname is None:
+        return False, True, "Active run metadata is unverified; not reconciled automatically."
+    return False, False, None
 
 
 def _read_active_run(
@@ -206,6 +230,8 @@ def _read_state(repo: Path, artifact_root: Path | None) -> LifecycleState | None
 
 
 def _reconcile_message(result: RuntimeReconcileResult) -> str:
+    if result.message:
+        return result.message
     if result.controller_alive and not result.changed:
         return "Controller is running."
     if not result.changed:
@@ -245,6 +271,14 @@ def reconcile_stale_runtime(
     lock, lock_invalid = _read_lock(repo, artifact_root)
     state = _read_state(repo, artifact_root)
     result = RuntimeReconcileResult()
+
+    remote, unverified, blocked_message = _ownership_blocks_local_reconciliation(active, lock)
+    if remote or unverified:
+        result.remote_ownership = remote
+        result.unverified_ownership = unverified
+        result.controller_alive = remote
+        result.message = blocked_message or "Ownership is not verified on this host."
+        return result
 
     active_controller_alive = (
         active is not None
@@ -384,8 +418,8 @@ def _live_stop_target(
         active.controller_hostname,
     ):
         started = active.controller_started_at
-        host = active.controller_hostname or socket.gethostname()
-        if started is None:
+        host = active.controller_hostname
+        if started is None or host is None:
             return None
         return _VerifiedControllerTarget(active.controller_pid, started, host)
     if lock is not None and lock_owner_verified_local(lock):
@@ -400,6 +434,10 @@ def _idle_stop_message(
     before: LifecycleStatus | None,
     result: RuntimeReconcileResult,
 ) -> str:
+    if result.remote_ownership and result.message:
+        return result.message
+    if result.unverified_ownership and result.message:
+        return result.message
     if result.provider_terminated:
         return "Stopped orphan provider and marked the lifecycle stopped."
     if result.state_marked_stopped:
@@ -428,6 +466,10 @@ def request_remote_stop(
     lock, _invalid = _read_lock(repo, artifact_root)
     before_state = _read_state(repo, artifact_root)
     before_status = before_state.status if before_state is not None else None
+    remote, unverified, blocked_message = _ownership_blocks_local_reconciliation(active, lock)
+    if remote or unverified:
+        return blocked_message or "Ownership is not verified on this host."
+
     target = _live_stop_target(active, lock)
     if target is None:
         result = reconcile_stale_runtime(

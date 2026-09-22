@@ -12,6 +12,7 @@ import os
 import signal
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import psutil
 
@@ -20,6 +21,12 @@ import psutil
 CREATE_TIME_TOLERANCE_SECONDS = 0.5
 
 ForceCheck = Callable[[], bool]
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    pid: int
+    create_time: float
 
 
 def process_create_time(pid: int) -> float | None:
@@ -119,23 +126,45 @@ def _pid_running(pid: int) -> bool:
         return False
 
 
-def _snapshot_tree_pids(root_pid: int) -> set[int]:
-    """Capture the root and every descendant PID before signaling."""
-    pids = {root_pid}
+def _process_identity(proc: psutil.Process) -> ProcessIdentity | None:
+    try:
+        return ProcessIdentity(proc.pid, float(proc.create_time()))
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+
+
+def _snapshot_tree(root_pid: int) -> set[ProcessIdentity]:
+    """Capture root and descendant identities before signaling."""
+    identities: set[ProcessIdentity] = set()
     try:
         root = psutil.Process(root_pid)
     except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return pids
+        return identities
+    root_identity = _process_identity(root)
+    if root_identity is not None:
+        identities.add(root_identity)
     try:
         for proc in root.children(recursive=True):
-            pids.add(proc.pid)
+            child = _process_identity(proc)
+            if child is not None:
+                identities.add(child)
     except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return pids
-    return pids
+        return identities
+    return identities
 
 
-def _any_running(pids: set[int]) -> bool:
-    return any(_pid_running(pid) for pid in pids)
+def _identity_running(identity: ProcessIdentity) -> bool:
+    if not process_matches(identity.pid, identity.create_time):
+        return False
+    return _pid_running(identity.pid)
+
+
+def _any_running(identities: set[ProcessIdentity]) -> bool:
+    return any(_identity_running(identity) for identity in identities)
+
+
+def _running_survivors(identities: set[ProcessIdentity]) -> set[ProcessIdentity]:
+    return {identity for identity in identities if _identity_running(identity)}
 
 
 def _signal_tree(pid: int, sig: int) -> None:
@@ -157,20 +186,22 @@ def _signal_tree(pid: int, sig: int) -> None:
         return
 
 
-def _kill_pids(pids: set[int], sig: int) -> None:
-    for pid in pids:
+def _kill_identities(identities: set[ProcessIdentity], sig: int) -> None:
+    for identity in identities:
+        if not process_matches(identity.pid, identity.create_time):
+            continue
         try:
-            os.kill(pid, sig)
+            os.kill(identity.pid, sig)
         except (ProcessLookupError, PermissionError):
             continue
 
 
 def _wait_tree_dead(
-    pids: set[int],
+    identities: set[ProcessIdentity],
     seconds: float,
     force_check: ForceCheck | None,
 ) -> bool:
-    if not _any_running(pids):
+    if not _any_running(identities):
         return True
     if seconds <= 0:
         return False
@@ -178,10 +209,10 @@ def _wait_tree_dead(
     while time.monotonic() < deadline:
         if force_check is not None and force_check():
             return False
-        if not _any_running(pids):
+        if not _any_running(identities):
             return True
         time.sleep(0.05)
-    return not _any_running(pids)
+    return not _any_running(identities)
 
 
 def terminate_process_tree(
@@ -218,7 +249,7 @@ def terminate_process_tree(
         if abs(started - float(expected_create_time)) > CREATE_TIME_TOLERANCE_SECONDS:
             return False
 
-    snapshot = _snapshot_tree_pids(pid)
+    snapshot = _snapshot_tree(pid)
     forced = force or (force_check is not None and force_check())
     if not forced:
         _signal_tree(pid, signal.SIGTERM)
@@ -227,14 +258,19 @@ def terminate_process_tree(
     # The root can exit while a captured descendant keeps running, or the
     # kernel can reuse the root PID. Re-check root identity before SIGKILL.
     if expected_create_time is not None and not process_matches(pid, expected_create_time):
-        survivors = {candidate for candidate in snapshot if _pid_running(candidate)}
+        survivors = _running_survivors(snapshot)
         if survivors:
-            _kill_pids(survivors, signal.SIGKILL)
+            _kill_identities(survivors, signal.SIGKILL)
             _wait_tree_dead(snapshot, 1.0, None)
         return not _any_running(snapshot)
-    survivors = {candidate for candidate in snapshot if _pid_running(candidate)}
+    survivors = _running_survivors(snapshot)
     if survivors:
-        _signal_tree(pid, signal.SIGKILL)
-        _kill_pids(survivors, signal.SIGKILL)
+        root_survivor = next((item for item in survivors if item.pid == pid), None)
+        if root_survivor is not None and (
+            expected_create_time is None
+            or process_matches(pid, expected_create_time)
+        ):
+            _signal_tree(pid, signal.SIGKILL)
+        _kill_identities(survivors, signal.SIGKILL)
         _wait_tree_dead(snapshot, 1.0, None)
     return not _any_running(snapshot)

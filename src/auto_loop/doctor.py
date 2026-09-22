@@ -246,6 +246,9 @@ def _check_stale_runtime(repo: Path, artifact_root: Path, report: DoctorReport) 
     except OSError as exc:
         report.add("runtime", Severity.ERROR, f"Could not reconcile runtime ownership: {exc}")
         return
+    if result.remote_ownership or result.unverified_ownership:
+        report.add("runtime", Severity.WARNING, result.message)
+        return
     if result.changed:
         report.add("runtime", Severity.WARNING, result.message)
         return

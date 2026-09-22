@@ -9,7 +9,12 @@ from pathlib import Path
 
 import psutil
 
-from auto_loop.process import process_create_time, terminate_process_tree
+from auto_loop.process import (
+    ProcessIdentity,
+    _kill_identities,
+    process_create_time,
+    terminate_process_tree,
+)
 
 
 def _reap(proc: subprocess.Popen[bytes] | None) -> None:
@@ -117,6 +122,23 @@ def test_terminate_kills_child_that_ignores_sigterm_after_parent_exits(tmp_path:
         assert not _running(child_pid)
     finally:
         _reap(proc)
+
+
+def test_kill_identities_skips_recycled_pid(monkeypatch):
+    killed: list[int] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        killed.append(pid)
+
+    def fake_match(pid: int, create_time: float | None, **_kwargs: object) -> bool:
+        return pid == 42 and create_time == 10.0
+
+    monkeypatch.setattr("auto_loop.process.os.kill", fake_kill)
+    monkeypatch.setattr("auto_loop.process.process_matches", fake_match)
+    identity = ProcessIdentity(42, 10.0)
+    wrong = ProcessIdentity(42, 99.0)
+    _kill_identities({identity, wrong}, signal.SIGKILL)
+    assert killed == [42]
 
 
 def test_terminate_skips_reused_pid(tmp_path: Path):

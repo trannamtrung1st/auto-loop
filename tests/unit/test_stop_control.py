@@ -190,8 +190,51 @@ def test_remote_lock_never_signals_a_local_pid(tmp_path: Path, monkeypatch):
     try:
         message = request_remote_stop(repo)
         assert decoy.pid not in signals
-        assert "stopped" in message.lower() or "reconciled" in message.lower() or "no active" in message.lower()
+        assert "another host" in message.lower()
         time.sleep(0.1)
         assert decoy.poll() is None
     finally:
         _reap(decoy)
+
+
+def test_remote_active_run_is_not_reconciled_on_stop(tmp_path: Path):
+    import json
+
+    from auto_loop.git import head_commit
+    from auto_loop.init_cmd import bootstrap_workspace
+    from auto_loop.lifecycle import LifecycleStatus, create_lifecycle
+    from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
+    from auto_loop.stop_control import active_run_path, reconcile_stale_runtime, request_remote_stop
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+    bootstrap_workspace(repo)
+    state = create_lifecycle(head_commit(repo))
+    state.status = LifecycleStatus.RUNNING
+    save_lifecycle_state(repo, state)
+    path = active_run_path(repo)
+    path.write_text(
+        json.dumps(
+            {
+                "controller_pid": 4242,
+                "controller_hostname": "remote-host.example",
+                "controller_started_at": 1.0,
+                "lifecycle_id": state.lifecycle_id,
+                "provider_pid": None,
+                "provider_create_time": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = reconcile_stale_runtime(repo)
+    assert result.remote_ownership
+    assert path.is_file()
+    loaded = load_lifecycle_state(repo)
+    assert loaded is not None
+    assert loaded.status == LifecycleStatus.RUNNING
+    message = request_remote_stop(repo)
+    assert "another host" in message.lower()
