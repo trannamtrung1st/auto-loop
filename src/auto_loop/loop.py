@@ -135,6 +135,7 @@ class RunOutcome:
     exit_code: ExitCode
     state: LifecycleState | None = None
     message: str | None = None
+    terminal_summary_rendered: bool = False
 
 
 class LifecycleRunner:
@@ -156,6 +157,7 @@ class LifecycleRunner:
         self._dirty_batch_attempts = 0
         self._terminal_exit: ExitCode | None = None
         self._terminal_message: str | None = None
+        self._terminal_summary_rendered = False
         console_level = (
             "quiet"
             if options.quiet
@@ -250,6 +252,10 @@ class LifecycleRunner:
         self._terminal_exit = ExitCode.LIMIT_REACHED
         self._publish_terminal_user_message(ExitCode.LIMIT_REACHED, reason)
 
+    def _note_terminal_summary_rendered(self) -> None:
+        if self._console.level != "quiet":
+            self._terminal_summary_rendered = True
+
     def _publish_terminal_user_message(self, exit_code: ExitCode, message: str) -> None:
         """Show structured terminal output, or keep ``message`` for CLI in quiet mode."""
         if self._console.level == "quiet":
@@ -259,7 +265,23 @@ class LifecycleRunner:
             self._console.lifecycle_stopped(message)
         elif exit_code == ExitCode.LIMIT_REACHED:
             self._console.lifecycle_limit_reached(message)
+        self._note_terminal_summary_rendered()
         self._terminal_message = None
+
+    def _terminal_run_outcome(self, exit_code: ExitCode, state: LifecycleState | None) -> RunOutcome:
+        return RunOutcome(
+            exit_code=exit_code,
+            state=state,
+            message=self._terminal_message,
+            terminal_summary_rendered=self._terminal_summary_rendered,
+        )
+
+    def _stopped_outcome_message(self, *, provider_detail: str | None = None) -> str | None:
+        if self._terminal_message is not None:
+            return self._terminal_message
+        if self._terminal_summary_rendered:
+            return None
+        return provider_detail
 
     def _handle_stop_requested(self, state: LifecycleState) -> bool:
         if not self._stop.requested:
@@ -1168,6 +1190,7 @@ class LifecycleRunner:
         )
         self._console.lifecycle_blocked()
         self._terminal_exit = ExitCode.BLOCKED
+        self._note_terminal_summary_rendered()
 
     def _reviewer_slot_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
         if state.active_review is None:
@@ -1340,6 +1363,7 @@ class LifecycleRunner:
             )
             self._console.lifecycle_completed()
             self._terminal_exit = ExitCode.COMPLETE
+            self._note_terminal_summary_rendered()
             return
 
         if active.scope == "batch" and result.verdict == "pass":
@@ -1494,7 +1518,8 @@ class LifecycleRunner:
                 return RunOutcome(
                     exit_code=ExitCode.STOPPED,
                     state=self._load_state(),
-                    message=self._terminal_message or str(exc),
+                    message=self._stopped_outcome_message(provider_detail=str(exc)),
+                    terminal_summary_rendered=self._terminal_summary_rendered,
                 )
             return RunOutcome(
                 exit_code=exc.exit_code,
@@ -1520,18 +1545,10 @@ class LifecycleRunner:
                 message=str(exc),
             )
         if self._terminal_exit is not None:
-            return RunOutcome(
-                exit_code=self._terminal_exit,
-                state=state,
-                message=self._terminal_message,
-            )
+            return self._terminal_run_outcome(self._terminal_exit, state)
         if state.status != LifecycleStatus.LIMIT_REACHED:
             self._mark_limit_reached(state, "max_turns")
-        return RunOutcome(
-            exit_code=ExitCode.LIMIT_REACHED,
-            state=state,
-            message=self._limit_reason or "max_turns",
-        )
+        return self._terminal_run_outcome(ExitCode.LIMIT_REACHED, state)
 
 
 def _check_idempotent_blocked(repo: Path, artifact_root: Path | None = None) -> RunOutcome | None:

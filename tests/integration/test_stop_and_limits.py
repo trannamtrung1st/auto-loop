@@ -74,6 +74,22 @@ def test_max_turns_sets_limit_reached_status(tmp_path: Path):
     state = load_lifecycle_state(repo)
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
     assert state.status == LifecycleStatus.LIMIT_REACHED
+    assert outcome.message is not None
+    assert outcome.terminal_summary_rendered is False
+
+
+def test_max_turns_normal_mode_marks_terminal_summary_rendered(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    provider.set_worker_plan_request()
+    outcome = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=1, max_runtime_minutes=60, verbose=False, quiet=False),
+        provider,
+    )
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    assert outcome.message is None
+    assert outcome.terminal_summary_rendered is True
 
 
 def test_stop_marks_running_lifecycle_stopped(tmp_path: Path):

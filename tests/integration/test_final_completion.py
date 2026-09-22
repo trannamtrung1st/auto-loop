@@ -164,6 +164,22 @@ def test_final_revise_requires_batch_before_repeat(tmp_path: Path):
     assert load_completion_record(repo).final_commit == head
 
 
+def test_complete_normal_mode_marks_terminal_summary_rendered(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    head = _approve_plan_and_batch(repo, provider)
+    provider.set_worker_final_request(head=head)
+    provider.set_reviewer_complete(head)
+    outcome = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=4, max_runtime_minutes=60, verbose=False, quiet=False),
+        provider,
+    )
+    assert outcome.exit_code == ExitCode.COMPLETE
+    assert outcome.terminal_summary_rendered is True
+    assert outcome.message is None
+
+
 def test_worker_blocked_reviewer_revise_resumes_worker(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()

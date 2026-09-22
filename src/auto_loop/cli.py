@@ -13,7 +13,7 @@ from auto_loop.exits import ExitCode
 from auto_loop.git import GitProtocolError
 from auto_loop.doctor import run_doctor
 from auto_loop.locking import ConcurrentRunError
-from auto_loop.loop import run_lifecycle
+from auto_loop.loop import RunOutcome, run_lifecycle
 from auto_loop.providers.subprocess_cursor import SubprocessCursorProvider
 from auto_loop.run_options import build_run_options
 from auto_loop.logs_view import render_logs, stream_follow_logs
@@ -125,6 +125,15 @@ def doctor_cmd(
     raise typer.Exit(code=int(ExitCode.COMPLETE))
 
 
+def run_finish_line(outcome: RunOutcome, *, quiet: bool) -> str | None:
+    """User-facing line after a run, when the CLI prints beyond ``RunConsole`` output."""
+    if outcome.message:
+        return outcome.message
+    if quiet or outcome.terminal_summary_rendered:
+        return None
+    return f"Lifecycle finished with exit code {int(outcome.exit_code)}"
+
+
 def _run_prepared(
     source,
     *,
@@ -158,10 +167,9 @@ def _run_prepared(
     except ConcurrentRunError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(ExitCode.CONCURRENT_RUN)) from exc
-    if outcome.message:
-        typer.echo(outcome.message)
-    elif not quiet:
-        typer.echo(f"Lifecycle finished with exit code {int(outcome.exit_code)}")
+    finish = run_finish_line(outcome, quiet=quiet)
+    if finish:
+        typer.echo(finish)
     raise typer.Exit(code=int(outcome.exit_code))
 
 
