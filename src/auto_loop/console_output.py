@@ -47,6 +47,12 @@ ROLE_LABELS = {
     "reviewer": "REVIEWER",
 }
 
+_REVIEW_SCOPE_LABELS = {
+    "plan": "Plan review",
+    "batch": "Batch review",
+    "final": "Final review",
+}
+
 STATUS_STYLES = {
     "pass": "bold green",
     "complete": "bold green",
@@ -72,6 +78,35 @@ def role_label(actor: str) -> str:
 
 def role_style(actor: str) -> str:
     return ROLE_STYLES.get(actor, _NEUTRAL_BOLD)
+
+
+def review_scope_label(scope: str) -> str:
+    """Operator label for a review scope. Unknown scopes stay readable."""
+    known = _REVIEW_SCOPE_LABELS.get(scope)
+    if known is not None:
+        return known
+    cleaned = scope.replace("_", " ").replace("-", " ").strip()
+    if not cleaned:
+        return "Review"
+    titled = cleaned[0].upper() + cleaned[1:]
+    return f"{titled} review"
+
+
+def _review_row_label(scope: str) -> str:
+    label = review_scope_label(scope)
+    if len(label) >= _LABEL_WIDTH:
+        return f"{label} "
+    return label
+
+
+def _review_request_target(scope: str, target: str) -> str:
+    """Target suffix for a review request. Omit redundant plan/plan."""
+    cleaned = _single_line(target).strip()
+    if not cleaned:
+        return ""
+    if scope == "plan" and cleaned == "plan":
+        return ""
+    return cleaned
 
 
 def status_style(verdict: str) -> str:
@@ -288,11 +323,11 @@ class RunConsole:
 
     def review_requested(self, scope: str, target: str) -> None:
         value = Text()
-        value.append("requested · ")
-        value.append(_single_line(scope), style="bold")
-        value.append(" · ")
-        value.append(_single_line(target), style=_META_STYLE)
-        self._row("Review", value)
+        value.append("requested")
+        shown = _review_request_target(scope, target)
+        if shown:
+            value.append(f" · {shown}", style=_META_STYLE)
+        self._row(_review_row_label(scope), value)
 
     def review_result(self, verdict: str, scope: str, finding_count: int = 0) -> None:
         value = Text()
@@ -300,7 +335,7 @@ class RunConsole:
         if finding_count:
             noun = "finding" if finding_count == 1 else "findings"
             value.append(f" · {finding_count} {noun}", style=_META_STYLE)
-        self._row(f"Review {scope}", value)
+        self._row(_review_row_label(scope), value)
 
     def baseline_advanced(self, head: str) -> None:
         value = Text()

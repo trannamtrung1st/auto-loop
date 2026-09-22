@@ -25,6 +25,8 @@ def test_quiet_suppresses_normal_messages():
     console.provider_trace(
         TraceEvent(TraceEventKind.TOOL_START, tool_name="read_file", status="running")
     )
+    console.review_requested("plan", "plan")
+    console.review_requested("batch", "W01-W02")
     console.review_result("pass", "plan")
     console.plan_ready(".ai/auto-loop/plan.md")
     console.lifecycle_completed()
@@ -111,15 +113,119 @@ def test_review_lines_keep_scope_verdict_and_findings():
     console.review_result("complete", "final")
     console.review_result("hold", "batch", 1)
     text = stream.getvalue()
-    assert "requested" in text
-    assert "batch" in text
-    assert "git:def5678" in text
+    assert "Batch review" in text
+    assert "requested · git:def5678" in text
+    assert "Plan review" in text
     assert "PASS" in text
     assert "REVISE" in text
     assert "2 findings" in text
+    assert "Final review" in text
     assert "COMPLETE" in text
     assert "HOLD" in text
     assert "1 finding" in text
+    assert "requested · batch ·" not in text
+
+
+def _line_starting(text: str, label: str) -> str:
+    for line in text.splitlines():
+        if line.startswith(label):
+            return line
+    raise AssertionError(f"missing row {label!r} in {text!r}")
+
+
+def test_review_request_rows_are_operator_facing():
+    console, stream = _console()
+    console.review_requested("plan", "plan")
+    console.review_requested("plan", "architecture-v2")
+    console.review_requested("batch", "W01-W02")
+    console.review_requested("final", "whole-task")
+    text = stream.getvalue()
+    assert _line_starting(text, "Plan review") == "Plan review   requested"
+    assert "requested · plan · plan" not in text
+    assert "requested · plan" not in text
+    assert _line_starting(text, "Plan review   requested ·") == (
+        "Plan review   requested · architecture-v2"
+    )
+    assert _line_starting(text, "Batch review") == "Batch review  requested · W01-W02"
+    assert _line_starting(text, "Final review") == "Final review  requested · whole-task"
+
+
+def test_review_result_rows_use_the_same_scope_labels():
+    console, stream = _console()
+    console.review_result("pass", "plan", 0)
+    console.review_result("revise", "batch", 2)
+    console.review_result("complete", "final", 0)
+    console.review_result("blocked", "final", 0)
+    text = stream.getvalue()
+    assert _line_starting(text, "Plan review") == "Plan review   PASS"
+    assert _line_starting(text, "Batch review") == "Batch review  REVISE · 2 findings"
+    assert "Final review  COMPLETE" in text
+    assert "Final review  BLOCKED" in text
+
+
+def test_unknown_review_scope_falls_back_without_crashing():
+    from auto_loop.console_output import review_scope_label
+
+    assert review_scope_label("future_scope") == "Future scope review"
+    assert review_scope_label("future-scope") == "Future scope review"
+    assert review_scope_label("") == "Review"
+    console, stream = _console()
+    console.review_requested("future_scope", "alpha")
+    console.review_result("pass", "future-scope")
+    text = stream.getvalue()
+    rows = [line for line in text.splitlines() if line.startswith("Future scope review")]
+    assert rows == [
+        "Future scope review requested · alpha",
+        "Future scope review PASS",
+    ]
+
+
+def test_verbose_review_rows_stay_concise():
+    console, stream = _console("verbose")
+    console.review_requested("plan", "plan")
+    console.review_requested("batch", "W01")
+    console.review_result("pass", "plan")
+    text = stream.getvalue()
+    assert "Plan review   requested" in text
+    assert "Batch review  requested · W01" in text
+    assert "Plan review   PASS" in text
+    assert "requested · plan · plan" not in text
+
+
+def test_review_transition_sequence_stays_readable():
+    console, stream = _console()
+    console.provider_trace(TraceEvent(TraceEventKind.MESSAGE, text="Planning complete."))
+    console.finish_provider_trace()
+    console.review_requested("plan", "plan")
+    console.turn_started(2, "plan_reviewer", model="gpt-5.6")
+    console.provider_trace(TraceEvent(TraceEventKind.MESSAGE, text="Implementation batch ready."))
+    console.finish_provider_trace()
+    console.review_requested("batch", "W01-W02")
+    console.turn_started(5, "reviewer", model="gpt-5.6")
+    console.review_requested("final", "whole-task")
+    text = stream.getvalue()
+    plan_at = text.index("Planning complete.")
+    plan_review_at = text.index("Plan review   requested")
+    turn_at = text.index("Turn 2 · PLAN REVIEWER · gpt-5.6")
+    batch_at = text.index("Batch review  requested · W01-W02")
+    final_at = text.index("Final review  requested · whole-task")
+    assert plan_at < plan_review_at < turn_at < batch_at
+    assert "Turn 5 · REVIEWER · gpt-5.6" in text
+    assert text.index("Turn 5 · REVIEWER · gpt-5.6") < final_at
+    assert "requested · plan · plan" not in text
+
+
+def test_review_rows_stay_plain_without_color(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    stream = _TTY()
+    console = RunConsole("normal", stream=stream)
+    console.review_requested("batch", "W01-W02")
+    console.review_result("revise", "batch", 2)
+    text = stream.getvalue()
+    assert "Batch review  requested · W01-W02" in text
+    assert "Batch review  REVISE · 2 findings" in text
+    assert "\x1b[" not in text
 
 
 def test_baseline_and_terminal_states_are_labeled():
