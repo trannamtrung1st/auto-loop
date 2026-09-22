@@ -129,6 +129,7 @@ def build_cursor_command(
             request.model,
             "--output-format",
             "stream-json",
+            "--stream-partial-output",
         ]
     )
     if request.mode == "ask":
@@ -350,7 +351,21 @@ def _trace_events_from_object(event: dict[str, Any]) -> list[TraceEvent]:
     return []
 
 
+def _assistant_is_buffered_copy(event: dict[str, Any]) -> bool:
+    """Cursor emits full-message copies before tools and before ``result``."""
+    model_call_id = event.get("model_call_id")
+    return model_call_id is not None and model_call_id != ""
+
+
 def _assistant_trace_events(event: dict[str, Any]) -> list[TraceEvent]:
+    if _assistant_is_buffered_copy(event):
+        return []
+    # Partial deltas carry ``timestamp_ms`` without ``model_call_id``. Scripted streams
+    # without timestamps still emit one-shot assistant payloads for tests.
+    return _assistant_partial_text_events(event)
+
+
+def _assistant_partial_text_events(event: dict[str, Any]) -> list[TraceEvent]:
     message = event.get("message")
     if isinstance(message, dict):
         content = message.get("content")

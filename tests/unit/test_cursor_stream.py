@@ -41,6 +41,7 @@ def test_build_create_command_includes_stream_json_and_workspace():
     assert "--output-format" in argv
     idx = argv.index("--output-format")
     assert argv[idx + 1] == "stream-json"
+    assert "--stream-partial-output" in argv
     assert "--resume=" not in " ".join(argv)
     assert "--force" in argv
 

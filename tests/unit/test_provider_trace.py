@@ -18,7 +18,7 @@ from auto_loop.providers.cursor import (
 from auto_loop.providers.supervision import ProviderAttemptResult, provider_attempt_from_process_output
 from auto_loop.run_options import RunOptions
 from auto_loop.runtime import save_lifecycle_state
-from auto_loop.turn_logs import turn_log_paths
+from auto_loop.turn_logs import TurnLogWriter, turn_log_paths
 
 
 def _events(payload: dict) -> list:
@@ -39,6 +39,7 @@ def test_assistant_text_blocks_ignore_tool_use():
     events = _events(
         {
             "type": "assistant",
+            "timestamp_ms": 1,
             "message": {
                 "content": [
                     {"type": "thinking", "thinking": "look first"},
@@ -63,6 +64,80 @@ def test_assistant_string_content_is_a_message():
     assert len(events) == 1
     assert events[0].kind is TraceEventKind.MESSAGE
     assert events[0].text == "partial "
+
+
+def test_buffered_assistant_copies_are_ignored_for_trace():
+    assert _events(
+        {
+            "type": "assistant",
+            "model_call_id": "mc-1",
+            "timestamp_ms": 99,
+            "message": {"content": [{"type": "text", "text": "duplicate"}]},
+        }
+    ) == []
+
+
+def test_partial_cursor_stream_skips_buffered_assistant_copies(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    writer = TurnLogWriter(repo, default_config(), "lc-partial", 1, "worker")
+
+    def partial(text: str, ts: int) -> str:
+        return json.dumps(
+            {
+                "type": "assistant",
+                "timestamp_ms": ts,
+                "message": {"content": [{"type": "text", "text": text}]},
+            }
+        )
+
+    def buffered(text: str, model_call_id: str, stamp: int) -> str:
+        return json.dumps(
+            {
+                "type": "assistant",
+                "model_call_id": model_call_id,
+                "timestamp_ms": stamp,
+                "message": {"content": [{"type": "text", "text": text}]},
+            }
+        )
+
+    ts = 1000
+    lines = [
+        partial("I will", ts),
+        partial(" read the file", ts + 1),
+        buffered("I will read the file", "mc-before-tool", ts + 2),
+        json.dumps(
+            {
+                "type": "tool_call",
+                "status": "running",
+                "name": "read_file",
+                "args": {"path": "src/a.py"},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "tool_call",
+                "status": "completed",
+                "name": "read_file",
+                "result": "ok",
+            }
+        ),
+        partial("Hello", ts + 2),
+        partial(" world!", ts + 3),
+        buffered("Hello world!", "mc-final", ts + 4),
+        json.dumps({"type": "result", "session_id": "s", "result": "Hello world!"}),
+    ]
+    for line in lines:
+        writer.write_stream_line(line)
+    writer.finish_open_trace()
+    writer.finalize()
+    readable = writer.log_path.read_text(encoding="utf-8").strip()
+    assert readable == (
+        "[message] I will read the file\n"
+        '[tool:start] read_file  {"path":"src/a.py"}\n'
+        "[tool:end]   read_file  completed · 2 chars\n"
+        "[message] Hello world!"
+    )
 
 
 def test_tool_call_status_maps_to_start_and_end():
@@ -217,7 +292,7 @@ def test_live_callback_persists_before_invoke_returns_and_retries_do_not_duplica
     second = [
         json.dumps({"type": "system", "session_id": "sess-1"}),
         json.dumps({"type": "thinking", "text": "two"}),
-        json.dumps({"type": "assistant", "text": "hello"}),
+        json.dumps({"type": "assistant", "timestamp_ms": 1, "text": "hello"}),
         json.dumps({"type": "result", "session_id": "sess-1", "result": "hello"}),
     ]
     stream = StringIO()
