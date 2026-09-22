@@ -84,6 +84,32 @@ def test_stream_follow_readable_includes_session_model(tmp_path: Path):
     assert "plan reviewer follow log" in body
 
 
+def test_stream_follow_first_turn_uses_persisted_model_without_session_id(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    state.sessions["worker"] = RoleSession(
+        session_id=None,
+        model="claude-4.5-sonnet",
+        status="pending",
+    )
+    state.status = LifecycleStatus.COMPLETED
+    save_lifecycle_state(repo, state)
+    _write_role_turn_log(repo, state.lifecycle_id, 3, "worker", "live worker log")
+    chunks: list[str] = []
+    stream_follow_logs(
+        repo,
+        write=chunks.append,
+        follow_idle_seconds=0.15,
+        color=False,
+    )
+    body = "".join(chunks)
+    assert "WORKER · claude-4.5-sonnet" in body
+    assert "WORKER · auto" not in body
+    assert "live worker log" in body
+
+
 def test_stream_follow_discovers_plan_reviewer_turn(tmp_path: Path):
     repo = _repo(tmp_path)
     from auto_loop.git import head_commit

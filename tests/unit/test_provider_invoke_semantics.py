@@ -203,3 +203,66 @@ def test_resumed_session_mismatch_raises_session_error(tmp_path: Path):
     runner = _runner(repo, provider)
     with pytest.raises(SessionError):
         runner._invoke_slot("planner", "go", state)
+
+
+def test_invoke_persists_selected_model_before_provider_runs(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    block = "<AUTO_LOOP_RESULT>\n{}\n</AUTO_LOOP_RESULT>".format(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "actor": "worker",
+                "status": "blocked",
+                "review": None,
+                "work_summary": "waiting",
+                "verification": [],
+                "notes": [],
+            }
+        )
+    )
+    attempt = ProviderAttemptResult(
+        lines=[
+            json.dumps({"type": "system", "session_id": "worker-sess-1"}),
+            _result_line(block, "worker-sess-1"),
+        ],
+        exit_code=0,
+    )
+    seen: list[tuple[str | None, str]] = []
+
+    class ModelProbeProvider:
+        def prepare(self, role: str) -> None:
+            return None
+
+        def invoke(self, argv: list[str]) -> ProviderAttemptResult:
+            del argv
+            loaded = load_lifecycle_state(repo)
+            assert loaded is not None
+            worker = loaded.sessions["worker"]
+            seen.append((worker.session_id, worker.model))
+            return attempt
+
+    config = default_config()
+    runner = LifecycleRunner(
+        repo,
+        config,
+        RunOptions(
+            "worker-model",
+            "auto",
+            max_turns=3,
+            max_runtime_minutes=60,
+            verbose=False,
+            quiet=True,
+        ),
+        ModelProbeProvider(),  # type: ignore[arg-type]
+    )
+    state = create_lifecycle(head_commit(repo))
+    assert state.sessions["worker"].model == "auto"
+    save_lifecycle_state(repo, state)
+    runner._invoke_slot("worker", "go", state)
+    assert seen == [(None, "worker-model")]
+    loaded = load_lifecycle_state(repo)
+    assert loaded is not None
+    assert loaded.sessions["worker"].session_id == "worker-sess-1"
+    assert loaded.sessions["worker"].model == "worker-model"

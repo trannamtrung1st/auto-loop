@@ -431,6 +431,7 @@ class LifecycleRunner:
         use_live_cursor = getattr(self.invoker, "uses_live_cursor", False)
         os.environ["AUTO_LOOP_FAKE_ROLE"] = slot
         os.environ["AUTO_LOOP_FAKE_SLOT"] = slot
+        session.model = model
         self._persist_inflight(state, slot)
         self._console.turn_started(state.turn, slot, model=model)
         if session.session_id:
