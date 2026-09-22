@@ -119,6 +119,25 @@ def _pid_running(pid: int) -> bool:
         return False
 
 
+def _snapshot_tree_pids(root_pid: int) -> set[int]:
+    """Capture the root and every descendant PID before signaling."""
+    pids = {root_pid}
+    try:
+        root = psutil.Process(root_pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return pids
+    try:
+        for proc in root.children(recursive=True):
+            pids.add(proc.pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return pids
+    return pids
+
+
+def _any_running(pids: set[int]) -> bool:
+    return any(_pid_running(pid) for pid in pids)
+
+
 def _signal_tree(pid: int, sig: int) -> None:
     """Signal the process group and any descendants that left it."""
     _signal_group_or_process(pid, sig)
@@ -138,8 +157,20 @@ def _signal_tree(pid: int, sig: int) -> None:
         return
 
 
-def _wait_dead(pid: int, seconds: float, force_check: ForceCheck | None) -> bool:
-    if not _pid_running(pid):
+def _kill_pids(pids: set[int], sig: int) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            continue
+
+
+def _wait_tree_dead(
+    pids: set[int],
+    seconds: float,
+    force_check: ForceCheck | None,
+) -> bool:
+    if not _any_running(pids):
         return True
     if seconds <= 0:
         return False
@@ -147,10 +178,10 @@ def _wait_dead(pid: int, seconds: float, force_check: ForceCheck | None) -> bool
     while time.monotonic() < deadline:
         if force_check is not None and force_check():
             return False
-        if not _pid_running(pid):
+        if not _any_running(pids):
             return True
         time.sleep(0.05)
-    return not _pid_running(pid)
+    return not _any_running(pids)
 
 
 def terminate_process_tree(
@@ -187,15 +218,23 @@ def terminate_process_tree(
         if abs(started - float(expected_create_time)) > CREATE_TIME_TOLERANCE_SECONDS:
             return False
 
+    snapshot = _snapshot_tree_pids(pid)
     forced = force or (force_check is not None and force_check())
     if not forced:
         _signal_tree(pid, signal.SIGTERM)
-        if _wait_dead(pid, graceful_seconds, force_check):
+        if _wait_tree_dead(snapshot, graceful_seconds, force_check):
             return True
-    # The original process can exit during the graceful wait and the kernel
-    # can reuse its PID. Re-check identity before the unblockable signal.
+    # The root can exit while a captured descendant keeps running, or the
+    # kernel can reuse the root PID. Re-check root identity before SIGKILL.
     if expected_create_time is not None and not process_matches(pid, expected_create_time):
-        return True
-    _signal_tree(pid, signal.SIGKILL)
-    _wait_dead(pid, 1.0, None)
-    return True
+        survivors = {candidate for candidate in snapshot if _pid_running(candidate)}
+        if survivors:
+            _kill_pids(survivors, signal.SIGKILL)
+            _wait_tree_dead(snapshot, 1.0, None)
+        return not _any_running(snapshot)
+    survivors = {candidate for candidate in snapshot if _pid_running(candidate)}
+    if survivors:
+        _signal_tree(pid, signal.SIGKILL)
+        _kill_pids(survivors, signal.SIGKILL)
+        _wait_tree_dead(snapshot, 1.0, None)
+    return not _any_running(snapshot)

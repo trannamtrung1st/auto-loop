@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +13,14 @@ from pathlib import Path
 from auto_loop.atomic_io import atomic_write_json
 from auto_loop.exits import ExitCode
 from auto_loop.lifecycle import LifecycleState, LifecycleStatus, utc_now
-from auto_loop.locking import LockError, is_pid_alive, load_workspace_lock, lock_owner_is_live, lock_path
+from auto_loop.locking import (
+    LockError,
+    is_pid_alive,
+    load_workspace_lock,
+    lock_blocks_workspace,
+    lock_owner_verified_local,
+    lock_path,
+)
 from auto_loop.paths import auto_loop_root
 from auto_loop.process import (
     is_descendant,
@@ -36,6 +44,7 @@ class ActiveRunRecord:
     controller_pid: int
     lifecycle_id: str
     provider_pid: int | None = None
+    controller_hostname: str | None = None
     controller_started_at: float | None = None
     provider_create_time: float | None = None
 
@@ -81,6 +90,7 @@ def register_active_run(
         active_run_path(repo, artifact_root),
         {
             "controller_pid": controller_pid,
+            "controller_hostname": socket.gethostname(),
             "controller_started_at": process_create_time(controller_pid),
             "lifecycle_id": lifecycle_id,
             "provider_pid": provider_pid,
@@ -114,10 +124,12 @@ def load_active_run(repo: Path, artifact_root: Path | None = None) -> ActiveRunR
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"Active run record must be an object: {path}")
+    hostname = data.get("controller_hostname")
     return ActiveRunRecord(
         controller_pid=int(data["controller_pid"]),
         lifecycle_id=str(data["lifecycle_id"]),
         provider_pid=_optional_int(data.get("provider_pid")),
+        controller_hostname=str(hostname) if hostname is not None else None,
         controller_started_at=_optional_float(data.get("controller_started_at")),
         provider_create_time=_optional_float(data.get("provider_create_time")),
     )
@@ -140,18 +152,24 @@ def persist_stopped_state(
     save_lifecycle_state(repo, state, artifact_root=artifact_root)
 
 
-def controller_is_alive(pid: int, create_time: float | None) -> bool:
-    """True when the recorded controller PID is still that same process.
-
-    Records written before start times were stored fall back to a live-PID
-    check. New records must match ``create_time`` so a reused PID is not
-    treated as the controller.
-    """
+def controller_is_verified_local(
+    pid: int,
+    create_time: float | None,
+    hostname: str | None,
+) -> bool:
+    """True when this host still runs the recorded controller process."""
     if pid <= 0:
         return False
+    if hostname is not None and hostname != socket.gethostname():
+        return False
     if create_time is None:
-        return is_pid_alive(pid)
+        return False
     return process_matches(pid, create_time)
+
+
+def controller_is_alive(pid: int, create_time: float | None) -> bool:
+    """Deprecated alias; prefer :func:`controller_is_verified_local` with hostname."""
+    return controller_is_verified_local(pid, create_time, socket.gethostname())
 
 
 def provider_is_verified(record: ActiveRunRecord) -> bool:
@@ -228,14 +246,19 @@ def reconcile_stale_runtime(
     state = _read_state(repo, artifact_root)
     result = RuntimeReconcileResult()
 
-    active_controller_alive = active is not None and controller_is_alive(
-        active.controller_pid, active.controller_started_at
+    active_controller_alive = (
+        active is not None
+        and controller_is_verified_local(
+            active.controller_pid,
+            active.controller_started_at,
+            active.controller_hostname,
+        )
     )
-    lock_alive = lock is not None and lock_owner_is_live(lock)
+    lock_verified_local = lock is not None and lock_owner_verified_local(lock)
     live_controller_pid: int | None = None
     if active_controller_alive and active is not None:
         live_controller_pid = active.controller_pid
-    elif lock_alive and lock is not None:
+    elif lock_verified_local and lock is not None:
         live_controller_pid = lock.pid
     result.controller_alive = live_controller_pid is not None
 
@@ -264,7 +287,7 @@ def reconcile_stale_runtime(
         clear_active_run(repo, artifact_root)
         result.active_run_cleared = True
 
-    if lock is not None and not lock_alive and not lock_invalid:
+    if lock is not None and not lock_blocks_workspace(lock) and not lock_invalid:
         lock_path(repo, artifact_root).unlink(missing_ok=True)
         result.lock_cleared = True
 
@@ -344,14 +367,32 @@ class RunStopController:
             request_termination(self.active_provider_pid, force=True)
 
 
+@dataclass(frozen=True)
+class _VerifiedControllerTarget:
+    pid: int
+    create_time: float
+    hostname: str
+
+
 def _live_stop_target(
     active: ActiveRunRecord | None,
     lock,
-) -> tuple[int, float | None] | None:
-    if active is not None and controller_is_alive(active.controller_pid, active.controller_started_at):
-        return active.controller_pid, active.controller_started_at
-    if lock is not None and lock_owner_is_live(lock):
-        return lock.pid, lock.process_create_time
+) -> _VerifiedControllerTarget | None:
+    if active is not None and controller_is_verified_local(
+        active.controller_pid,
+        active.controller_started_at,
+        active.controller_hostname,
+    ):
+        started = active.controller_started_at
+        host = active.controller_hostname or socket.gethostname()
+        if started is None:
+            return None
+        return _VerifiedControllerTarget(active.controller_pid, started, host)
+    if lock is not None and lock_owner_verified_local(lock):
+        started = lock.process_create_time
+        if started is None:
+            return None
+        return _VerifiedControllerTarget(lock.pid, started, lock.hostname)
     return None
 
 
@@ -396,7 +437,8 @@ def request_remote_stop(
         )
         return _idle_stop_message(before_status, result)
 
-    target_pid, target_started = target
+    target_pid = target.pid
+    target_started = target.create_time
     try:
         os.kill(target_pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -410,7 +452,9 @@ def request_remote_stop(
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         state = _read_state(repo, artifact_root)
-        controller_gone = not controller_is_alive(target_pid, target_started)
+        controller_gone = not controller_is_verified_local(
+            target_pid, target_started, target.hostname
+        )
         provider_alive = active is not None and provider_is_verified(active)
         stopped = state is not None and state.status == LifecycleStatus.STOPPED
         if stopped and controller_gone and not provider_alive:
@@ -432,7 +476,7 @@ def request_remote_stop(
             force=True,
             expected_create_time=active.provider_create_time,
         )
-    if controller_is_alive(target_pid, target_started):
+    if controller_is_verified_local(target_pid, target_started, target.hostname):
         try:
             os.kill(target_pid, signal.SIGKILL)
         except ProcessLookupError:

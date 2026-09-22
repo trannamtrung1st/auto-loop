@@ -1,6 +1,10 @@
 """Workspace lock acquisition and stale takeover."""
 
+import json
+import os
+import socket
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,10 +59,25 @@ def test_is_pid_alive_false_for_missing_process():
     assert is_pid_alive(999_999_999) is False
 
 
-def test_lock_with_reused_pid_is_replaced(tmp_path: Path):
-    import json
-    import os
+def test_legacy_local_lock_without_create_time_is_replaced(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    path = lock_path(repo)
+    record = {
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "started_at": datetime.now().astimezone().isoformat(),
+        "lifecycle_id": "lc-old",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    handle = acquire_workspace_lock(repo, "lc-new")
+    loaded = load_workspace_lock(repo)
+    assert loaded is not None
+    assert loaded.lifecycle_id == "lc-new"
+    handle.release()
 
+
+def test_lock_with_reused_pid_is_replaced(tmp_path: Path):
     repo = _git_repo(tmp_path)
     handle = acquire_workspace_lock(repo, "lc-old")
     path = lock_path(repo)

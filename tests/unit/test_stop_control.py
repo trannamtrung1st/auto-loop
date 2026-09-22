@@ -143,5 +143,55 @@ def test_register_active_run_stores_process_identity(tmp_path: Path):
             process_create_time(os.getpid()), abs=0.5
         )
         assert record.provider_create_time == pytest.approx(process_create_time(proc.pid), abs=0.5)
+        assert record.controller_hostname == __import__("socket").gethostname()
     finally:
         _reap(proc)
+
+
+def test_remote_lock_never_signals_a_local_pid(tmp_path: Path, monkeypatch):
+    from datetime import datetime
+
+    from auto_loop.atomic_io import atomic_write_json
+    from auto_loop.git import head_commit
+    from auto_loop.init_cmd import bootstrap_workspace
+    from auto_loop.lifecycle import create_lifecycle
+    from auto_loop.locking import WorkspaceLockRecord, lock_path
+    from auto_loop.runtime import save_lifecycle_state
+    from auto_loop.stop_control import request_remote_stop
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+    bootstrap_workspace(repo)
+    decoy = _sleeper(ignore_term=False)
+    signals: list[int] = []
+    real_kill = os.kill
+
+    def track_kill(pid: int, sig: int) -> None:
+        signals.append(pid)
+        real_kill(pid, sig)
+
+    monkeypatch.setattr("auto_loop.stop_control.os.kill", track_kill)
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    started = process_create_time(decoy.pid)
+    assert started is not None
+    record = WorkspaceLockRecord(
+        pid=decoy.pid,
+        hostname="remote-machine.example",
+        started_at=datetime.now().astimezone(),
+        lifecycle_id=state.lifecycle_id,
+        process_create_time=started,
+    )
+    atomic_write_json(lock_path(repo), record.model_dump(mode="json"))
+    try:
+        message = request_remote_stop(repo)
+        assert decoy.pid not in signals
+        assert "stopped" in message.lower() or "reconciled" in message.lower() or "no active" in message.lower()
+        time.sleep(0.1)
+        assert decoy.poll() is None
+    finally:
+        _reap(decoy)

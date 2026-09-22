@@ -67,12 +67,25 @@ def is_pid_alive(pid: int) -> bool:
         return True
 
 
-def lock_owner_is_live(record: WorkspaceLockRecord) -> bool:
+def lock_owner_verified_local(record: WorkspaceLockRecord) -> bool:
+    """True when this machine still runs the lock owner's recorded process."""
+    if record.hostname != socket.gethostname():
+        return False
+    if record.process_create_time is None:
+        return False
+    return process_matches(record.pid, record.process_create_time)
+
+
+def lock_blocks_workspace(record: WorkspaceLockRecord) -> bool:
+    """True when another run must not take over this workspace lock."""
     if record.hostname != socket.gethostname():
         return True
-    if record.process_create_time is not None:
-        return process_matches(record.pid, record.process_create_time)
-    return is_pid_alive(record.pid)
+    return lock_owner_verified_local(record)
+
+
+def lock_owner_is_live(record: WorkspaceLockRecord) -> bool:
+    """Backward-compatible alias for workspace takeover and doctor warnings."""
+    return lock_blocks_workspace(record)
 
 
 @dataclass

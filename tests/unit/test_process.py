@@ -80,6 +80,45 @@ time.sleep(120)
         _reap(proc)
 
 
+def test_terminate_kills_child_that_ignores_sigterm_after_parent_exits(tmp_path: Path):
+    child_path = tmp_path / "child.pid"
+    script = (
+        "import pathlib, subprocess, sys, time\n"
+        "path, exe = sys.argv[1], sys.executable\n"
+        "child = subprocess.Popen(\n"
+        "    [exe, '-c', 'import signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)'],\n"
+        "    start_new_session=True,\n"
+        ")\n"
+        "pathlib.Path(path).write_text(str(child.pid), encoding='utf-8')\n"
+        "time.sleep(120)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, str(child_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 3
+        child_pid = 0
+        while time.monotonic() < deadline:
+            if child_path.is_file():
+                child_pid = int(child_path.read_text(encoding="utf-8"))
+                if _running(child_pid):
+                    break
+            time.sleep(0.05)
+        assert _running(child_pid)
+        terminate_process_tree(proc.pid, graceful_seconds=0.5)
+        proc.wait(timeout=3)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and _running(child_pid):
+            time.sleep(0.05)
+        assert not _running(child_pid)
+    finally:
+        _reap(proc)
+
+
 def test_terminate_skips_reused_pid(tmp_path: Path):
     del tmp_path
     proc = subprocess.Popen(
