@@ -432,7 +432,7 @@ class LifecycleRunner:
         os.environ["AUTO_LOOP_FAKE_ROLE"] = slot
         os.environ["AUTO_LOOP_FAKE_SLOT"] = slot
         self._persist_inflight(state, slot)
-        self._console.turn_started(state.turn, slot)
+        self._console.turn_started(state.turn, slot, model=model)
         if session.session_id:
             self._console.session_resumed(session.session_id)
         turn_log = TurnLogWriter(

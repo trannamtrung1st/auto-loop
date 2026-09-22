@@ -1,6 +1,7 @@
 """Console verbosity, structure, and color behavior."""
 
 from io import StringIO
+from pathlib import Path
 
 from auto_loop.console_output import RunConsole
 from auto_loop.providers.cursor import TraceEvent, TraceEventKind
@@ -19,7 +20,7 @@ def _console(level: str = "normal", *, color: bool | None = False) -> tuple[RunC
 def test_quiet_suppresses_normal_messages():
     console, stream = _console("quiet")
     console.lifecycle_started("lc-1", goal_summary="Build a kanban board")
-    console.turn_started(1, "worker")
+    console.turn_started(1, "worker", model="auto")
     console.provider_trace(TraceEvent(TraceEventKind.THINKING, text="hidden"))
     console.provider_trace(
         TraceEvent(TraceEventKind.TOOL_START, tool_name="read_file", status="running")
@@ -98,7 +99,7 @@ def test_turn_rules_use_stable_role_labels():
         ("reviewer", "REVIEWER"),
         ("future_role", "FUTURE ROLE"),
     ):
-        console.turn_started(1, actor)
+        console.turn_started(1, actor, model="test-model")
         assert label in stream.getvalue()
 
 
@@ -172,10 +173,10 @@ def test_forced_color_styles_known_verdicts():
     stream = StringIO()
     console = RunConsole("normal", stream=stream, color=True)
     console.lifecycle_started("lc-1", goal_summary="Color")
-    console.turn_started(1, "planner")
-    console.turn_started(2, "plan_reviewer")
-    console.turn_started(3, "worker")
-    console.turn_started(4, "reviewer")
+    console.turn_started(1, "planner", model="claude-4.5-sonnet")
+    console.turn_started(2, "plan_reviewer", model="gpt-5.6")
+    console.turn_started(3, "worker", model="claude-4.5-sonnet")
+    console.turn_started(4, "reviewer", model="gpt-5.6")
     console.review_result("pass", "plan")
     console.review_result("revise", "batch", 2)
     console.review_result("blocked", "batch")
@@ -319,6 +320,62 @@ def test_no_color_keeps_trace_labels_without_ansi(monkeypatch):
     assert "[thinking] secret" in text
     assert "[tool:end]   read_file  failed · boom" in text
     assert "\x1b[" not in text
+
+
+def test_turn_header_includes_model_for_all_slots_in_normal_and_verbose():
+    for level in ("normal", "verbose"):
+        console, stream = _console(level)
+        console.turn_started(1, "planner", model="planner-model")
+        console.turn_started(2, "plan_reviewer", model="reviewer-model")
+        console.turn_started(3, "worker", model="worker-model")
+        console.turn_started(4, "reviewer", model="reviewer-model")
+        text = stream.getvalue()
+        assert "Turn 1 · PLANNER · planner-model" in text
+        assert "Turn 2 · PLAN REVIEWER · reviewer-model" in text
+        assert "Turn 3 · WORKER · worker-model" in text
+        assert "Turn 4 · REVIEWER · reviewer-model" in text
+
+
+def test_turn_header_model_suppressed_in_quiet_mode():
+    console, stream = _console("quiet")
+    console.turn_started(3, "worker", model="auto")
+    assert stream.getvalue() == ""
+
+
+def test_turn_header_shows_auto_literal():
+    console, stream = _console()
+    console.turn_started(3, "worker", model="auto")
+    assert "Turn 3 · WORKER · auto" in stream.getvalue()
+
+
+def test_resolved_model_uses_session_model_for_resumed_slot(tmp_path: Path):
+    from auto_loop.init_cmd import bootstrap_workspace
+    from auto_loop.lifecycle import create_lifecycle
+    from auto_loop.loop import LifecycleRunner
+    from auto_loop.providers.scripted import ScriptedProvider
+    from auto_loop.run_options import RunOptions
+    from auto_loop.config import default_config
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    bootstrap_workspace(repo)
+    options = RunOptions(
+        "auto",
+        "gpt-5.6",
+        max_turns=1,
+        max_runtime_minutes=60,
+        verbose=False,
+        quiet=True,
+        planner_model="claude-4.5-sonnet",
+    )
+    runner = LifecycleRunner(repo, default_config(), options, ScriptedProvider())
+    state = create_lifecycle("abc123")
+    state.sessions["worker"].session_id = "worker-session"
+    state.sessions["worker"].model = "claude-4.5-sonnet"
+    assert runner._resolved_model("worker", state) == "claude-4.5-sonnet"
+    assert runner._resolved_model("planner", state) == "claude-4.5-sonnet"
+    assert runner._resolved_model("plan_reviewer", state) == "gpt-5.6"
+    assert runner._resolved_model("reviewer", state) == "gpt-5.6"
 
 
 def test_redirected_provider_trace_has_no_ansi():

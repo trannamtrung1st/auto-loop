@@ -126,9 +126,14 @@ def test_limit_reached_resume_resets_status_to_running(tmp_path: Path, monkeypat
         batch_worker_payload_with_path(baseline, head, plan_rel, path_id="plan-bad"),
     )
     run_lifecycle(repo, run_opts(1), provider)
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.status == LifecycleStatus.LIMIT_REACHED
+    recorded.clear()
     provider.set_response("worker", batch_worker_payload(baseline, head))
     run_lifecycle(repo, run_opts(1), provider)
-    assert LifecycleStatus.RUNNING in recorded
+    assert recorded
+    assert recorded[0] == LifecycleStatus.RUNNING
 
 
 def test_stop_marks_running_lifecycle_stopped(tmp_path: Path):

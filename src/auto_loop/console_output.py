@@ -258,13 +258,15 @@ class RunConsole:
         self._row("Plan", Text(_single_line(plan_path), style=_META_STYLE))
         self._row("Next", Text("worker"))
 
-    def turn_started(self, turn: int, actor: str) -> None:
+    def turn_started(self, turn: int, actor: str, *, model: str) -> None:
         if not self._enabled("normal"):
             return
         self._blank()
         title = Text()
         title.append(f"Turn {turn} · ")
         title.append(role_label(actor), style=role_style(actor))
+        title.append(" · ")
+        title.append(_single_line(model), style=_META_STYLE)
         self._rule(title, style=role_style(actor))
 
     def session_created(self, session_id: str) -> None:
