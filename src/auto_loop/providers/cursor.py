@@ -294,12 +294,20 @@ def trace_text_prefix(kind: TraceEventKind) -> str:
     return ""
 
 
-def trace_events_from_stream_line(line: str) -> list[TraceEvent]:
+def trace_events_from_stream_line(
+    line: str,
+    *,
+    legacy_assistant_trace: bool = False,
+) -> list[TraceEvent]:
     """Map one Cursor NDJSON line to normalized trace events.
 
     Malformed lines yield an empty list. Tool rendering comes only from
     ``tool_call`` lifecycle events; assistant ``tool_use`` blocks are ignored
     so the same call is not shown twice.
+
+    Live Cursor streams should leave ``legacy_assistant_trace`` false so only
+    timestamped assistant deltas render. Scripted providers may enable the
+    legacy path for one-shot assistant payloads without timestamps.
     """
     stripped = line.strip()
     if not stripped:
@@ -310,7 +318,7 @@ def trace_events_from_stream_line(line: str) -> list[TraceEvent]:
         return []
     if not isinstance(value, dict):
         return []
-    return _trace_events_from_object(value)
+    return _trace_events_from_object(value, legacy_assistant_trace=legacy_assistant_trace)
 
 
 def format_tool_trace(event: TraceEvent, *, payload_limit: int = TRACE_PAYLOAD_LIMIT) -> str:
@@ -334,7 +342,11 @@ def format_tool_trace(event: TraceEvent, *, payload_limit: int = TRACE_PAYLOAD_L
     return label
 
 
-def _trace_events_from_object(event: dict[str, Any]) -> list[TraceEvent]:
+def _trace_events_from_object(
+    event: dict[str, Any],
+    *,
+    legacy_assistant_trace: bool = False,
+) -> list[TraceEvent]:
     event_type = event.get("type") or event.get("event")
     if not isinstance(event_type, str):
         return []
@@ -344,25 +356,36 @@ def _trace_events_from_object(event: dict[str, Any]) -> list[TraceEvent]:
             return []
         return [TraceEvent(kind=TraceEventKind.THINKING, text=text)]
     if event_type == "assistant":
-        return _assistant_trace_events(event)
+        return _assistant_trace_events(
+            event, legacy_assistant_trace=legacy_assistant_trace
+        )
     if event_type == "tool_call":
         tool = _tool_trace_event(event)
         return [tool] if tool is not None else []
     return []
 
 
-def _assistant_is_buffered_copy(event: dict[str, Any]) -> bool:
-    """Cursor emits full-message copies before tools and before ``result``."""
+def _assistant_is_live_delta(event: dict[str, Any]) -> bool:
+    """Incremental assistant chunk from ``--stream-partial-output``."""
     model_call_id = event.get("model_call_id")
-    return model_call_id is not None and model_call_id != ""
+    if model_call_id is not None and model_call_id != "":
+        return False
+    return event.get("timestamp_ms") is not None
 
 
-def _assistant_trace_events(event: dict[str, Any]) -> list[TraceEvent]:
-    if _assistant_is_buffered_copy(event):
-        return []
-    # Partial deltas carry ``timestamp_ms`` without ``model_call_id``. Scripted streams
-    # without timestamps still emit one-shot assistant payloads for tests.
-    return _assistant_partial_text_events(event)
+def _assistant_trace_events(
+    event: dict[str, Any],
+    *,
+    legacy_assistant_trace: bool = False,
+) -> list[TraceEvent]:
+    if _assistant_is_live_delta(event):
+        return _assistant_partial_text_events(event)
+    if legacy_assistant_trace and event.get("timestamp_ms") is None:
+        model_call_id = event.get("model_call_id")
+        if model_call_id is not None and model_call_id != "":
+            return []
+        return _assistant_partial_text_events(event)
+    return []
 
 
 def _assistant_partial_text_events(event: dict[str, Any]) -> list[TraceEvent]:

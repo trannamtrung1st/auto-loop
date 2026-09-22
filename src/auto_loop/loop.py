@@ -436,6 +436,7 @@ class LifecycleRunner:
             state.lifecycle_id,
             state.turn,
             slot,
+            legacy_assistant_trace=not use_live_cursor,
         )
         self.invoker.prepare(slot)
         if hasattr(self.invoker, "stop_check"):

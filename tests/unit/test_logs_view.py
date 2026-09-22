@@ -131,7 +131,7 @@ def test_stream_follow_sees_live_thinking_message_and_tool_events(tmp_path: Path
         time.sleep(0.15)
         writer.write_stream_line('{"type":"thinking","text":"to inspect"}')
         writer.write_stream_line(
-            '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}'
+            '{"type":"assistant","timestamp_ms":1,"message":{"content":[{"type":"text","text":"hello"}]}}'
         )
         writer.write_stream_line(
             '{"type":"tool_call","status":"running","name":"read_file","args":{"path":"src/a.py"}}'

@@ -21,8 +21,10 @@ from auto_loop.runtime import save_lifecycle_state
 from auto_loop.turn_logs import TurnLogWriter, turn_log_paths
 
 
-def _events(payload: dict) -> list:
-    return trace_events_from_stream_line(json.dumps(payload))
+def _events(payload: dict, *, legacy_assistant_trace: bool = False) -> list:
+    return trace_events_from_stream_line(
+        json.dumps(payload), legacy_assistant_trace=legacy_assistant_trace
+    )
 
 
 def test_thinking_deltas_are_text_events():
@@ -60,7 +62,10 @@ def test_assistant_text_blocks_ignore_tool_use():
 
 
 def test_assistant_string_content_is_a_message():
-    events = _events({"type": "assistant", "message": {"content": "partial "}})
+    events = _events(
+        {"type": "assistant", "message": {"content": "partial "}},
+        legacy_assistant_trace=True,
+    )
     assert len(events) == 1
     assert events[0].kind is TraceEventKind.MESSAGE
     assert events[0].text == "partial "
@@ -73,6 +78,12 @@ def test_buffered_assistant_copies_are_ignored_for_trace():
             "model_call_id": "mc-1",
             "timestamp_ms": 99,
             "message": {"content": [{"type": "text", "text": "duplicate"}]},
+        }
+    ) == []
+    assert _events(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Hello world!"}]},
         }
     ) == []
 
@@ -124,7 +135,12 @@ def test_partial_cursor_stream_skips_buffered_assistant_copies(tmp_path: Path):
         ),
         partial("Hello", ts + 2),
         partial(" world!", ts + 3),
-        buffered("Hello world!", "mc-final", ts + 4),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hello world!"}]},
+            }
+        ),
         json.dumps({"type": "result", "session_id": "s", "result": "Hello world!"}),
     ]
     for line in lines:

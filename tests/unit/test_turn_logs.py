@@ -25,7 +25,9 @@ def _repo(tmp_path: Path) -> Path:
 
 def test_turn_logs_write_jsonl_and_readable(tmp_path: Path):
     repo = _repo(tmp_path)
-    writer = TurnLogWriter(repo, default_config(), "lc-1", 1, "worker")
+    writer = TurnLogWriter(
+        repo, default_config(), "lc-1", 1, "worker", legacy_assistant_trace=True
+    )
     writer.write_stream_lines(
         [
             json.dumps({"type": "thinking", "text": "I need "}),
@@ -119,7 +121,7 @@ def test_unseen_lines_do_not_duplicate_a_live_attempt(tmp_path: Path):
         writer.write_stream_line(line)
     write_unseen_stream_lines(writer, first, before=before, on_line=writer.write_stream_line)
     writer.finish_open_trace()
-    second = [json.dumps({"type": "assistant", "text": "next"})]
+    second = [json.dumps({"type": "assistant", "timestamp_ms": 1, "text": "next"})]
     before_second = writer.raw_line_count
     write_unseen_stream_lines(
         writer, second, before=before_second, on_line=writer.write_stream_line

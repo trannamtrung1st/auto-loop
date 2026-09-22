@@ -53,6 +53,7 @@ class TurnLogWriter:
     lifecycle_id: str
     turn: int
     role: str
+    legacy_assistant_trace: bool = False
     jsonl_path: Path = field(init=False)
     log_path: Path = field(init=False)
     _raw_line_count: int = field(default=0, init=False)
@@ -76,7 +77,9 @@ class TurnLogWriter:
         """Persist one provider line immediately and return its trace events."""
         raw = line.rstrip("\n")
         self._append_jsonl(raw)
-        events = trace_events_from_stream_line(raw)
+        events = trace_events_from_stream_line(
+            raw, legacy_assistant_trace=self.legacy_assistant_trace
+        )
         for event in events:
             self._write_trace_event(event)
         return events
