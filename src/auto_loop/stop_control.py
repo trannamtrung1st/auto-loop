@@ -192,6 +192,8 @@ def provider_is_verified(record: ActiveRunRecord) -> bool:
         return False
     if record.controller_hostname is None or record.controller_hostname != socket.gethostname():
         return False
+    if record.controller_started_at is None:
+        return False
     return process_matches(record.provider_pid, record.provider_create_time)
 
 
@@ -204,14 +206,17 @@ def _ownership_blocks_local_reconciliation(
     lock,
 ) -> tuple[bool, bool, str | None]:
     """Return (remote, unverified, message) when local reconciliation must not run."""
+    local = _local_hostname()
     if active is not None and active.controller_hostname is not None:
-        if active.controller_hostname != _local_hostname():
-            host = active.controller_hostname
-            return True, False, f"Lifecycle owned by another host ({host})."
-    if lock is not None and lock.hostname != _local_hostname():
+        if active.controller_hostname != local:
+            return True, False, f"Lifecycle owned by another host ({active.controller_hostname})."
+    if lock is not None and lock.hostname != local:
         return True, False, f"Lifecycle owned by another host ({lock.hostname})."
-    if active is not None and active.controller_hostname is None:
-        return False, True, "Active run metadata is unverified; not reconciled automatically."
+    if active is not None:
+        if active.controller_hostname is None or active.controller_started_at is None:
+            return False, True, "Active run metadata is unverified; not reconciled automatically."
+    if lock is not None and lock.hostname == local and lock.process_create_time is None:
+        return False, True, "Workspace lock metadata is unverified; not reconciled automatically."
     return False, False, None
 
 

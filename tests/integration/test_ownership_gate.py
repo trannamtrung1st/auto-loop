@@ -1,19 +1,25 @@
 """Run/resume must not start when ownership is remote or unverified."""
 
 import json
+import socket
+import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from auto_loop.atomic_io import atomic_write_json
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.lifecycle import LifecycleStatus, create_lifecycle
-from auto_loop.locking import ConcurrentRunError, lock_path
+from auto_loop.locking import ConcurrentRunError, WorkspaceLockRecord, lock_path
 from auto_loop.loop import run_lifecycle
+from auto_loop.process import process_create_time
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_options import RunOptions
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
-from auto_loop.stop_control import active_run_path
+from auto_loop.stop_control import active_run_path, reconcile_stale_runtime, request_remote_stop
 from tests.repo_utils import frozen_config
 from tests.integration.scenario_harness import make_repo
 
@@ -91,6 +97,94 @@ def test_run_lifecycle_refuses_unverified_active_run(tmp_path: Path):
             repo,
             _options(),
             provider,
+            config=config,
+            artifact_root=artifact_root,
+        )
+
+
+def _sleeper() -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def test_legacy_active_run_missing_controller_start_time_is_not_reconciled(
+    tmp_path: Path,
+):
+    repo = make_repo(tmp_path)
+    config = frozen_config(repo)
+    artifact_root = repo / config.artifacts_root
+    provider = _sleeper()
+    try:
+        started = process_create_time(provider.pid)
+        assert started is not None
+        state = create_lifecycle(head_commit(repo))
+        state.status = LifecycleStatus.RUNNING
+        save_lifecycle_state(repo, state, artifact_root=artifact_root)
+        path = active_run_path(repo, artifact_root)
+        path.write_text(
+            json.dumps(
+                {
+                    "controller_pid": 999_999_999,
+                    "controller_hostname": socket.gethostname(),
+                    "lifecycle_id": state.lifecycle_id,
+                    "provider_pid": provider.pid,
+                    "provider_create_time": started,
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = reconcile_stale_runtime(repo, artifact_root)
+        assert result.unverified_ownership
+        assert path.is_file()
+        assert provider.poll() is None
+        reloaded = load_lifecycle_state(repo, artifact_root)
+        assert reloaded is not None
+        assert reloaded.status == LifecycleStatus.RUNNING
+        with pytest.raises(ConcurrentRunError, match="unverified"):
+            request_remote_stop(repo, artifact_root=artifact_root)
+        with pytest.raises(ConcurrentRunError, match="unverified"):
+            run_lifecycle(
+                repo,
+                _options(),
+                ScriptedProvider(),
+                config=config,
+                artifact_root=artifact_root,
+            )
+    finally:
+        provider.kill()
+        provider.wait(timeout=2)
+
+
+def test_legacy_local_lock_missing_process_create_time_blocks_run(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    config = frozen_config(repo)
+    artifact_root = repo / config.artifacts_root
+    state = create_lifecycle(head_commit(repo))
+    state.status = LifecycleStatus.RUNNING
+    save_lifecycle_state(repo, state, artifact_root=artifact_root)
+    record = WorkspaceLockRecord(
+        pid=4242,
+        hostname=socket.gethostname(),
+        started_at=datetime.now().astimezone(),
+        lifecycle_id=state.lifecycle_id,
+        process_create_time=None,
+    )
+    atomic_write_json(lock_path(repo, artifact_root), record.model_dump(mode="json"))
+    result = reconcile_stale_runtime(repo, artifact_root)
+    assert result.unverified_ownership
+    assert lock_path(repo, artifact_root).is_file()
+    reloaded = load_lifecycle_state(repo, artifact_root)
+    assert reloaded is not None
+    assert reloaded.status == LifecycleStatus.RUNNING
+    with pytest.raises(ConcurrentRunError, match="unverified"):
+        run_lifecycle(
+            repo,
+            _options(),
+            ScriptedProvider(),
             config=config,
             artifact_root=artifact_root,
         )
