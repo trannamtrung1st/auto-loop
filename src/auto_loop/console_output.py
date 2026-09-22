@@ -347,7 +347,7 @@ class RunConsole:
             self._trace_text(event)
             return
         if event.kind in (TraceEventKind.TOOL_START, TraceEventKind.TOOL_END):
-            self._finish_stream_line()
+            self._finish_message_trace_segment()
             limit = (
                 TRACE_PAYLOAD_LIMIT_VERBOSE
                 if self.level == "verbose"
@@ -367,6 +367,12 @@ class RunConsole:
         if trailing:
             self._emit_trace_multiline(TraceEventKind.MESSAGE, trailing)
         self._result_trace_filter.reset()
+        self._finish_stream_line()
+
+    def _finish_message_trace_segment(self) -> None:
+        trailing = self._result_trace_filter.flush_pending_outside()
+        if trailing:
+            self._emit_trace_multiline(TraceEventKind.MESSAGE, trailing)
         self._finish_stream_line()
 
     def _trace_text(self, event: TraceEvent) -> None:

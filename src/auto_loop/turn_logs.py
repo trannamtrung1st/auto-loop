@@ -102,6 +102,21 @@ class TurnLogWriter:
         self._append_log("\n")
         self._open_kind = None
 
+    def finish_message_trace_segment(self) -> None:
+        """End a contiguous assistant message segment (for example before a tool event)."""
+        trailing = self._result_trace_filter.flush_pending_outside()
+        if trailing:
+            self._write_filtered_message_multiline(trailing)
+        self.finish_open_trace()
+
+    def finish_provider_attempt(self) -> None:
+        """Reset result filtering at a provider retry boundary."""
+        trailing = self._result_trace_filter.flush()
+        if trailing:
+            self._write_filtered_message_multiline(trailing)
+        self._result_trace_filter.reset()
+        self.finish_open_trace()
+
     def finalize(self) -> None:
         trailing = self._result_trace_filter.flush()
         if trailing:
@@ -131,7 +146,7 @@ class TurnLogWriter:
             self._write_text_event(event)
             return
         if event.kind in (TraceEventKind.TOOL_START, TraceEventKind.TOOL_END):
-            self.finish_open_trace()
+            self.finish_message_trace_segment()
             self._append_log(format_tool_trace(event) + "\n")
 
     def _write_text_event(self, event: TraceEvent) -> None:

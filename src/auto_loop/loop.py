@@ -488,7 +488,7 @@ class LifecycleRunner:
                             on_line=_consume_provider_line,
                         )
                     finally:
-                        turn_log.finish_open_trace()
+                        turn_log.finish_provider_attempt()
                         self._console.finish_provider_trace()
                     parsed = self._parse_provider_attempt(attempt_result, session.session_id)
                     if parsed.session_id:

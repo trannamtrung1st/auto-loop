@@ -78,6 +78,98 @@ def test_run_console_hides_result_block():
     assert "AUTO_LOOP_RESULT" not in text
 
 
+def test_readable_log_resets_filter_after_partial_result_between_attempts(tmp_path: Path):
+    from auto_loop.config import default_config
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = default_config()
+    writer = TurnLogWriter(repo, config, "lc-retry", 1, "reviewer")
+    partial = (
+        f"visible narrative\n{RESULT_BLOCK_START}\n"
+        '{"schema_version": 2, "actor": "reviewer"'
+    )
+    writer.write_stream_line(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": partial}]},
+            }
+        )
+    )
+    writer.finish_provider_attempt()
+    complete = (
+        f"retry succeeded\n{RESULT_BLOCK_START}\n"
+        '{"schema_version": 2, "actor": "reviewer", "verdict": "pass"}\n'
+        f"{RESULT_BLOCK_END}"
+    )
+    writer.write_stream_line(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": complete}]},
+            }
+        )
+    )
+    writer.finalize()
+    readable = writer.log_path.read_text(encoding="utf-8")
+    raw = writer.jsonl_path.read_text(encoding="utf-8")
+    assert "visible narrative" in readable
+    assert "retry succeeded" in readable
+    assert "schema_version" not in readable
+    assert RESULT_BLOCK_START in raw
+    assert raw.count(RESULT_BLOCK_START) >= 2
+
+
+def test_message_lt_flushed_before_tool_event_in_readable_and_console(tmp_path: Path):
+    from auto_loop.config import default_config
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = default_config()
+    writer = TurnLogWriter(repo, config, "lc-tool", 1, "reviewer")
+    stream = StringIO()
+    console = RunConsole("normal", stream=stream, color=False)
+    console.turn_started(1, "reviewer", model="auto")
+
+    def dispatch(payload: dict) -> None:
+        for event in writer.write_stream_line(json.dumps(payload)):
+            console.provider_trace(event)
+
+    dispatch(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "value is <"}]},
+        }
+    )
+    dispatch(
+        {
+            "type": "tool_call",
+            "subtype": "started",
+            "name": "grep",
+            "args": {"pattern": "needle"},
+        }
+    )
+    dispatch(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "5"}]},
+        }
+    )
+    writer.finalize()
+    console.finish_provider_trace()
+    readable = writer.log_path.read_text(encoding="utf-8")
+    rendered = stream.getvalue()
+    tool_idx = readable.find("[tool:")
+    lt_idx = readable.find("value is <")
+    five_idx = readable.find("5", lt_idx)
+    assert lt_idx != -1 and tool_idx != -1 and five_idx != -1
+    assert lt_idx < tool_idx < five_idx
+    assert "value is <" in rendered
+    assert "[tool:" in rendered
+    assert rendered.index("value is <") < rendered.index("[tool:")
+
+
 def test_turn_log_jsonl_retains_result_block(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()

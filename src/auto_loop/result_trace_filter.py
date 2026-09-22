@@ -25,8 +25,20 @@ class ResultTraceFilter:
         self._inside = False
         self._pending = ""
 
+    def flush_pending_outside(self) -> str:
+        """Emit buffered non-protocol text without ending an in-progress result block."""
+        if self._inside:
+            return ""
+        pending = self._pending
+        self._pending = ""
+        return pending
+
     def flush(self) -> str:
-        """Emit buffered text at turn end when not inside a result block."""
+        """Emit buffered text at a provider-attempt boundary.
+
+        When inside an unterminated result block, discard partial protocol text and
+        reset filter state.
+        """
         if self._inside:
             self._inside = False
             self._pending = ""
