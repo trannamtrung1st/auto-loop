@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 from auto_loop.atomic_io import atomic_write_json
 from auto_loop.exits import ExitCode
 from auto_loop.paths import auto_loop_root
+from auto_loop.process import process_create_time, process_matches
 
 
 class ConcurrentRunError(Exception):
@@ -32,6 +33,7 @@ class WorkspaceLockRecord(BaseModel):
     hostname: str
     started_at: datetime
     lifecycle_id: str
+    process_create_time: float | None = None
 
 
 def lock_path(repo: Path, artifact_root: Path | None = None) -> Path:
@@ -68,6 +70,8 @@ def is_pid_alive(pid: int) -> bool:
 def lock_owner_is_live(record: WorkspaceLockRecord) -> bool:
     if record.hostname != socket.gethostname():
         return True
+    if record.process_create_time is not None:
+        return process_matches(record.pid, record.process_create_time)
     return is_pid_alive(record.pid)
 
 
@@ -103,11 +107,13 @@ def acquire_workspace_lock(
             f"Another auto-loop controller owns this workspace "
             f"(pid={existing.pid}, host={existing.hostname}, lifecycle={existing.lifecycle_id})"
         )
+    pid = os.getpid()
     record = WorkspaceLockRecord(
-        pid=os.getpid(),
+        pid=pid,
         hostname=socket.gethostname(),
         started_at=datetime.now().astimezone(),
         lifecycle_id=lifecycle_id,
+        process_create_time=process_create_time(pid),
     )
     atomic_write_json(path, record.model_dump(mode="json"))
     return WorkspaceLockHandle(repo=repo, record=record, artifact_root=artifact_root)

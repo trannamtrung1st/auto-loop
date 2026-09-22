@@ -12,10 +12,10 @@ from auto_loop.atomic_io import atomic_write_text
 from auto_loop.config import AutoLoopConfig
 from auto_loop.paths import auto_loop_root
 from auto_loop.providers.cursor import (
+    AssistantTraceNormalizer,
     TraceEvent,
     TraceEventKind,
     format_tool_trace,
-    trace_events_from_stream_line,
     trace_text_prefix,
 )
 
@@ -61,6 +61,9 @@ class TurnLogWriter:
     _wrote_readable: bool = field(default=False, init=False)
     _jsonl_handle: TextIO | None = field(default=None, init=False, repr=False)
     _log_handle: TextIO | None = field(default=None, init=False, repr=False)
+    _assistant_trace: AssistantTraceNormalizer = field(
+        default_factory=AssistantTraceNormalizer, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         artifact_root = self.repo / self.config.artifacts_root
@@ -77,7 +80,7 @@ class TurnLogWriter:
         """Persist one provider line immediately and return its trace events."""
         raw = line.rstrip("\n")
         self._append_jsonl(raw)
-        events = trace_events_from_stream_line(
+        events = self._assistant_trace.events_from_line(
             raw, legacy_assistant_trace=self.legacy_assistant_trace
         )
         for event in events:

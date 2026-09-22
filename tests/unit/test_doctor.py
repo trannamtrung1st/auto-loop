@@ -1,5 +1,6 @@
 """Doctor diagnostics tests."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -95,6 +96,40 @@ def test_doctor_cli_path_argument(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
     result = runner.invoke(app, ["doctor", str(repo / ".ai" / "run.yaml")])
     assert result.exit_code == 0
+
+
+def test_doctor_reconciles_dead_controller_ownership(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    bootstrap_workspace(repo)
+    source = _source(repo)
+    from auto_loop.git import head_commit
+    from auto_loop.lifecycle import LifecycleStatus, create_lifecycle
+    from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
+    from auto_loop.stop_control import active_run_path
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state, artifact_root=source.artifact_root)
+    path = active_run_path(repo, source.artifact_root)
+    path.write_text(
+        json.dumps(
+            {
+                "controller_pid": 999_999_999,
+                "controller_started_at": 1.0,
+                "lifecycle_id": state.lifecycle_id,
+                "provider_pid": None,
+                "provider_create_time": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(source)
+    assert any(check.check_id == "runtime" and check.severity == Severity.WARNING for check in report.checks)
+    assert not path.is_file()
+    loaded = load_lifecycle_state(repo, source.artifact_root)
+    assert loaded is not None
+    assert loaded.status == LifecycleStatus.STOPPED
 
 
 def test_doctor_reports_missing_custom_instruction(tmp_path: Path, monkeypatch):

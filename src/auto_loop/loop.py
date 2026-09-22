@@ -59,7 +59,13 @@ from auto_loop.protocol import (
     parse_reviewer_result,
     parse_worker_result,
 )
-from auto_loop.stop_control import RunStopController, clear_active_run, persist_stopped_state, register_active_run
+from auto_loop.stop_control import (
+    RunStopController,
+    clear_active_run,
+    persist_stopped_state,
+    reconcile_stale_runtime,
+    register_active_run,
+)
 from auto_loop.protection import (
     ProtectionViolationError,
     ReviewMutationError,
@@ -441,6 +447,8 @@ class LifecycleRunner:
         self.invoker.prepare(slot)
         if hasattr(self.invoker, "stop_check"):
             self.invoker.stop_check = lambda: self._stop.requested
+        if hasattr(self.invoker, "force_check"):
+            self.invoker.force_check = lambda: self._stop.force
         if hasattr(self.invoker, "on_provider_pid"):
 
             def _provider_pid(pid: int | None) -> None:
@@ -581,6 +589,8 @@ class LifecycleRunner:
         finally:
             if hasattr(self.invoker, "on_stream_line"):
                 self.invoker.on_stream_line = None
+            if hasattr(self.invoker, "force_check"):
+                self.invoker.force_check = None
             if hasattr(self.invoker, "on_provider_pid"):
                 self.invoker.on_provider_pid(None)
             self._stop.set_active_provider(None)
@@ -1464,6 +1474,10 @@ class LifecycleRunner:
                 state=self._load_state(),
             )
         register_active_run(self.repo, state.lifecycle_id, artifact_root=self.artifact_root)
+        if state.status == LifecycleStatus.STOPPED:
+            state.status = LifecycleStatus.RUNNING
+            state.updated_at = utc_now()
+            self._save_state(state)
         prune_run_history(self.repo, self.config, state.lifecycle_id)
         append_event(
             self.repo,
@@ -1623,6 +1637,7 @@ def run_lifecycle(
     if idempotent is not None:
         return idempotent
     ensure_run_prerequisites(repo, config)
+    reconcile_stale_runtime(repo, artifact_root)
     existing = load_lifecycle_state(repo, artifact_root)
     lifecycle_id = existing.lifecycle_id if existing else new_lifecycle_id()
     lock = acquire_workspace_lock(repo, lifecycle_id, artifact_root)

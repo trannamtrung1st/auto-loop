@@ -1,9 +1,33 @@
 """Process-tree termination tests."""
 
+import os
+import signal
 import subprocess
 import sys
 import time
-from auto_loop.process import terminate_process_tree
+from pathlib import Path
+
+import psutil
+
+from auto_loop.process import process_create_time, terminate_process_tree
+
+
+def _reap(proc: subprocess.Popen[bytes] | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        proc.kill()
+    proc.wait(timeout=2)
+
+
+def _running(pid: int) -> bool:
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return False
+    return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
 
 
 def test_terminate_process_tree_stops_child_sleep():
@@ -14,6 +38,66 @@ time.sleep(120)
 """
     proc = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.DEVNULL)
     time.sleep(0.3)
-    terminate_process_tree(proc.pid, graceful_seconds=1.0)
-    proc.wait(timeout=5)
-    assert proc.returncode is not None
+    try:
+        terminate_process_tree(proc.pid, graceful_seconds=1.0)
+        proc.wait(timeout=5)
+        assert proc.returncode is not None
+    finally:
+        _reap(proc)
+
+
+def test_terminate_process_group_stops_grandchild(tmp_path: Path):
+    grandchild_path = tmp_path / "grandchild.pid"
+    script = """
+import pathlib, subprocess, sys, time
+path, exe = sys.argv[1], sys.executable
+child = subprocess.Popen([exe, "-c", "import time; time.sleep(120)"])
+pathlib.Path(path).write_text(str(child.pid), encoding="utf-8")
+time.sleep(120)
+"""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, str(grandchild_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 3
+        grandchild_pid = 0
+        while time.monotonic() < deadline:
+            if grandchild_path.is_file():
+                grandchild_pid = int(grandchild_path.read_text(encoding="utf-8"))
+                if _running(grandchild_pid):
+                    break
+            time.sleep(0.05)
+        assert _running(grandchild_pid)
+        assert os.getpgid(proc.pid) == proc.pid
+        terminate_process_tree(proc.pid, graceful_seconds=1.0)
+        proc.wait(timeout=5)
+        assert not _running(proc.pid)
+        assert not _running(grandchild_pid)
+    finally:
+        _reap(proc)
+
+
+def test_terminate_skips_reused_pid(tmp_path: Path):
+    del tmp_path
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        real_started = process_create_time(proc.pid)
+        assert real_started is not None
+        killed = terminate_process_tree(
+            proc.pid,
+            graceful_seconds=0.2,
+            expected_create_time=real_started - 50,
+        )
+        assert killed is False
+        time.sleep(0.1)
+        assert proc.poll() is None
+    finally:
+        _reap(proc)

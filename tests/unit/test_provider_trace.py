@@ -11,6 +11,7 @@ from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import create_lifecycle
 from auto_loop.loop import LifecycleRunner
 from auto_loop.providers.cursor import (
+    AssistantTraceNormalizer,
     TraceEventKind,
     format_tool_trace,
     trace_events_from_stream_line,
@@ -71,21 +72,118 @@ def test_assistant_string_content_is_a_message():
     assert events[0].text == "partial "
 
 
-def test_buffered_assistant_copies_are_ignored_for_trace():
-    assert _events(
+def _feed(normalizer: AssistantTraceNormalizer, payload: dict) -> list:
+    return normalizer.events_from_line(json.dumps(payload))
+
+
+def test_buffered_assistant_copy_is_fallback_when_no_delta_was_streamed():
+    events = _events(
         {
             "type": "assistant",
             "model_call_id": "mc-1",
             "timestamp_ms": 99,
-            "message": {"content": [{"type": "text", "text": "duplicate"}]},
+            "message": {"content": [{"type": "text", "text": "I will update the path"}]},
         }
-    ) == []
-    assert _events(
+    )
+    assert len(events) == 1
+    assert events[0].kind is TraceEventKind.MESSAGE
+    assert events[0].text == "I will update the path"
+
+
+def test_buffered_copies_do_not_repeat_text_already_streamed():
+    normalizer = AssistantTraceNormalizer()
+    first = _feed(
+        normalizer,
         {
             "type": "assistant",
-            "message": {"content": [{"type": "text", "text": "Hello world!"}]},
-        }
-    ) == []
+            "timestamp_ms": 1,
+            "message": {"content": [{"type": "text", "text": "I will"}]},
+        },
+    )
+    second = _feed(
+        normalizer,
+        {
+            "type": "assistant",
+            "timestamp_ms": 2,
+            "message": {"content": [{"type": "text", "text": " read the file"}]},
+        },
+    )
+    duplicate = _feed(
+        normalizer,
+        {
+            "type": "assistant",
+            "model_call_id": "mc-1",
+            "timestamp_ms": 3,
+            "message": {"content": [{"type": "text", "text": "I will read the file"}]},
+        },
+    )
+    final = _feed(
+        normalizer,
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "I will read the file"}]},
+        },
+    )
+    assert "".join(event.text for event in first + second) == "I will read the file"
+    assert duplicate == []
+    assert final == []
+
+
+def test_repeated_buffered_snapshot_emits_only_new_text():
+    normalizer = AssistantTraceNormalizer()
+    first = _feed(
+        normalizer,
+        {
+            "type": "assistant",
+            "model_call_id": "mc-1",
+            "message": {"content": [{"type": "text", "text": "I'll"}]},
+        },
+    )
+    grown = _feed(
+        normalizer,
+        {
+            "type": "assistant",
+            "model_call_id": "mc-1",
+            "message": {"content": [{"type": "text", "text": "I'll update the path"}]},
+        },
+    )
+    again = _feed(
+        normalizer,
+        {
+            "type": "assistant",
+            "model_call_id": "mc-1",
+            "message": {"content": [{"type": "text", "text": "I'll update the path"}]},
+        },
+    )
+    assert first[0].text == "I'll"
+    assert grown[0].text == " update the path"
+    assert again == []
+
+
+def test_tool_call_starts_a_new_assistant_segment():
+    normalizer = AssistantTraceNormalizer()
+    _feed(
+        normalizer,
+        {
+            "type": "assistant",
+            "timestamp_ms": 1,
+            "message": {"content": [{"type": "text", "text": "before"}]},
+        },
+    )
+    tool = _feed(
+        normalizer,
+        {"type": "tool_call", "status": "running", "name": "read_file", "args": {"path": "a.py"}},
+    )
+    after = _feed(
+        normalizer,
+        {
+            "type": "assistant",
+            "model_call_id": "mc-2",
+            "message": {"content": [{"type": "text", "text": "after"}]},
+        },
+    )
+    assert tool[0].kind is TraceEventKind.TOOL_START
+    assert after[0].text == "after"
 
 
 def test_partial_cursor_stream_skips_buffered_assistant_copies(tmp_path: Path):
@@ -334,3 +432,94 @@ def test_live_callback_persists_before_invoke_returns_and_retries_do_not_duplica
     assert rendered.count("[thinking] one") == 1
     assert rendered.count("[thinking] two") == 1
     assert "[message] hello" in rendered
+
+
+def test_buffered_only_stream_is_visible_before_invoke_returns(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "auto_loop.providers.cursor.resolve_cursor_binary",
+        lambda _settings: "fake-agent",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_repo(repo)
+    bootstrap_workspace(repo)
+    config = default_config()
+    options = RunOptions(
+        "auto",
+        "auto",
+        max_turns=1,
+        max_runtime_minutes=60,
+        verbose=False,
+        quiet=False,
+    )
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    jsonl_path, log_path = turn_log_paths(repo, state.lifecycle_id, state.turn, "planner")
+    message = "I will update the cancellation path"
+    lines = [
+        json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}),
+        json.dumps({"type": "thinking", "subtype": "delta", "text": "Inspect the repository. "}),
+        json.dumps({"type": "thinking", "subtype": "completed", "text": "Then edit it."}),
+        json.dumps(
+            {
+                "type": "assistant",
+                "model_call_id": "mc-1",
+                "timestamp_ms": 10,
+                "message": {"content": [{"type": "text", "text": message}]},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "model_call_id": "mc-1",
+                "timestamp_ms": 11,
+                "message": {"content": [{"type": "text", "text": message}]},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "name": "read_file",
+                "args": {"path": "src/auto_loop/loop.py"},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "completed",
+                "name": "read_file",
+                "result": "x" * 40,
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "and add tests."}]},
+            }
+        ),
+        json.dumps({"type": "result", "session_id": "sess-1", "result": "protocol-answer"}),
+    ]
+    stream = StringIO()
+    invoker = _StreamingInvoker([lines], stream, log_path, jsonl_path)
+    invoker.uses_live_cursor = True
+    runner = LifecycleRunner(repo, config, options, invoker)
+    runner._console = RunConsole("normal", stream=stream, color=False)
+
+    text = runner._invoke_slot("planner", "plan the task", state)
+
+    assert text == "protocol-answer"
+    assert invoker.rendered_during_invoke
+    rendered = stream.getvalue()
+    assert "[thinking] Inspect the repository. Then edit it." in rendered
+    assert rendered.count("[message]") == 2
+    assert f"[message] {message}" in rendered
+    assert "[message] and add tests." in rendered
+    assert '[tool:start] read_file  {"path":"src/auto_loop/loop.py"}' in rendered
+    assert "[tool:end]   read_file  completed" in rendered
+    assert rendered.count(message) == 1
+    readable = log_path.read_text(encoding="utf-8")
+    assert readable.count(message) == 1
+    assert "[message] and add tests." in readable

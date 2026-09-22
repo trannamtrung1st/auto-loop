@@ -53,3 +53,23 @@ def test_live_lock_raises_concurrent_run(tmp_path: Path):
 
 def test_is_pid_alive_false_for_missing_process():
     assert is_pid_alive(999_999_999) is False
+
+
+def test_lock_with_reused_pid_is_replaced(tmp_path: Path):
+    import json
+    import os
+
+    repo = _git_repo(tmp_path)
+    handle = acquire_workspace_lock(repo, "lc-old")
+    path = lock_path(repo)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["pid"] = os.getpid()
+    data["process_create_time"] = 1.0
+    path.write_text(json.dumps(data), encoding="utf-8")
+    replacement = acquire_workspace_lock(repo, "lc-new")
+    record = load_workspace_lock(repo)
+    assert record is not None
+    assert record.lifecycle_id == "lc-new"
+    replacement.release()
+    handle.released = True
+    assert not path.is_file()

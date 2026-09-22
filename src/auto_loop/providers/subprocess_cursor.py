@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from auto_loop.config import AutoLoopConfig
 from auto_loop.providers.argv_session import resume_session_id_from_argv
 from auto_loop.providers.supervision import (
+    ForceCheck,
     PidCallback,
     ProviderAttemptResult,
     StopCheck,
@@ -28,6 +29,7 @@ class SubprocessCursorProvider:
     config: AutoLoopConfig
     uses_live_cursor: bool = True
     stop_check: StopCheck | None = None
+    force_check: ForceCheck | None = None
     on_provider_pid: PidCallback | None = None
     on_stream_line: StreamLineCallback | None = None
 
@@ -43,6 +45,7 @@ class SubprocessCursorProvider:
             idle_timeout_seconds=float(limits.agent_idle_timeout_seconds),
             expected_session_id=expected_session_id,
             stop_check=self.stop_check,
+            force_check=self.force_check,
             on_provider_pid=self.on_provider_pid,
             on_line=self.on_stream_line,
         )

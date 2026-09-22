@@ -154,6 +154,38 @@ def test_interrupted_attempt_still_persists_session_id(tmp_path: Path):
     assert planner_calls[-1].resume_session_id == "persist-on-stop"
 
 
+def test_interrupted_provider_is_not_retried_and_keeps_inflight(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    calls = {"n": 0}
+
+    class Once:
+        def prepare(self, role: str) -> None:
+            return None
+
+        def invoke(self, argv: list[str]) -> ProviderAttemptResult:
+            del argv
+            calls["n"] += 1
+            return ProviderAttemptResult(
+                lines=[json.dumps({"type": "thinking", "text": "partial"})],
+                failure=ProviderFailureKind.INTERRUPTED,
+            )
+
+    runner = _runner(repo, Once())  # type: ignore[arg-type]
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    runner._stop.requested = True
+    with pytest.raises(ProviderError):
+        runner._invoke_slot("planner", "go", state)
+    assert calls["n"] == 1
+    loaded = load_lifecycle_state(repo)
+    assert loaded is not None
+    assert loaded.status == LifecycleStatus.STOPPED
+    assert loaded.inflight is not None
+    assert loaded.inflight.session_slot == "planner"
+
+
 def test_resumed_session_mismatch_raises_session_error(tmp_path: Path):
     repo = make_repo(tmp_path)
     state = create_lifecycle(__import__("auto_loop.git", fromlist=["head_commit"]).head_commit(repo))

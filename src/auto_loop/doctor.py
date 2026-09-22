@@ -17,6 +17,7 @@ from auto_loop.manifest import RunManifestSource
 from auto_loop.providers.cursor import resolve_cursor_binary
 from auto_loop.locking import describe_lock_status
 from auto_loop.runtime import RuntimeStateError, load_lifecycle_state
+from auto_loop.stop_control import reconcile_stale_runtime
 from auto_loop.run_inputs import validate_task_source
 
 
@@ -238,6 +239,19 @@ def _check_context_manifest(repo: Path, config: AutoLoopConfig, report: DoctorRe
         report.add("context", Severity.OK, "Context resource paths validated")
 
 
+def _check_stale_runtime(repo: Path, artifact_root: Path, report: DoctorReport) -> None:
+    """Reclaim a dead controller's provider, lock, and active-run record."""
+    try:
+        result = reconcile_stale_runtime(repo, artifact_root)
+    except OSError as exc:
+        report.add("runtime", Severity.ERROR, f"Could not reconcile runtime ownership: {exc}")
+        return
+    if result.changed:
+        report.add("runtime", Severity.WARNING, result.message)
+        return
+    report.add("runtime", Severity.OK, result.message)
+
+
 def _check_workspace_lock(repo: Path, artifact_root: Path, report: DoctorReport) -> None:
     severity, message = describe_lock_status(repo, artifact_root)
     if severity == "error":
@@ -287,6 +301,7 @@ def run_doctor(source: RunManifestSource, *, verbose: bool = False) -> DoctorRep
         source, config, report, require_task_snapshot=state is not None
     )
     _check_runtime_writable(source.artifact_root, report)
+    _check_stale_runtime(source.workspace, source.artifact_root, report)
     _check_workspace_lock(source.workspace, source.artifact_root, report)
     _check_lifecycle_sessions(source.workspace, source.artifact_root, report)
     return report

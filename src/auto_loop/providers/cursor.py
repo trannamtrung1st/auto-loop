@@ -303,20 +303,13 @@ def trace_events_from_stream_line(
     ``tool_call`` lifecycle events; assistant ``tool_use`` blocks are ignored
     so the same call is not shown twice.
 
-    Live Cursor streams should leave ``legacy_assistant_trace`` false so only
-    timestamped assistant deltas render. Scripted providers may enable the
-    legacy path for one-shot assistant payloads without timestamps.
+    This uses a fresh assistant segment, so a buffered assistant copy is shown.
+    Deduplicating that copy against earlier deltas requires one
+    :class:`AssistantTraceNormalizer` for the whole stream.
     """
-    stripped = line.strip()
-    if not stripped:
-        return []
-    try:
-        value = json.loads(stripped)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(value, dict):
-        return []
-    return _trace_events_from_object(value, legacy_assistant_trace=legacy_assistant_trace)
+    return AssistantTraceNormalizer().events_from_line(
+        line, legacy_assistant_trace=legacy_assistant_trace
+    )
 
 
 def format_tool_trace(event: TraceEvent, *, payload_limit: int = TRACE_PAYLOAD_LIMIT) -> str:
@@ -340,11 +333,20 @@ def format_tool_trace(event: TraceEvent, *, payload_limit: int = TRACE_PAYLOAD_L
     return label
 
 
-def _trace_events_from_object(
-    event: dict[str, Any],
-    *,
-    legacy_assistant_trace: bool = False,
-) -> list[TraceEvent]:
+def _parse_stream_object(line: str) -> dict[str, Any] | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    return value
+
+
+def _trace_events_from_object(event: dict[str, Any]) -> list[TraceEvent]:
     event_type = event.get("type") or event.get("event")
     if not isinstance(event_type, str):
         return []
@@ -353,10 +355,6 @@ def _trace_events_from_object(
         if not text:
             return []
         return [TraceEvent(kind=TraceEventKind.THINKING, text=text)]
-    if event_type == "assistant":
-        return _assistant_trace_events(
-            event, legacy_assistant_trace=legacy_assistant_trace
-        )
     if event_type == "tool_call":
         tool = _tool_trace_event(event)
         return [tool] if tool is not None else []
@@ -364,26 +362,112 @@ def _trace_events_from_object(
 
 
 def _assistant_is_live_delta(event: dict[str, Any]) -> bool:
-    """Incremental assistant chunk from ``--stream-partial-output``."""
-    model_call_id = event.get("model_call_id")
-    if model_call_id is not None and model_call_id != "":
+    """Incremental assistant chunk from ``--stream-partial-output``.
+
+    Timestamped assistant events without ``model_call_id`` are live deltas.
+    Events that carry ``model_call_id`` are buffered copies of text already
+    produced for that model call.
+    """
+    if _model_call_id(event) is not None:
         return False
     return event.get("timestamp_ms") is not None
 
 
-def _assistant_trace_events(
-    event: dict[str, Any],
-    *,
-    legacy_assistant_trace: bool = False,
-) -> list[TraceEvent]:
-    if _assistant_is_live_delta(event):
-        return _assistant_partial_text_events(event)
-    if legacy_assistant_trace and event.get("timestamp_ms") is None:
-        model_call_id = event.get("model_call_id")
-        if model_call_id is not None and model_call_id != "":
+def _model_call_id(event: dict[str, Any]) -> str | None:
+    value = event.get("model_call_id")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _unseen_text(already: str, incoming: str) -> str:
+    """Return assistant snapshot text that has not already been shown."""
+    if not incoming:
+        return ""
+    if not already:
+        return incoming
+    if incoming == already or already.startswith(incoming):
+        return ""
+    if incoming.startswith(already):
+        return incoming[len(already) :]
+    return incoming
+
+
+@dataclass
+class AssistantTraceNormalizer:
+    """Show each assistant segment once across Cursor's stream shapes.
+
+    Live deltas render immediately. A later buffered copy is skipped when it
+    repeats that text. When a segment never produced deltas, the buffered copy
+    or the final assistant event is rendered once so the console still shows
+    ``[message]``. ``result`` events are not trace output; protocol parsing
+    keeps using them.
+    """
+
+    saw_delta: bool = False
+    emitted_message: str = ""
+    emitted_thinking: str = ""
+
+    def reset_segment(self) -> None:
+        self.saw_delta = False
+        self.emitted_message = ""
+        self.emitted_thinking = ""
+
+    def events_from_line(
+        self,
+        line: str,
+        *,
+        legacy_assistant_trace: bool = False,
+    ) -> list[TraceEvent]:
+        event = _parse_stream_object(line)
+        if event is None:
             return []
-        return _assistant_partial_text_events(event)
-    return []
+        event_type = event.get("type") or event.get("event")
+        if event_type == "system" and event.get("subtype") in {"init", "start"}:
+            self.reset_segment()
+        if event_type == "tool_call":
+            self.reset_segment()
+        if event_type == "assistant":
+            return self._assistant_events(event, legacy_assistant_trace=legacy_assistant_trace)
+        return _trace_events_from_object(event)
+
+    def _assistant_events(
+        self,
+        event: dict[str, Any],
+        *,
+        legacy_assistant_trace: bool,
+    ) -> list[TraceEvent]:
+        parsed = _assistant_partial_text_events(event)
+        if not parsed:
+            return []
+        if _assistant_is_live_delta(event):
+            self.saw_delta = True
+            self._remember(parsed)
+            return parsed
+        if _model_call_id(event) is not None and (legacy_assistant_trace or self.saw_delta):
+            return []
+        return self._fallback(parsed)
+
+    def _remember(self, events: list[TraceEvent]) -> None:
+        for event in events:
+            if event.kind is TraceEventKind.THINKING:
+                self.emitted_thinking += event.text
+            elif event.kind is TraceEventKind.MESSAGE:
+                self.emitted_message += event.text
+
+    def _fallback(self, parsed: list[TraceEvent]) -> list[TraceEvent]:
+        thinking = "".join(event.text for event in parsed if event.kind is TraceEventKind.THINKING)
+        message = "".join(event.text for event in parsed if event.kind is TraceEventKind.MESSAGE)
+        unseen_thinking = _unseen_text(self.emitted_thinking, thinking)
+        unseen_message = _unseen_text(self.emitted_message, message)
+        emitted: list[TraceEvent] = []
+        if unseen_thinking:
+            emitted.append(TraceEvent(kind=TraceEventKind.THINKING, text=unseen_thinking))
+            self.emitted_thinking += unseen_thinking
+        if unseen_message:
+            emitted.append(TraceEvent(kind=TraceEventKind.MESSAGE, text=unseen_message))
+            self.emitted_message += unseen_message
+        return emitted
 
 
 def _assistant_partial_text_events(event: dict[str, Any]) -> list[TraceEvent]:

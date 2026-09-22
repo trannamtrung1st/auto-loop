@@ -89,6 +89,7 @@ def provider_attempt_from_process_output(
 Clock = Callable[[], float]
 LineIterator = Callable[[], str | None]
 StopCheck = Callable[[], bool]
+ForceCheck = Callable[[], bool]
 PidCallback = Callable[[int | None], None]
 StreamLineCallback = Callable[[str], None]
 
@@ -161,6 +162,21 @@ def classify_stream_outcome(
     return outcome
 
 
+def _terminate_provider(
+    pid: int,
+    *,
+    graceful_seconds: float,
+    force_check: ForceCheck | None,
+) -> None:
+    forced = force_check is not None and force_check()
+    terminate_process_tree(
+        pid,
+        graceful_seconds=0.0 if forced else graceful_seconds,
+        force=forced,
+        force_check=force_check,
+    )
+
+
 def run_subprocess_streaming(
     argv: list[str],
     *,
@@ -170,15 +186,19 @@ def run_subprocess_streaming(
     clock: Clock = time.monotonic,
     expected_session_id: str | None = None,
     stop_check: StopCheck | None = None,
+    force_check: ForceCheck | None = None,
     on_provider_pid: PidCallback | None = None,
     on_line: StreamLineCallback | None = None,
     poll_interval: float = 0.05,
 ) -> SupervisionOutcome:
+    # Own process group so cancellation can signal the provider and every
+    # child it starts, without signaling the controller's group.
     proc = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     assert proc.stdout is not None
     assert proc.stderr is not None
@@ -235,8 +255,20 @@ def run_subprocess_streaming(
             ProviderFailureKind.WALL_TIMEOUT,
             ProviderFailureKind.INTERRUPTED,
         }:
-            terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
-            proc.wait(timeout=graceful_seconds)
+            _terminate_provider(
+                proc.pid,
+                graceful_seconds=graceful_seconds,
+                force_check=force_check,
+            )
+            try:
+                proc.wait(timeout=graceful_seconds)
+            except subprocess.TimeoutExpired:
+                _terminate_provider(
+                    proc.pid,
+                    graceful_seconds=0.0,
+                    force_check=lambda: True,
+                )
+                proc.wait(timeout=1.0)
             if outcome.failure == ProviderFailureKind.INTERRUPTED:
                 outcome.interrupted = True
             return classify_stream_outcome(outcome, expected_session_id=expected_session_id)
@@ -247,13 +279,21 @@ def run_subprocess_streaming(
         return classify_stream_outcome(outcome, expected_session_id=expected_session_id)
     except KeyboardInterrupt:
         outcome = SupervisionOutcome(interrupted=True, failure=ProviderFailureKind.INTERRUPTED)
-        terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
+        _terminate_provider(
+            proc.pid,
+            graceful_seconds=graceful_seconds,
+            force_check=force_check,
+        )
         raise
     finally:
         if on_provider_pid is not None:
             on_provider_pid(None)
         if proc.poll() is None:
-            terminate_process_tree(proc.pid, graceful_seconds=graceful_seconds)
+            _terminate_provider(
+                proc.pid,
+                graceful_seconds=graceful_seconds,
+                force_check=force_check,
+            )
 
 
 _RETRYABLE_FAILURES = {

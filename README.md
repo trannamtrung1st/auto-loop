@@ -241,14 +241,16 @@ Contributors working on this repository should read root [`AGENTS.md`](AGENTS.md
 - **Events** — `<artifacts.root>/runtime/events.jsonl` (lifecycle started, reviews, baseline advanced, stops, limits).
 - **State** — `<artifacts.root>/runtime/state.json` (phase, turn, next session, four session slots, active review, pending revision, inflight).
 - **Turn logs** — `<artifacts.root>/runtime/runs/<lifecycle_id>/` per-turn streams, named by session purpose. `.jsonl` is the raw provider NDJSON, appended as each line arrives. `.log` is the normalized thinking / message / tool trace, also appended immediately. `auto-loop logs RUN_CONFIG --follow` tails that activity while the agent is running. `--raw` prints the JSONL unchanged.
-- **Run console** — normal and verbose runs show that trace live: thinking, assistant text, and tool start/end. `--quiet` hides the live trace and still writes the turn logs. `--verbose` keeps the trace and adds session and lifecycle diagnostics, with longer tool-argument excerpts. Tool results stay summarized; the full payload remains in the JSONL.
+- **Run console** — normal and verbose runs show that trace live in the same terminal: thinking, assistant text, and tool start/end, as each event arrives. Assistant text is shown once. Live deltas render immediately; a buffered assistant copy is shown only when those deltas were absent, and a repeated copy is skipped. `--quiet` hides the live trace and still writes the turn logs. `--verbose` keeps the trace and adds session and lifecycle diagnostics, with longer tool-argument excerpts. Tool results stay summarized; the full payload remains in the JSONL. `auto-loop logs --follow` tails the same trace from the turn log; it is not required to watch a run.
 - **Completion / blocked** — `<artifacts.root>/runtime/completion.json` or `blocked.json` when terminal.
 
 Use `auto-loop status RUN_CONFIG` and `auto-loop logs RUN_CONFIG` for operator-friendly views.
 
 ## Stop, restart, and limits
 
-- `auto-loop stop RUN_CONFIG` marks a running lifecycle **STOPPED** when a controller is active.
+- `auto-loop stop RUN_CONFIG` signals a live controller. The first request is graceful. If that controller does not exit, stop force-kills the verified provider and then the controller. A dead controller does not count as stopped while its recorded provider is still the process Auto Loop launched: stop terminates that process, clears `active_run.json` and the workspace lock, and persists **STOPPED**. The inflight marker is kept.
+- Ctrl+C requests the same graceful stop (`Stopping active agent…`). A second Ctrl+C force-stops the provider (`Force stopping…`). The signal handler only sets that request and sends a non-blocking signal. Provider supervision performs the wait, persists **STOPPED**, and releases ownership.
+- `auto-loop run` and `auto-loop resume` reconcile a dead controller before taking the workspace lock, so a stale lock or a reused PID is not reported as a concurrent run. A PID from `active_run.json` is killed only when its start time still matches the recorded process.
 - `auto-loop resume RUN_CONFIG` continues from durable state (same session ids, reconciled inflight). Changing the source proposal does not replace an in-progress run.
 - After a **terminal** run (`completion.json` or `blocked.json`), `auto-loop run RUN_CONFIG` again archives the prior run’s plan, task snapshot, reviews, and runtime notes under `<artifacts.root>/runtime/archives/<lifecycle-id>/` using each file’s workspace-relative path. Active (non-terminal) runs must be resumed, not replaced. `auto-loop resume` on a blocked terminal run exits with `BLOCKED` and the saved summary rather than re-entering the loop.
 - Defaults: `run.max_turns`, `run.max_runtime_minutes`, `run.max_consecutive_worker_no_progress` — tune them in the run YAML.
@@ -283,7 +285,7 @@ Generate a commented manifest with every public section: `auto-loop init PATH --
 | `SESSION_ERROR` | Cursor resume id drift; inspect turn logs; do not hand-edit session ids in `state.json`. |
 | `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `run.protocol_retries` only after fixing prompts. |
 | `LIMIT_REACHED` | Raise `max_turns` / runtime or reduce revise loops; check `worker_no_progress_streak`. |
-| `CONCURRENT_RUN` | Another `run` holds `<artifacts.root>/runtime/lock.json`; wait, use `auto-loop stop`, or remove a stale lock after verifying no live controller. |
+| `CONCURRENT_RUN` | Another live controller holds `<artifacts.root>/runtime/lock.json`. Wait, or run `auto-loop stop`. A dead controller's lock is cleared on the next `run`, `resume`, `stop`, or `doctor`. |
 | Doctor: Cursor not found | Install Cursor CLI or set `provider.cursor.command`. |
 
 ## Security and secrets

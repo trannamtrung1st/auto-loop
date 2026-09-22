@@ -237,6 +237,80 @@ def test_run_subprocess_streaming_stop_check_interrupts_silent_child():
     assert outcome.interrupted
 
 
+def test_force_stop_does_not_wait_out_graceful_timeout():
+    script = (
+        "import signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "time.sleep(60)"
+    )
+    started = time.monotonic()
+    outcome = run_subprocess_streaming(
+        [sys.executable, "-c", script],
+        wall_timeout_seconds=30.0,
+        idle_timeout_seconds=30.0,
+        stop_check=lambda: True,
+        force_check=lambda: True,
+        graceful_seconds=5.0,
+        poll_interval=0.05,
+    )
+    assert outcome.failure == ProviderFailureKind.INTERRUPTED
+    assert time.monotonic() - started < 2.0
+
+
+def test_stop_during_stream_keeps_partial_turn_log(tmp_path):
+    from auto_loop.config import default_config
+    from auto_loop.turn_logs import TurnLogWriter
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    writer = TurnLogWriter(repo, default_config(), "lc-1", 1, "worker")
+    seen: list[str] = []
+
+    def on_line(line: str) -> None:
+        seen.append(line)
+        writer.write_stream_line(line)
+
+    script = (
+        "import json, time\n"
+        "print(json.dumps({'type': 'thinking', 'text': 'partial'}), flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    outcome = run_subprocess_streaming(
+        [sys.executable, "-c", script],
+        wall_timeout_seconds=8.0,
+        idle_timeout_seconds=8.0,
+        stop_check=lambda: bool(seen),
+        on_line=on_line,
+        poll_interval=0.05,
+        graceful_seconds=1.0,
+    )
+    assert outcome.interrupted
+    assert seen == [outcome.lines[0]]
+    writer.finalize()
+    raw_lines = [
+        line for line in writer.jsonl_path.read_text(encoding="utf-8").splitlines() if line
+    ]
+    assert raw_lines
+    for line in raw_lines:
+        json.loads(line)
+    assert "partial" in writer.log_path.read_text(encoding="utf-8")
+
+
+def test_interrupted_stream_does_not_retry():
+    calls = 0
+
+    def attempt(_index: int):
+        nonlocal calls
+        calls += 1
+        from auto_loop.providers.supervision import SupervisionOutcome
+
+        return SupervisionOutcome(failure=ProviderFailureKind.INTERRUPTED, interrupted=True)
+
+    with pytest.raises(ProviderError):
+        run_with_provider_retries(attempt, provider_retries=3, session_id="sess-1")
+    assert calls == 1
+
+
 def test_provider_retries_stop_on_success():
     calls = 0
 
