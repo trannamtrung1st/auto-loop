@@ -20,16 +20,6 @@ ProviderType = Literal["cursor"]
 AgentMode = Literal["agent", "ask"]
 CursorCommand = Literal["agent", "cursor-agent"]
 
-_RUN_LIMIT_KEYS = (
-    "max_turns",
-    "max_runtime_minutes",
-    "agent_timeout_seconds",
-    "agent_idle_timeout_seconds",
-    "provider_retries",
-    "protocol_retries",
-    "max_consecutive_worker_no_progress",
-)
-
 V1_UNSUPPORTED_MESSAGE = (
     "Unsupported Auto Loop config version 1.\n"
     "This release requires the single-manifest version 2 format."
@@ -164,18 +154,12 @@ class AutoLoopConfig(BaseModel):
         data = dict(data)
 
         limits_raw = data.get("limits")
+        if limits_raw is not None:
+            raise ValueError(
+                "Remove top-level 'limits'; configure run limits under 'run' instead "
+                "(for example run.max_turns, run.provider_retries)."
+            )
         run_raw = dict(data.get("run") or {}) if isinstance(data.get("run"), dict) else {}
-        if isinstance(limits_raw, dict):
-            for key in _RUN_LIMIT_KEYS:
-                if key not in limits_raw:
-                    continue
-                if key in run_raw and run_raw[key] != limits_raw[key]:
-                    raise ValueError(
-                        f"Conflicting '{key}' in run and limits; configure run.{key} only."
-                    )
-                if key not in run_raw:
-                    run_raw[key] = limits_raw[key]
-            data.pop("limits", None)
         if run_raw:
             data["run"] = run_raw
 
@@ -184,17 +168,10 @@ class AutoLoopConfig(BaseModel):
         agents_out: dict[str, Any] = {}
         for role in ("planner", "worker", "reviewer"):
             agent = dict(agents_in.get(role) or {})
-            agent_model = agent.pop("model", None)
-            if agent_model is not None:
-                model_value = models.get(role)
-                if model_value is not None and str(model_value).strip():
-                    if str(model_value).strip() != str(agent_model).strip():
-                        raise ValueError(
-                            f"Conflicting model for {role}: use models.{role} only, "
-                            f"not agents.{role}.model."
-                        )
-                else:
-                    models[role] = str(agent_model).strip()
+            if "model" in agent:
+                raise ValueError(
+                    f"Remove agents.{role}.model; set models.{role} instead."
+                )
             if agent or role in agents_in:
                 agents_out[role] = agent
         if models:

@@ -19,6 +19,11 @@ from auto_loop.manifest import load_run_manifest
 from auto_loop.paths import DEFAULT_ARTIFACTS_ROOT
 
 
+def _public_dict(cfg=None) -> dict:
+    cfg = cfg or default_config()
+    return yaml.safe_load(dump_config(cfg))
+
+
 def test_default_config_round_trip():
     cfg = default_config()
     assert cfg.version == 2
@@ -48,29 +53,28 @@ def test_v1_config_rejected_with_clear_message():
 
 
 def test_invalid_instruction_mode_rejected():
-    data = default_config().model_dump(mode="json")
+    data = _public_dict()
     data["instructions"]["worker"]["mode"] = "replace_all"
     with pytest.raises(ConfigurationError):
         parse_config_dict(data)
 
 
 def test_impossible_limits_rejected():
-    data = default_config().model_dump(mode="json")
+    data = _public_dict()
     data["run"]["max_turns"] = 0
     with pytest.raises(ConfigurationError):
         parse_config_dict(data)
 
 
 def test_reviewer_must_use_ask_mode():
-    data = default_config().model_dump(mode="json")
-    data["agents"]["reviewer"]["mode"] = "agent"
+    data = _public_dict()
+    data["agents"] = {"reviewer": {"mode": "agent"}}
     with pytest.raises(ConfigurationError, match="ask mode"):
         parse_config_dict(data)
 
 
 def test_config_fills_missing_planner_agent():
-    data = default_config().model_dump(mode="json")
-    data["agents"].pop("planner")
+    data = _public_dict()
     cfg = parse_config_dict(data)
     assert "planner" in cfg.agents
     assert cfg.agents["planner"].mode == "agent"

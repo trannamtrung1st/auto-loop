@@ -262,16 +262,17 @@ Version 2 is the supported public schema. Version 1 files fail with a clear erro
 | `workspace` | Product repository; the only path resolved relative to the YAML file. |
 | `task.source` | User-owned task/goal file. |
 | `artifacts.root` | Tool-managed output tree (`task.md`, `plan.md`, `reviews/`, `runtime/`). |
-| `models` / `agents.*.model` | Per-role model ids. Plan-reviewer uses the reviewer model. |
-| `run.max_turns` / `run.max_runtime_minutes` | Convenience aliases for `limits`. |
+| `models.planner` / `models.worker` / `models.reviewer` | Per-role model ids (canonical; plan-reviewer uses `models.reviewer`). |
+| `run.*` | Turns, runtime, agent timeouts, provider/protocol retries, no-progress streak (canonical). |
 | `provider.cursor` | CLI command (`agent` / `cursor-agent`), extra args per role. |
-| `agents.planner` / `agents.worker` / `agents.reviewer` | Optional custom role files, model, `agent` vs `ask` mode. |
+| `agents.planner` / `agents.worker` / `agents.reviewer` | Optional custom role files and `agent` vs `ask` mode only (not model selection). |
 | `instructions` | Optional shared/planner/worker/reviewer markdown stacks. |
-| `context` | Optional per-role resource lists. |
+| `context` | Optional per-role resource and skill lists (`path`, `purpose`, `required`). |
 | `git` | Clean-tree requirements, worker commits, history protection. |
-| `limits` | Turns, runtime, timeouts, retries, no-progress streak. |
 | `protection` | Extra product exclude globs and protected control files. |
 | `logging` | Console verbosity and run history retention. |
+
+Generate a commented manifest with every public section: `auto-loop init PATH --full` (see [Full configuration example](#full-configuration-example)).
 
 ## Troubleshooting
 
@@ -280,7 +281,7 @@ Version 2 is the supported public schema. Version 1 files fail with a clear erro
 | `CONFIG_ERROR` on `run` | Pass an explicit version 2 YAML; `doctor RUN_CONFIG`; confirm `task.source` exists and is non-empty. |
 | `GIT_PROTOCOL_ERROR` | Dirty product tree before batch review, empty Git range without path targets, or history rewrite. |
 | `SESSION_ERROR` | Cursor resume id drift; inspect turn logs; do not hand-edit session ids in `state.json`. |
-| `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `protocol_retries` only after fixing prompts. |
+| `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `run.protocol_retries` only after fixing prompts. |
 | `LIMIT_REACHED` | Raise `max_turns` / runtime or reduce revise loops; check `worker_no_progress_streak`. |
 | `CONCURRENT_RUN` | Another `run` holds `<artifacts.root>/runtime/lock.json`; wait, use `auto-loop stop`, or remove a stale lock after verifying no live controller. |
 | Doctor: Cursor not found | Install Cursor CLI or set `provider.cursor.command`. |

@@ -139,58 +139,56 @@ def test_frozen_config_round_trip_preserves_effective_settings(tmp_path: Path):
     assert "model" not in str(dumped.get("agents", {}))
 
 
-def test_agents_worker_model_without_top_level_models_round_trips(tmp_path: Path):
-    """Legacy agent.model migrates to models.* and survives frozen reload."""
+def test_rejects_agents_role_model(tmp_path: Path):
     path = tmp_path / "run.yaml"
     path.write_text(
         "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
         "agents:\n  worker:\n    model: custom-model\n",
         encoding="utf-8",
     )
-    cfg = load_config(path)
-    assert cfg.models.worker == "custom-model"
-    assert cfg.agents["worker"].model == "custom-model"
-    text = dump_config(cfg)
-    reloaded = parse_config_dict(yaml.safe_load(text))
-    assert reloaded.models.worker == "custom-model"
-    assert reloaded.agents["worker"].model == "custom-model"
-    assert "model" not in yaml.safe_load(text).get("agents", {}).get("worker", {})
-
-
-def test_conflicting_models_and_agents_model_rejected(tmp_path: Path):
-    path = tmp_path / "run.yaml"
-    path.write_text(
-        "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
-        "models:\n  worker: a\nagents:\n  worker:\n    model: b\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ConfigurationError, match="Conflicting model"):
+    with pytest.raises(ConfigurationError, match="agents.worker.model"):
         load_config(path)
 
 
-def test_conflicting_run_and_limits_rejected(tmp_path: Path):
+def test_rejects_top_level_limits_section(tmp_path: Path):
     path = tmp_path / "run.yaml"
     path.write_text(
         "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
-        "run:\n  max_turns: 5\nlimits:\n  max_turns: 9\n",
+        "limits:\n  max_turns: 9\n",
         encoding="utf-8",
     )
-    with pytest.raises(ConfigurationError, match="Conflicting"):
+    with pytest.raises(ConfigurationError, match="top-level 'limits'"):
         load_config(path)
 
 
-def test_kanban_sample_manifest_passes_doctor(tmp_path: Path):
+def test_kanban_sample_manifest_passes_doctor(tmp_path: Path, monkeypatch):
     sample = _repo_root() / "samples" / "kanban-board"
     dest = tmp_path / "kanban"
     import shutil
+    import subprocess
 
     from tests.repo_utils import git
+
+    def fake_run(argv, **kwargs):
+        cmd = " ".join(argv)
+        if "--version" in cmd:
+            return subprocess.CompletedProcess(argv, 0, stdout="agent 1.0\n", stderr="")
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout="--resume stream-json --mode ask",
+            stderr="",
+        )
+
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", fake_run)
 
     shutil.copytree(sample, dest)
     git(dest, "init")
     git(dest, "config", "user.email", "t@example.com")
     git(dest, "config", "user.name", "T")
-    git(dest, "commit", "--allow-empty", "-m", "init")
+    git(dest, "add", ".")
+    git(dest, "commit", "-m", "sample")
     yaml_path = dest / ".ai" / "run.yaml"
     source = load_run_manifest(yaml_path)
     report = run_doctor(source)

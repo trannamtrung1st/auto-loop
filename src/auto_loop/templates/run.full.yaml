@@ -84,7 +84,17 @@ context:
   version: 1
   shared:
     resources: []
+    # Example:
+    # resources:
+    #   - path: README.md
+    #     purpose: Project overview
+    #     required: true
     skills: []
+    # Example:
+    # skills:
+    #   - path: .agents/skills/testing
+    #     purpose: Testing workflow
+    #     required: false
   planner:
     resources: []
     skills: []

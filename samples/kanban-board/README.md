@@ -19,6 +19,7 @@ If this folder is not already a Git repository, initialize it first (`git init` 
 |------|--------|
 | `.ai/proposal.md` | you — the task/goal |
 | `.ai/run.yaml` | you — realistic example (models, run limits, context, logging) |
+| `.gitignore` | you — ignores tool-managed `.ai/auto-loop/` while keeping run YAML and proposal tracked |
 | project files created by the run | you / Auto Loop workers |
 
 Generated plan, reviews, and runtime state live under `.ai/auto-loop/` (tool-managed). You do not need to edit that directory.
