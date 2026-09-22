@@ -173,6 +173,169 @@ def test_doctor_does_not_mutate_remote_ownership(tmp_path: Path, monkeypatch):
     )
 
 
+def _write_sample_layout(repo: Path, *, git_mode: str = "optional") -> Path:
+    """Layout aligned with samples/kanban-board (.ai/run.yaml, workspace ..)."""
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "task.md").write_text("goal\n", encoding="utf-8")
+    ai = repo / ".ai"
+    ai.mkdir(parents=True, exist_ok=True)
+    yaml_path = ai / "run.yaml"
+    yaml_path.write_text(
+        "version: 2\n"
+        "workspace: ..\n"
+        "task:\n"
+        "  source: task.md\n"
+        "artifacts:\n  root: .ai/auto-loop\n"
+        f"git:\n  mode: {git_mode}\n",
+        encoding="utf-8",
+    )
+    return yaml_path
+
+
+def _artifact_gitignore_checks(report):
+    return [c for c in report.checks if c.check_id == "artifacts:gitignore"]
+
+
+def test_doctor_no_git_worktree_skips_artifact_ignore_warning(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "plain"
+    yaml_path = _write_sample_layout(repo, git_mode="off")
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(load_run_manifest(yaml_path))
+    assert not _artifact_gitignore_checks(report)
+
+
+def test_doctor_warns_when_artifact_not_gitignored(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    yaml_path = _write_sample_layout(repo)
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(load_run_manifest(yaml_path))
+    warnings = _artifact_gitignore_checks(report)
+    assert len(warnings) == 1
+    assert "not ignored by Git" in warnings[0].message
+
+
+def test_doctor_ok_when_workspace_local_gitignore_covers_artifact(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    yaml_path = _write_sample_layout(repo)
+    (repo / ".gitignore").write_text(".ai/auto-loop/\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "ignore artifacts")
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(load_run_manifest(yaml_path))
+    assert not _artifact_gitignore_checks(report)
+
+
+def test_doctor_ok_when_ancestor_gitignore_ignores_artifact_path(tmp_path: Path, monkeypatch):
+    outer = tmp_path / "mono"
+    outer.mkdir()
+    _git(outer, "init")
+    _git(outer, "config", "user.email", "t@example.com")
+    _git(outer, "config", "user.name", "T")
+    repo = outer / "packages" / "app"
+    yaml_path = _write_sample_layout(repo)
+    (outer / ".gitignore").write_text("packages/app/.ai/auto-loop/\n", encoding="utf-8")
+    _git(outer, "add", ".")
+    _git(outer, "commit", "-m", "init")
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(load_run_manifest(yaml_path))
+    assert not _artifact_gitignore_checks(report)
+
+
+def test_doctor_ok_when_ancestor_gitignore_ignores_workspace(tmp_path: Path, monkeypatch):
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    _git(outer, "init")
+    _git(outer, "config", "user.email", "t@example.com")
+    _git(outer, "config", "user.name", "T")
+    (outer / ".gitignore").write_text("nested/\n", encoding="utf-8")
+    repo = outer / "nested" / "project"
+    yaml_path = _write_sample_layout(repo)
+    _git(outer, "add", ".")
+    _git(outer, "commit", "-m", "init")
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(load_run_manifest(yaml_path))
+    assert not _artifact_gitignore_checks(report)
+
+
+def test_doctor_ok_when_git_info_exclude_ignores_artifact(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    yaml_path = _write_sample_layout(repo)
+    exclude = repo / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text(".ai/auto-loop/\n", encoding="utf-8")
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(load_run_manifest(yaml_path))
+    assert not _artifact_gitignore_checks(report)
+
+
+def test_doctor_gitignore_negation_follows_git(tmp_path: Path, monkeypatch):
+    from auto_loop.git import is_path_git_ignored
+
+    repo = _repo(tmp_path)
+    yaml_path = _write_sample_layout(repo)
+    (repo / ".gitignore").write_text(".ai/\n!.ai/run.yaml\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "partial ignore")
+    source = load_run_manifest(yaml_path)
+    ignored = is_path_git_ignored(source.artifact_root)
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(source)
+    warnings = _artifact_gitignore_checks(report)
+    if ignored:
+        assert not warnings
+    else:
+        assert len(warnings) == 1
+
+
+def test_doctor_git_mode_off_reports_no_repository_required(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    yaml_path = _write_sample_layout(repo, git_mode="off")
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(load_run_manifest(yaml_path))
+    git_checks = [c for c in report.checks if c.check_id == "git"]
+    assert any("Git mode is off" in c.message for c in git_checks)
+    assert not any(c.severity == Severity.ERROR for c in git_checks)
+
+
+def test_doctor_does_not_mutate_gitignore(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    yaml_path = _write_sample_layout(repo)
+    ignore = repo / ".gitignore"
+    ignore.write_text("notes.txt\n", encoding="utf-8")
+    before = ignore.read_text(encoding="utf-8")
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    run_doctor(load_run_manifest(yaml_path))
+    assert ignore.read_text(encoding="utf-8") == before
+
+
+def test_doctor_product_exclude_unchanged_when_artifact_unignored(tmp_path: Path, monkeypatch):
+    from auto_loop.product_state import is_product_tree_clean, product_excludes
+
+    repo = _repo(tmp_path)
+    yaml_path = _write_sample_layout(repo)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "inputs")
+    source = load_run_manifest(yaml_path)
+    artifact = source.artifact_root
+    artifact.mkdir(parents=True, exist_ok=True)
+    (artifact / "runtime").mkdir(parents=True, exist_ok=True)
+    (artifact / "runtime" / "state.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("auto_loop.doctor.resolve_cursor_binary", lambda _cfg: "/usr/bin/fake-agent")
+    monkeypatch.setattr("auto_loop.doctor.subprocess.run", _cursor_subprocess)
+    report = run_doctor(source)
+    assert len(_artifact_gitignore_checks(report)) == 1
+    assert is_product_tree_clean(repo, excludes=product_excludes(source.config))
+
+
 def test_doctor_reports_missing_custom_instruction(tmp_path: Path, monkeypatch):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)

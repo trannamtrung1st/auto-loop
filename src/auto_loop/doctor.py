@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from auto_loop.config import AutoLoopConfig, ConfigurationError, load_resolved_config_optional
+from auto_loop.git import is_path_git_ignored
 from auto_loop.git_policy import git_policy_issues
 from auto_loop.context_manifest import validate_context
 from auto_loop.instructions import validate_custom_instruction_files
@@ -66,26 +67,6 @@ def _path_readable(path: Path) -> bool:
     return path.is_file() and os.access(path, os.R_OK)
 
 
-def _artifact_ignored(workspace: Path, artifact_root: Path) -> bool:
-    gitignore = workspace / ".gitignore"
-    if not gitignore.is_file():
-        return False
-    try:
-        rel = artifact_root.resolve().relative_to(workspace.resolve())
-    except ValueError:
-        return True
-    rel_text = str(rel).replace("\\", "/")
-    prefixes = {rel_text, f"{rel_text}/", f"{rel_text}/**", str(rel_text).split("/")[0] + "/"}
-    existing = {line.strip().rstrip("/") for line in gitignore.read_text(encoding="utf-8").splitlines()}
-    for item in existing:
-        cleaned = item.rstrip("/")
-        if cleaned in prefixes or rel_text.startswith(cleaned.rstrip("*").rstrip("/") + "/"):
-            return True
-        if item in {rel_text, f"{rel_text}/", f"{rel_text}/**"}:
-            return True
-    return False
-
-
 def _check_manifest(source: RunManifestSource, report: DoctorReport) -> AutoLoopConfig:
     report.add("config", Severity.OK, f"Run config loaded: {source.path}")
     report.add("workspace", Severity.OK, f"Workspace: {source.workspace}")
@@ -94,11 +75,12 @@ def _check_manifest(source: RunManifestSource, report: DoctorReport) -> AutoLoop
         Severity.OK,
         f"Artifact root is contained in workspace: {source.artifact_root}",
     )
-    if not _artifact_ignored(source.workspace, source.artifact_root):
+    ignored = is_path_git_ignored(source.artifact_root)
+    if ignored is False:
         report.add(
             "artifacts:gitignore",
             Severity.WARNING,
-            "Artifact root is inside the repository and is not listed in .gitignore",
+            "Artifact root is inside a Git worktree and is not ignored by Git",
         )
     return source.config
 

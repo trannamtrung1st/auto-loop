@@ -1,3 +1,0 @@
-# Tool-managed Auto Loop state (plan, reviews, runtime, frozen task snapshots).
-# User-owned files stay tracked: .ai/run.yaml, .ai/task.md, and proposal.md
-.ai/auto-loop/

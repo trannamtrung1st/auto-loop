@@ -12,6 +12,16 @@ from auto_loop.manifest import load_run_manifest
 runner = CliRunner()
 
 
+def test_init_does_not_create_or_edit_gitignore(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text("local/\n", encoding="utf-8")
+    before = ignore.read_text(encoding="utf-8")
+    run_init(tmp_path / ".ai" / "run.yaml")
+    assert ignore.read_text(encoding="utf-8") == before
+    assert not (tmp_path / ".gitignore.bak").exists()
+
+
 def test_default_init_creates_run_yaml_only(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     target = tmp_path / ".ai" / "run.yaml"

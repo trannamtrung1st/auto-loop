@@ -19,6 +19,7 @@ from auto_loop.protection import (
     capture_protected_baseline,
     capture_review_snapshot,
 )
+from auto_loop.config import default_config
 from auto_loop.product_state import is_product_tree_clean
 
 
@@ -88,6 +89,19 @@ def test_review_snapshot_detects_plan_mutation(tmp_path: Path):
     plan.write_text(plan.read_text(encoding="utf-8") + "\nreviewer edit\n", encoding="utf-8")
     with pytest.raises(ReviewMutationError, match="plan.md"):
         assert_review_snapshot_unchanged(repo, plan_path=plan, before=before)
+
+
+def test_reviewer_product_edit_detected_without_git(tmp_path: Path):
+    repo = tmp_path / "plain"
+    repo.mkdir()
+    config = default_config()
+    config.git.mode = "off"
+    (repo / "app.py").write_text("ok\n", encoding="utf-8")
+    before = capture_product_fingerprint(repo, config=config)
+    (repo / "app.py").write_text("mutated\n", encoding="utf-8")
+    after = capture_product_fingerprint(repo, config=config)
+    with pytest.raises(ReviewMutationError):
+        assert_reviewer_product_unchanged(before, after)
 
 
 def test_review_snapshot_detects_path_target_mutation(tmp_path: Path):

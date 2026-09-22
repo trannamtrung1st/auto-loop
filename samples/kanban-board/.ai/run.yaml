@@ -35,8 +35,7 @@ context:
         purpose: Sample overview for all roles
 
 git:
-  mode: optional
-  protect_approved_history: true
+  mode: "off"
 
 logging:
   console: normal

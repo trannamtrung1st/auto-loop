@@ -75,7 +75,7 @@ agents:
     mode: agent
   reviewer:
     role_file: ""
-    mode: ask
+    mode: agent
 
 instructions:
   # mode: extend | replace_role

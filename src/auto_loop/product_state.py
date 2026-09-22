@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from auto_loop.git import GitProtocolError
+from auto_loop.git import GitProtocolError, head_commit_optional, is_git_repository
 from auto_loop.paths import DEFAULT_ARTIFACTS_ROOT, posix_rel
 
 if TYPE_CHECKING:
@@ -97,18 +97,72 @@ def assert_clean_product_tree(
     raise GitProtocolError(f"Product working tree is not clean: {paths}{extra}")
 
 
+def iter_workspace_product_files(
+    workspace: Path,
+    *,
+    excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES,
+) -> list[Path]:
+    """Product files under ``workspace``, excluding control paths and escaping symlinks."""
+    root = workspace.resolve()
+    files: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if is_control_path(rel, excludes):
+            continue
+        if path.is_symlink():
+            try:
+                path.resolve().relative_to(root)
+            except ValueError:
+                continue
+        files.append(path)
+    return files
+
+
+def filesystem_product_rows(
+    workspace: Path,
+    *,
+    excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES,
+) -> list[list[str]]:
+    """Deterministic product snapshot when Git is unavailable or ``git.mode=off``."""
+    from auto_loop.review_targets import fingerprint_path
+
+    root = workspace.resolve()
+    rows: list[list[str]] = []
+    for path in iter_workspace_product_files(workspace, excludes=excludes):
+        rel = path.relative_to(root).as_posix()
+        digest, _ = fingerprint_path(path)
+        rows.append([rel, "fs", digest])
+    rows.sort()
+    return rows
+
+
 def capture_product_working_fingerprint(
     repo: Path,
     *,
     excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES,
+    config: AutoLoopConfig | None = None,
 ) -> tuple[str | None, list[list[str]]]:
-    """Snapshot product dirtiness for planner mutation checks.
+    """Snapshot product state for planner mutation checks.
 
-    Each row is ``[path, git-status, content-fingerprint]``. Fingerprints cover
-    dirty and untracked paths so content edits are visible even when status is
-    unchanged.
+    Each row is ``[path, status, content-fingerprint]``. With Git, status comes
+    from ``git status``; without Git, status is ``fs`` for every product file.
     """
-    from auto_loop.git import head_commit_optional
+    from auto_loop.git_policy import git_usable
+
+    use_git = False
+    if config is not None:
+        use_git = git_usable(repo, config)
+    elif is_git_repository(repo):
+        use_git = head_commit_optional(repo) is not None
+
+    if not use_git:
+        return None, filesystem_product_rows(repo, excludes=excludes)
+
     from auto_loop.review_targets import fingerprint_path, sha256_bytes
 
     head = head_commit_optional(repo)

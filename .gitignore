@@ -1,6 +1,9 @@
 # Local-only: env, secrets, credentials, machine-specific data (never commit)
 local/
 
+# Generated state from running checked-in samples locally
+samples/**/.ai/auto-loop/
+
 __pycache__/
 *.py[cod]
 .pytest_cache/

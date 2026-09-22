@@ -47,7 +47,8 @@ def test_plan_run_emits_events_and_turn_logs(tmp_path: Path):
     for turn in turns:
         readable = read_turn_logs(repo, state.lifecycle_id, turn, raw=False)
         raw = read_turn_logs(repo, state.lifecycle_id, turn, raw=True)
-        assert "[message]" in readable
         assert "=== turn" in raw
         assert '"type": "assistant"' in raw
+        assert "<AUTO_LOOP_RESULT>" in raw
+        assert "<AUTO_LOOP_RESULT>" not in readable
         assert "[message]" not in raw.split("===", 1)[-1]

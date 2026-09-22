@@ -32,7 +32,7 @@ def test_default_config_round_trip():
     assert cfg.agents["planner"].mode == "agent"
     assert cfg.agents["planner"].role_file == ""
     assert cfg.agents["worker"].mode == "agent"
-    assert cfg.agents["reviewer"].mode == "ask"
+    assert cfg.agents["reviewer"].mode == "agent"
     assert cfg.limits.max_turns == 100
     assert cfg.task.source == ".ai/task.md"
     assert cfg.task.resources == []
@@ -41,7 +41,7 @@ def test_default_config_round_trip():
     reloaded = AutoLoopConfig.model_validate(yaml.safe_load(dump_config(cfg)))
     assert reloaded.version == cfg.version
     assert reloaded.task.source == cfg.task.source
-    assert reloaded.agents["reviewer"].mode == "ask"
+    assert reloaded.agents["reviewer"].mode == "agent"
     assert "limits" not in yaml.safe_load(dump_config(cfg))
 
 
@@ -69,11 +69,19 @@ def test_impossible_limits_rejected():
         parse_config_dict(data)
 
 
-def test_reviewer_must_use_ask_mode():
+def test_reviewer_may_use_agent_or_ask_mode():
     data = _public_dict()
-    data["agents"] = {"reviewer": {"mode": "agent"}}
-    with pytest.raises(ConfigurationError, match="ask mode"):
-        parse_config_dict(data)
+    agent_cfg = parse_config_dict({**data, "agents": {"reviewer": {"mode": "agent"}}})
+    assert agent_cfg.agents["reviewer"].mode == "agent"
+    ask_cfg = parse_config_dict({**data, "agents": {"reviewer": {"mode": "ask"}}})
+    assert ask_cfg.agents["reviewer"].mode == "ask"
+
+
+def test_reviewer_defaults_to_agent_mode():
+    cfg = parse_config_dict(_public_dict())
+    assert cfg.agents["reviewer"].mode == "agent"
+    assert cfg.agents["planner"].mode == "agent"
+    assert cfg.agents["worker"].mode == "agent"
 
 
 def test_config_fills_missing_planner_agent():

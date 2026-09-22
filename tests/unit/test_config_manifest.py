@@ -67,7 +67,7 @@ def test_packaged_full_template_parses():
     ).replace("{{artifacts_root}}", ".ai/auto-loop")
     cfg = parse_config_dict(yaml.safe_load(text))
     assert cfg.run.protocol_retries == 1
-    assert cfg.agents["reviewer"].mode == "ask"
+    assert cfg.agents["reviewer"].mode == "agent"
     assert cfg.context.version == 1
 
 
@@ -262,8 +262,6 @@ def test_kanban_sample_manifest_passes_doctor(tmp_path: Path, monkeypatch):
     import shutil
     import subprocess
 
-    from tests.repo_utils import git
-
     def fake_run(argv, **kwargs):
         cmd = " ".join(argv)
         if "--version" in cmd:
@@ -279,11 +277,6 @@ def test_kanban_sample_manifest_passes_doctor(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("auto_loop.doctor.subprocess.run", fake_run)
 
     shutil.copytree(sample, dest)
-    git(dest, "init")
-    git(dest, "config", "user.email", "t@example.com")
-    git(dest, "config", "user.name", "T")
-    git(dest, "add", ".")
-    git(dest, "commit", "-m", "sample")
     yaml_path = dest / ".ai" / "run.yaml"
     source = load_run_manifest(yaml_path)
     report = run_doctor(source)

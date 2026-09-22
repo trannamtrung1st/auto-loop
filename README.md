@@ -272,7 +272,7 @@ Plan-reviewer receives shared + reviewer context. Validate task inputs with `doc
 
 If the run YAML, task entry, or a task resource is inside the workspace, Auto Loop protects that path and its frozen snapshot during agent turns. Mutations stop the run with **`PROTECTION_VIOLATION`**; auto-loop does not revert files for you. Agents must not rewrite a proposal or spec to make an implementation pass.
 
-The artifact root is excluded from product cleanliness and worker production-change calculations even if it is not gitignored. `doctor` warns when an in-repo artifact root is not listed in `.gitignore`.
+The artifact root is excluded from product cleanliness and worker production-change calculations even if it is not gitignored. When the workspace sits inside a Git worktree, `doctor` warns if the artifact root is not ignored by Git (using `git check-ignore`, not a local `.gitignore` parser).
 
 ## Developing auto-loop
 
@@ -282,8 +282,9 @@ Contributors working on this repository should read root [`AGENTS.md`](AGENTS.md
 
 - **Events** — `<artifacts.root>/runtime/events.jsonl` (lifecycle started, reviews, baseline advanced, stops, limits).
 - **State** — `<artifacts.root>/runtime/state.json` (phase, turn, next session, four session slots, active review, pending revision, inflight).
-- **Turn logs** — `<artifacts.root>/runtime/runs/<lifecycle_id>/` per-turn streams, named by session purpose. `.jsonl` is the raw provider NDJSON, appended as each line arrives. `.log` is the normalized thinking / message / tool trace, also appended immediately. `auto-loop logs RUN_CONFIG --follow` tails that activity while the agent is running. `--raw` prints the JSONL unchanged.
-- **Run console** — normal and verbose runs show that trace live in the same terminal: thinking, assistant text, and tool start/end, as each event arrives. Assistant text is shown once. Live deltas render immediately; a buffered assistant copy is shown only when those deltas were absent, and a repeated copy is skipped. `--quiet` hides the live trace and still writes the turn logs. `--verbose` keeps the trace and adds session and lifecycle diagnostics, with longer tool-argument excerpts. Tool results stay summarized; the full payload remains in the JSONL. `auto-loop logs --follow` tails the same trace from the turn log; it is not required to watch a run.
+- **Turn logs** — `<artifacts.root>/runtime/runs/<lifecycle_id>/` per-turn streams, named by session purpose. `.jsonl` is the raw provider NDJSON, appended as each line arrives (including the full `<AUTO_LOOP_RESULT>` protocol block). `.log` is the normalized thinking / message / tool trace, also appended immediately, but hides the raw result JSON for readability. `auto-loop logs RUN_CONFIG --follow` tails that activity while the agent is running. `--raw` prints the JSONL unchanged.
+- **Run console** — normal and verbose runs show that trace live in the same terminal: thinking, assistant text, and tool start/end, as each event arrives. Narrative assistant text remains visible; the `<AUTO_LOOP_RESULT>` envelope is suppressed on the console and in readable `.log` files only (protocol parsing still uses the complete terminal response). Assistant text is shown once. Live deltas render immediately; a buffered assistant copy is shown only when those deltas were absent, and a repeated copy is skipped. `--quiet` hides the live trace and still writes the turn logs. `--verbose` keeps the trace and adds session and lifecycle diagnostics, with longer tool-argument excerpts. Tool results stay summarized; the full payload remains in the JSONL. `auto-loop logs --follow` tails the same trace from the turn log; it is not required to watch a run.
+- **Protocol handoff** — agents still end turns with exactly one `<AUTO_LOOP_RESULT>` JSON block in terminal output. That marker-based handoff is canonical and provider-neutral; display filtering does not change validation or repair.
 - **Completion / blocked** — `<artifacts.root>/runtime/completion.json` or `blocked.json` when terminal.
 
 Use `auto-loop status RUN_CONFIG` and `auto-loop logs RUN_CONFIG` for operator-friendly views.
@@ -310,7 +311,7 @@ Version 2 is the supported public schema. Version 1 files fail with a clear erro
 | `models.planner` / `models.worker` / `models.reviewer` | Per-role model ids (canonical; plan-reviewer uses `models.reviewer`). |
 | `run.*` | Turns, runtime, agent timeouts, provider/protocol retries, no-progress streak (canonical). |
 | `provider.cursor` | CLI command (`agent` / `cursor-agent`), extra args per role. |
-| `agents.planner` / `agents.worker` / `agents.reviewer` | Optional custom role files and `agent` vs `ask` mode only (not model selection). |
+| `agents.planner` / `agents.worker` / `agents.reviewer` | Optional custom role files and Cursor `agent` vs `ask` capability (defaults: all `agent`). This is provider tool access, not write authority: the controller still blocks planner/reviewer product mutations and protects plan/review targets. Reviewers do not receive `--force` unless you set `provider.cursor.reviewer_extra_args`. Set `agents.reviewer.mode: ask` when you want a more restricted provider mode. |
 | `instructions` | Optional shared/planner/worker/reviewer markdown stacks. |
 | `context` | Optional per-role resource and skill lists (`path`, `purpose`, `required`). |
 | `git` | `mode` (`required`, `optional`, or `off`) and approved-history protection. |

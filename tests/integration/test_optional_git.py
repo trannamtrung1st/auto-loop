@@ -567,3 +567,27 @@ def test_doctor_matches_git_policy(tmp_path: Path, monkeypatch):
     assert not any(
         check.severity == Severity.ERROR and check.check_id == "git" for check in off_report.checks
     )
+
+
+def test_mode_off_rejects_planner_product_mutation(tmp_path: Path):
+    repo = tmp_path / "plain-plan"
+    repo.mkdir()
+    bootstrap_workspace(repo, git_mode="off")
+    provider = _MutatingPlanner(repo, "notes.txt", "planner wrote this\n")
+    provider.set_planner_review_request()
+    outcome = run_lifecycle(repo, run_opts(2), provider)
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert "mutated" in (state.completed_provider_turn.transition_error or "").lower()
+
+
+def test_mode_off_rejects_reviewer_product_mutation(tmp_path: Path):
+    repo = tmp_path / "plain-review"
+    repo.mkdir()
+    bootstrap_workspace(repo, git_mode="off")
+    (repo / "deliverable.md").write_text("ok\n", encoding="utf-8")
+    provider = _MutatingReviewer(repo, "deliverable.md")
+    _queue_no_git_lifecycle(provider, path="deliverable.md", target_id="out")
+    outcome = run_lifecycle(repo, run_opts(6), provider)
+    assert outcome.exit_code == ExitCode.REVIEW_MUTATION_ERROR

@@ -1,6 +1,6 @@
 # Kanban board sample
 
-A clean Auto Loop project: one run manifest, one task entry, and one ordinary proposal. No checked-in generated state.
+These files are the **initial user input** for Auto Loop before any run. The tree is intentionally minimal: a run manifest, a task entry, and one ordinary requirements document. Nothing here is generated lifecycle state.
 
 ## Quick start
 
@@ -11,26 +11,26 @@ auto-loop doctor .ai/run.yaml
 auto-loop run .ai/run.yaml
 ```
 
-If this folder is not already a Git repository, initialize it first (`git init` and an initial commit). `bootstrap.sh` can do that for local convenience; it is not part of the Auto Loop user contract.
+No Git repository is required. There is no bootstrap script. Run the commands above directly against this folder.
+
+`git.mode` is `off` in `.ai/run.yaml` on purpose. This sample lives inside the Auto Loop repository when you clone it; optional Git discovery could otherwise pick up the parent repo and treat its history as review evidence. This example is a plain-directory demonstration.
 
 ## What you edit
 
-| File | Owner |
-|------|--------|
-| `.ai/task.md` | you — Auto Loop entry; points at `proposal.md` |
-| `proposal.md` | you — ordinary product requirements, listed in `task.resources` |
-| `.ai/run.yaml` | you — realistic example (models, run limits, context, logging) |
-| `.gitignore` | you — ignores tool-managed `.ai/auto-loop/` while keeping the run YAML, task entry, and proposal tracked |
-| project files created by the run | you / Auto Loop workers |
+| File | Role |
+|------|------|
+| `.ai/task.md` | Auto Loop entry for the run; references `proposal.md` |
+| `proposal.md` | Authoritative product requirements (listed in `task.resources`) |
+| `.ai/run.yaml` | Run manifest (models, limits, context, logging) |
 
-`.ai/task.md` can be prepared before `auto-loop run`. Auto Loop snapshots it to `.ai/auto-loop/task.md` and snapshots `proposal.md` to `.ai/auto-loop/task-resources/proposal.md` when a lifecycle starts. An active lifecycle keeps those frozen copies even if you later edit the originals.
+## What appears only after a run
 
-Generated plan, reviews, and runtime state also live under `.ai/auto-loop/` (tool-managed). You do not need to edit that directory.
+Auto Loop creates tool-managed state under `.ai/auto-loop/` when you run (frozen task snapshot, plan, reviews, runtime). That directory is **not** part of the checked-in sample. If you run this sample inside a clone of Auto Loop, the repository root `.gitignore` ignores `samples/**/.ai/auto-loop/` so local runs do not pollute Git status.
 
-For every supported public setting with defaults and comments, generate a reference manifest:
+For every supported public setting with defaults and comments, you can generate a reference manifest:
 
 ```bash
 auto-loop init .ai/run.yaml --full
 ```
 
-That command is optional; use it when you want the complete configuration surface in one YAML file.
+That command is optional and does not modify this sample unless you pass `--force`.

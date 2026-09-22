@@ -22,7 +22,7 @@ from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_inputs import prepare_repo_for_run
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 from auto_loop.terminal_records import CompletionRecord, save_completion_record
-from tests.integration.scenario_harness import git, run_opts
+from tests.integration.scenario_harness import run_opts
 from tests.repo_utils import git_repo
 
 runner = CliRunner()
@@ -205,15 +205,26 @@ def test_package_defaults_run_without_generated_agents(tmp_path: Path):
     assert outcome.exit_code in {ExitCode.LIMIT_REACHED, ExitCode.COMPLETE}
 
 
+def test_run_does_not_create_or_edit_gitignore(tmp_path: Path):
+    sample = _REPO / "samples" / "kanban-board"
+    dest = tmp_path / "kanban-board"
+    shutil.copytree(sample, dest)
+    ignore = dest / ".gitignore"
+    ignore.write_text("vendor/\n", encoding="utf-8")
+    before = ignore.read_text(encoding="utf-8")
+    yaml_path = dest / ".ai" / "run.yaml"
+    prepare_repo_for_run(load_run_manifest(yaml_path))
+    provider = ScriptedProvider()
+    provider.set_worker_plan_request()
+    provider.set_reviewer_pass("plan", "plan")
+    run_lifecycle(dest, run_opts(2), provider)
+    assert ignore.read_text(encoding="utf-8") == before
+
+
 def test_kanban_sample_reaches_execution_without_manual_internal_edits(tmp_path: Path):
     sample = _REPO / "samples" / "kanban-board"
     dest = tmp_path / "kanban-board"
     shutil.copytree(sample, dest)
-    git(dest, "init")
-    git(dest, "config", "user.email", "t@example.com")
-    git(dest, "config", "user.name", "T")
-    git(dest, "add", ".")
-    git(dest, "commit", "-m", "sample")
     assert not (dest / ".ai" / "auto-loop").exists()
     yaml_path = dest / ".ai" / "run.yaml"
     prepared = prepare_repo_for_run(load_run_manifest(yaml_path))

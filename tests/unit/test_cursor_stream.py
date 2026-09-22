@@ -23,7 +23,7 @@ from auto_loop.providers.supervision import (
 )
 
 
-def _request(role: str = "worker") -> AgentRequest:
+def _request(role: str = "worker", *, mode: str = "agent") -> AgentRequest:
     session_purpose = role if role in ("planner", "plan_reviewer", "worker", "reviewer") else "worker"
     logical = "reviewer" if role in ("reviewer", "plan_reviewer") else role
     return AgentRequest(
@@ -32,7 +32,7 @@ def _request(role: str = "worker") -> AgentRequest:
         workspace=Path("/tmp/workspace"),
         prompt="do work",
         model="auto",
-        mode="agent" if logical != "reviewer" else "ask",
+        mode=mode,  # type: ignore[arg-type]
         timeout_seconds=60,
         idle_timeout_seconds=30,
     )
@@ -61,6 +61,34 @@ def test_build_resume_command_uses_explicit_session_id():
         resume_session_id="sess-123",
     )
     assert "--resume=sess-123" in argv
+    assert "--mode=ask" not in argv
+    assert "--force" not in argv
+
+
+def _reviewer_ask_config():
+    config = default_config()
+    reviewer = config.agents["reviewer"].model_copy(update={"mode": "ask"})
+    return config.model_copy(update={"agents": {**config.agents, "reviewer": reviewer}})
+
+
+def test_reviewer_ask_mode_adds_mode_flag():
+    config = _reviewer_ask_config()
+    argv = build_cursor_command(
+        config,
+        _request("reviewer", mode=config.agents["reviewer"].mode),
+        binary="/usr/bin/agent",
+    )
+    assert "--mode=ask" in argv
+    assert "--force" not in argv
+
+
+def test_plan_reviewer_uses_reviewer_agent_mode():
+    config = _reviewer_ask_config()
+    argv = build_cursor_command(
+        config,
+        _request("plan_reviewer", mode=config.agents["reviewer"].mode),
+        binary="/usr/bin/agent",
+    )
     assert "--mode=ask" in argv
 
 

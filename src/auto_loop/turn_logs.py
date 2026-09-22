@@ -18,6 +18,7 @@ from auto_loop.providers.cursor import (
     format_tool_trace,
     trace_text_prefix,
 )
+from auto_loop.result_trace_filter import ResultTraceFilter
 
 # Session slot names used in turn log filenames (matches TurnLogWriter ``role``).
 TURN_LOG_ROLES: tuple[str, ...] = (
@@ -64,6 +65,9 @@ class TurnLogWriter:
     _assistant_trace: AssistantTraceNormalizer = field(
         default_factory=AssistantTraceNormalizer, init=False, repr=False
     )
+    _result_trace_filter: ResultTraceFilter = field(
+        default_factory=ResultTraceFilter, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         artifact_root = self.repo / self.config.artifacts_root
@@ -99,6 +103,10 @@ class TurnLogWriter:
         self._open_kind = None
 
     def finalize(self) -> None:
+        trailing = self._result_trace_filter.flush()
+        if trailing:
+            self._write_filtered_message(trailing)
+        self._result_trace_filter.reset()
         self.finish_open_trace()
         self._close_handles()
         if not self._wrote_readable:
@@ -133,12 +141,25 @@ class TurnLogWriter:
                 self.finish_open_trace()
             if not part:
                 continue
-            prefix = ""
-            if self._open_kind is not event.kind:
-                self.finish_open_trace()
-                prefix = trace_text_prefix(event.kind)
-                self._open_kind = event.kind
-            self._append_log(prefix + part)
+            if event.kind is TraceEventKind.MESSAGE:
+                filtered = self._result_trace_filter.feed(part)
+                if filtered:
+                    self._write_filtered_message(filtered)
+            else:
+                prefix = ""
+                if self._open_kind is not event.kind:
+                    self.finish_open_trace()
+                    prefix = trace_text_prefix(event.kind)
+                    self._open_kind = event.kind
+                self._append_log(prefix + part)
+
+    def _write_filtered_message(self, text: str) -> None:
+        prefix = ""
+        if self._open_kind is not TraceEventKind.MESSAGE:
+            self.finish_open_trace()
+            prefix = trace_text_prefix(TraceEventKind.MESSAGE)
+            self._open_kind = TraceEventKind.MESSAGE
+        self._append_log(prefix + text)
 
     def _close_handles(self) -> None:
         for handle in (self._jsonl_handle, self._log_handle):

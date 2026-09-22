@@ -64,6 +64,85 @@ def is_git_repository(repo: Path) -> bool:
         return False
 
 
+def _git_command_cwd(path: Path) -> Path:
+    """Existing directory to use as Git subprocess cwd for paths that may not exist yet."""
+    candidate = path.resolve()
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def git_worktree_root(path: Path) -> Path | None:
+    """Return the enclosing Git worktree root for `path`, or None if not inside one."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=_git_command_cwd(path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    text = (result.stdout or "").strip()
+    if not text:
+        return None
+    return Path(text).resolve()
+
+
+def is_path_git_ignored(path: Path) -> bool | None:
+    """Whether `path` is ignored by Git.
+
+    Returns None when `path` is not inside a Git worktree.
+
+    Uses ``git check-ignore``. When the artifact directory does not exist yet,
+    probes with a temporary file inside it (removed before returning) because
+    Git only matches some directory rules against existing paths.
+    """
+    worktree = git_worktree_root(path)
+    if worktree is None:
+        return None
+    try:
+        rel = path.resolve().relative_to(worktree)
+    except ValueError:
+        return None
+    rel_text = rel.as_posix()
+
+    def _check_ignore(target: str) -> int:
+        return subprocess.run(
+            ["git", "check-ignore", "-q", "--", target],
+            cwd=worktree,
+            capture_output=True,
+            check=False,
+        ).returncode
+
+    code = _check_ignore(rel_text)
+    if code == 0:
+        return True
+    if code != 1:
+        return False
+    if path.exists():
+        return False
+
+    created_dir = False
+    probe_name = ".auto-loop-doctor-ignore-probe"
+    probe = path / probe_name
+    try:
+        if not path.is_dir():
+            path.mkdir(parents=True, exist_ok=True)
+            created_dir = True
+        probe.write_text("", encoding="utf-8")
+        probe_rel = f"{rel_text.rstrip('/')}/{probe_name}"
+        ignored = _check_ignore(probe_rel) == 0
+    except OSError:
+        ignored = False
+    finally:
+        if probe.is_file():
+            probe.unlink(missing_ok=True)
+        if created_dir and path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+    return ignored
+
+
 def resolve_commit(repo: Path, ref: str) -> str:
     try:
         return _run_git(repo, "rev-parse", ref)

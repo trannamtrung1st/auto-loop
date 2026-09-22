@@ -16,6 +16,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from auto_loop.config import ConsoleLevel
+from auto_loop.result_trace_filter import ResultTraceFilter
 from auto_loop.providers.cursor import (
     TRACE_PAYLOAD_LIMIT,
     TRACE_PAYLOAD_LIMIT_VERBOSE,
@@ -168,6 +169,7 @@ class RunConsole:
         self.stream = stream or sys.stdout
         self._rich = make_rich_console(self.stream, color=color)
         self._active_stream_kind: TraceEventKind | None = None
+        self._result_trace_filter = ResultTraceFilter()
 
     def _enabled(self, min_level: ConsoleLevel) -> bool:
         return _LEVELS[self.level] >= _LEVELS[min_level]
@@ -265,6 +267,7 @@ class RunConsole:
     def turn_started(self, turn: int, actor: str, *, model: str) -> None:
         if not self._enabled("normal"):
             return
+        self._result_trace_filter.reset()
         self._blank()
         title = Text()
         title.append(f"Turn {turn} · ")
@@ -360,22 +363,35 @@ class RunConsole:
 
     def finish_provider_trace(self) -> None:
         """End an open thinking or message line so the next console row starts clean."""
+        trailing = self._result_trace_filter.flush()
+        if trailing:
+            self._emit_trace_text(TraceEventKind.MESSAGE, trailing)
+        self._result_trace_filter.reset()
         self._finish_stream_line()
 
     def _trace_text(self, event: TraceEvent) -> None:
-        style = _TRACE_TEXT_STYLES[event.kind]
         parts = event.text.split("\n")
         for index, part in enumerate(parts):
             if index:
                 self._finish_stream_line()
             if not part:
                 continue
-            if self._active_stream_kind is not event.kind:
-                self._finish_stream_line()
-                self._rich.print(Text(trace_text_prefix(event.kind), style=style), end="")
-                self._active_stream_kind = event.kind
-            self._rich.print(Text(part, style=style), end="")
-            self._rich.file.flush()
+            if event.kind is TraceEventKind.MESSAGE:
+                filtered = self._result_trace_filter.feed(part)
+                if not filtered:
+                    continue
+                self._emit_trace_text(event.kind, filtered)
+            else:
+                self._emit_trace_text(event.kind, part)
+
+    def _emit_trace_text(self, kind: TraceEventKind, text: str) -> None:
+        style = _TRACE_TEXT_STYLES[kind]
+        if self._active_stream_kind is not kind:
+            self._finish_stream_line()
+            self._rich.print(Text(trace_text_prefix(kind), style=style), end="")
+            self._active_stream_kind = kind
+        self._rich.print(Text(text, style=style), end="")
+        self._rich.file.flush()
 
     def _finish_stream_line(self) -> None:
         if self._active_stream_kind is None:

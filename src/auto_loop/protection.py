@@ -8,9 +8,12 @@ from pathlib import Path
 
 from auto_loop.config import AutoLoopConfig
 from auto_loop.exits import ExitCode
-from auto_loop.git import head_commit
 from auto_loop.models import ActiveReviewTarget
-from auto_loop.product_state import DEFAULT_PRODUCT_EXCLUDES, list_product_changes, product_excludes
+from auto_loop.product_state import (
+    DEFAULT_PRODUCT_EXCLUDES,
+    capture_product_working_fingerprint,
+    product_excludes,
+)
 from auto_loop.review_targets import verify_path_targets_unchanged, sha256_file
 
 
@@ -51,7 +54,11 @@ class ProtectedBaseline:
 @dataclass(frozen=True)
 class ProductFingerprint:
     head: str
-    changes: tuple[tuple[str, str], ...]
+    rows: tuple[tuple[str, str, str], ...]
+
+    @property
+    def changes(self) -> tuple[tuple[str, str], ...]:
+        return tuple((path, status) for path, status, _digest in self.rows)
 
 
 @dataclass(frozen=True)
@@ -132,36 +139,36 @@ def capture_product_fingerprint(
     excludes: tuple[str, ...] | None = None,
     config: AutoLoopConfig | None = None,
 ) -> ProductFingerprint:
-    from auto_loop.git_policy import git_usable
-
     if excludes is None:
         excludes = product_excludes(config) if config is not None else DEFAULT_PRODUCT_EXCLUDES
-    if config is not None and not git_usable(repo, config):
-        return ProductFingerprint(head="", changes=())
-    if config is None:
-        from auto_loop.git import is_git_repository
-
-        if not is_git_repository(repo):
-            return ProductFingerprint(head="", changes=())
-    changes = list_product_changes(repo, excludes=excludes)
-    return ProductFingerprint(
-        head=head_commit(repo),
-        changes=tuple(sorted((change.path, change.status) for change in changes)),
-    )
+    head, rows = capture_product_working_fingerprint(repo, excludes=excludes, config=config)
+    if head is None:
+        git_head = ""
+    else:
+        git_head = head
+    typed_rows = tuple((row[0], row[1], row[2]) for row in rows)
+    return ProductFingerprint(head=git_head, rows=typed_rows)
 
 
 def diff_product_fingerprints(before: ProductFingerprint, after: ProductFingerprint) -> list[str]:
     details: list[str] = []
-    if before.head != after.head:
+    if before.head and after.head and before.head != after.head:
         details.append(f"HEAD changed from {before.head[:7]} to {after.head[:7]}")
-    if before.changes != after.changes:
-        before_map = dict(before.changes)
-        after_map = dict(after.changes)
-        for path in sorted(set(before_map) | set(after_map)):
-            if before_map.get(path) != after_map.get(path):
-                details.append(
-                    f"product path {path}: {before_map.get(path)!r} -> {after_map.get(path)!r}"
-                )
+    before_map = {row[0]: row for row in before.rows}
+    after_map = {row[0]: row for row in after.rows}
+    for path in sorted(set(before_map) | set(after_map)):
+        left = before_map.get(path)
+        right = after_map.get(path)
+        if left == right:
+            continue
+        if left is None:
+            details.append(f"product path created: {path}")
+        elif right is None:
+            details.append(f"product path deleted: {path}")
+        elif left[2] != right[2]:
+            details.append(f"product path {path}: content changed")
+        else:
+            details.append(f"product path {path}: {left[1]!r} -> {right[1]!r}")
     return details
 
 

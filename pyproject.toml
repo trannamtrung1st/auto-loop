@@ -32,6 +32,7 @@ packages = ["src/auto_loop"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "LICENSE" = "LICENSE"
+"samples/kanban-board" = "auto_loop/samples/kanban-board"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/auto_loop", "README.md", "LICENSE"]

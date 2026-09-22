@@ -18,7 +18,6 @@ from auto_loop.git import (
     ReviewRequestError,
     assert_approved_baseline_ancestry,
     head_commit,
-    is_git_repository,
     resolve_commit,
 )
 from auto_loop.git_policy import git_usable, repository_required_error
@@ -611,9 +610,10 @@ class LifecycleRunner:
         return head_commit(self.repo)
 
     def _product_snapshot(self) -> tuple[str | None, list[list[str]] | None]:
-        if self.config.git.mode == "off" or not is_git_repository(self.repo):
-            return None, None
-        return capture_product_working_fingerprint(self.repo, excludes=self._excludes())
+        head, rows = capture_product_working_fingerprint(
+            self.repo, excludes=self._excludes(), config=self.config
+        )
+        return head, rows
 
     def _adopt_parsed_result(
         self,
@@ -694,18 +694,15 @@ class LifecycleRunner:
                 )
 
     def _assert_planning_policy(self, state: LifecycleState) -> None:
-        if self.config.git.mode == "off" or not is_git_repository(self.repo):
+        done = state.completed_provider_turn
+        if done is None:
             return
-        if self.config.git.mode == "required":
+        if self.config.git.mode == "required" and self._git_usable():
             if head_commit(self.repo) != state.initial_base_commit:
                 raise GitProtocolError(
                     "Product HEAD must remain at initial baseline before plan PASS"
                 )
             assert_clean_product_tree(self.repo, excludes=self._excludes())
-            return
-        done = state.completed_provider_turn
-        if done is None:
-            return
         current_head, current_changes = self._product_snapshot()
         before = done.product_changes_before
         if current_head != done.product_head_before or not product_working_fingerprints_equal(

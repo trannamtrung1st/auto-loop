@@ -224,19 +224,14 @@ class AutoLoopConfig(ManifestModel):
         defaults: dict[str, AgentMode] = {
             "planner": "agent",
             "worker": "agent",
-            "reviewer": "ask",
+            "reviewer": "agent",
         }
         agents: dict[str, RoleAgentSettings] = {}
         for role, default_mode in defaults.items():
             incoming = self.agents.get(role) or RoleAgentSettings(mode=default_mode)
-            if role == "reviewer":
-                if incoming.mode != "ask":
-                    raise ValueError("Reviewer agent must use ask mode")
-                mode: AgentMode = "ask"
-            else:
-                mode = incoming.mode or default_mode
-                if mode not in ("agent", "ask"):
-                    raise ValueError(f"Invalid mode for {role}: {mode}")
+            mode = incoming.mode or default_mode
+            if mode not in ("agent", "ask"):
+                raise ValueError(f"Invalid mode for {role}: {mode}")
             agents[role] = RoleAgentSettings(
                 role_file=incoming.role_file,
                 mode=mode,
@@ -292,7 +287,7 @@ def public_config_dict(config: AutoLoopConfig) -> dict[str, Any]:
         entry: dict[str, Any] = {}
         if agent.role_file:
             entry["role_file"] = agent.role_file
-        default_mode: AgentMode = "ask" if role == "reviewer" else "agent"
+        default_mode: AgentMode = "agent"
         if agent.mode != default_mode:
             entry["mode"] = agent.mode
         if entry:
