@@ -114,6 +114,42 @@ def test_reviewer_batch_and_final_prompts():
     assert "whole-task final review" in final_prompt.lower()
 
 
+def test_reviewer_prompt_surfaces_controller_repair_reason():
+    state = create_lifecycle("base")
+    state.plan_approved = True
+    reason = "PASS requires reviewed_target_ids to include every active review target"
+    ctx = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="head",
+        product_clean=True,
+        repair_reason=reason,
+    )
+    batch = ActiveReview(
+        cycle_id="review-0001",
+        scope="batch",
+        target="W01",
+        summary="batch ready",
+        worker_summary="done",
+        targets=[],
+    )
+    batch_prompt = build_reviewer_prompt(state, ctx, batch)
+    assert "controller rejected it" in batch_prompt.lower()
+    assert reason in batch_prompt
+
+    plan_review = ActiveReview(
+        cycle_id="review-plan",
+        scope="plan",
+        target="plan",
+        summary="plan ready",
+        session_purpose="plan_reviewer",
+    )
+    plan_prompt = build_reviewer_prompt(state, ctx, plan_review)
+    assert "controller rejected it" in plan_prompt.lower()
+    assert reason in plan_prompt
+
+
 def test_session_consistency_detects_equal_ids():
     now = datetime.now(timezone.utc)
     state = LifecycleState(

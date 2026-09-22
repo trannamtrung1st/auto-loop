@@ -214,6 +214,13 @@ def _format_targets(review: ActiveReview) -> list[str]:
     return lines
 
 
+def _append_reviewer_result_guidance(lines: list[str], ctx: TurnContext) -> None:
+    if ctx.repair_reason:
+        lines.extend(_controller_repair_lines(ctx))
+    lines.extend(_repair_lines(ctx))
+    lines.append("End with one valid AUTO_LOOP_RESULT.")
+
+
 def build_reviewer_prompt(
     state: LifecycleState,
     ctx: TurnContext,
@@ -237,8 +244,7 @@ def build_reviewer_prompt(
         lines.extend(_format_targets(review))
         if lines[-1] != "":
             lines.append("")
-        lines.extend(_repair_lines(ctx))
-        lines.append("End with one valid AUTO_LOOP_RESULT.")
+        _append_reviewer_result_guidance(lines, ctx)
         return _append_manifest("\n".join(lines), ctx.resource_manifest)
 
     if ctx.first_execution_turn:
@@ -254,25 +260,22 @@ def build_reviewer_prompt(
         header = ["Continue your reviewer role.", ""]
 
     if review.scope == "final":
-        body = "\n".join(
-            header
-            + [
-                "Perform a whole-task final review.",
-                "",
-                "Do not limit yourself to the most recent diff.",
-                f"Re-read `{ctx.task_path}` and evaluate the approved review evidence.",
-                (
-                    f"Current HEAD is {ctx.head_commit}."
-                    if ctx.head_commit
-                    else "This review does not depend on a Git commit."
-                ),
-                "",
-                "Only return COMPLETE if the whole task is satisfied with zero findings.",
-                "",
-                "End with one valid AUTO_LOOP_RESULT.",
-            ]
-        )
-        return _append_manifest(body, ctx.resource_manifest)
+        lines = header + [
+            "Perform a whole-task final review.",
+            "",
+            "Do not limit yourself to the most recent diff.",
+            f"Re-read `{ctx.task_path}` and evaluate the approved review evidence.",
+            (
+                f"Current HEAD is {ctx.head_commit}."
+                if ctx.head_commit
+                else "This review does not depend on a Git commit."
+            ),
+            "",
+            "Only return COMPLETE if the whole task is satisfied with zero findings.",
+            "",
+        ]
+        _append_reviewer_result_guidance(lines, ctx)
+        return _append_manifest("\n".join(lines), ctx.resource_manifest)
 
     lines = header + [
         "Review request:",
@@ -317,6 +320,5 @@ def build_reviewer_prompt(
             "",
         ]
     )
-    lines.extend(_repair_lines(ctx))
-    lines.append("End with one valid AUTO_LOOP_RESULT.")
+    _append_reviewer_result_guidance(lines, ctx)
     return _append_manifest("\n".join(lines), ctx.resource_manifest)
