@@ -105,7 +105,7 @@ class TurnLogWriter:
     def finalize(self) -> None:
         trailing = self._result_trace_filter.flush()
         if trailing:
-            self._write_filtered_message(trailing)
+            self._write_filtered_message_multiline(trailing)
         self._result_trace_filter.reset()
         self.finish_open_trace()
         self._close_handles()
@@ -135,23 +135,32 @@ class TurnLogWriter:
             self._append_log(format_tool_trace(event) + "\n")
 
     def _write_text_event(self, event: TraceEvent) -> None:
+        if event.kind is TraceEventKind.MESSAGE:
+            filtered = self._result_trace_filter.feed(event.text)
+            self._write_filtered_message_multiline(filtered)
+            return
         parts = event.text.split("\n")
         for index, part in enumerate(parts):
             if index:
                 self.finish_open_trace()
             if not part:
                 continue
-            if event.kind is TraceEventKind.MESSAGE:
-                filtered = self._result_trace_filter.feed(part)
-                if filtered:
-                    self._write_filtered_message(filtered)
-            else:
-                prefix = ""
-                if self._open_kind is not event.kind:
-                    self.finish_open_trace()
-                    prefix = trace_text_prefix(event.kind)
-                    self._open_kind = event.kind
-                self._append_log(prefix + part)
+            prefix = ""
+            if self._open_kind is not event.kind:
+                self.finish_open_trace()
+                prefix = trace_text_prefix(event.kind)
+                self._open_kind = event.kind
+            self._append_log(prefix + part)
+
+    def _write_filtered_message_multiline(self, text: str) -> None:
+        if not text:
+            return
+        parts = text.split("\n")
+        for index, part in enumerate(parts):
+            if index:
+                self.finish_open_trace()
+            if part:
+                self._write_filtered_message(part)
 
     def _write_filtered_message(self, text: str) -> None:
         prefix = ""

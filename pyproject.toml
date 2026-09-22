@@ -35,7 +35,7 @@ packages = ["src/auto_loop"]
 "samples/kanban-board" = "auto_loop/samples/kanban-board"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/auto_loop", "README.md", "LICENSE"]
+include = ["src/auto_loop", "samples/kanban-board", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

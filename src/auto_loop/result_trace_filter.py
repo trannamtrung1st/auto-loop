@@ -26,17 +26,13 @@ class ResultTraceFilter:
         self._pending = ""
 
     def flush(self) -> str:
-        """Emit buffered non-marker text at turn end (partial markers are discarded)."""
+        """Emit buffered text at turn end when not inside a result block."""
         if self._inside:
             self._inside = False
             self._pending = ""
             return ""
         pending = self._pending
         self._pending = ""
-        if not pending:
-            return ""
-        if RESULT_BLOCK_START.startswith(pending) or RESULT_BLOCK_END.startswith(pending):
-            return ""
         return pending
 
     def feed(self, chunk: str) -> str:

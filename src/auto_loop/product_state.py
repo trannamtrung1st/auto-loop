@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,30 +99,53 @@ def assert_clean_product_tree(
     raise GitProtocolError(f"Product working tree is not clean: {paths}{extra}")
 
 
-def iter_workspace_product_files(
+def product_path_fingerprint(path: Path) -> str:
+    """Fingerprint one workspace product path without following symlinks out of the tree."""
+    from auto_loop.review_targets import fingerprint_path, sha256_bytes
+
+    if path.is_symlink():
+        target = os.readlink(path)
+        return sha256_bytes(f"symlink:{target}".encode("utf-8"))
+    digest, _ = fingerprint_path(path)
+    return digest
+
+
+def iter_workspace_product_paths(
     workspace: Path,
     *,
     excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES,
 ) -> list[Path]:
-    """Product files under ``workspace``, excluding control paths and escaping symlinks."""
+    """Product files and symlinks under ``workspace``, excluding control paths.
+
+    Symlinks are recorded by link text (``readlink``) and never followed into paths
+    outside the workspace. Regular files are included by ``lstat`` type.
+    """
     root = workspace.resolve()
-    files: list[Path] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        try:
-            rel = path.relative_to(root).as_posix()
-        except ValueError:
-            continue
-        if is_control_path(rel, excludes):
-            continue
-        if path.is_symlink():
+    paths: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        current = Path(dirpath)
+        for name in list(dirnames) + list(filenames):
+            path = current / name
             try:
-                path.resolve().relative_to(root)
+                rel = path.relative_to(root).as_posix()
             except ValueError:
                 continue
-        files.append(path)
-    return files
+            if is_control_path(rel, excludes):
+                if name in dirnames:
+                    dirnames.remove(name)
+                continue
+            try:
+                mode = path.lstat().st_mode
+            except OSError:
+                continue
+            if stat.S_ISLNK(mode):
+                paths.append(path)
+                if name in dirnames:
+                    dirnames.remove(name)
+                continue
+            if stat.S_ISREG(mode):
+                paths.append(path)
+    return sorted(paths)
 
 
 def filesystem_product_rows(
@@ -129,13 +154,11 @@ def filesystem_product_rows(
     excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES,
 ) -> list[list[str]]:
     """Deterministic product snapshot when Git is unavailable or ``git.mode=off``."""
-    from auto_loop.review_targets import fingerprint_path
-
     root = workspace.resolve()
     rows: list[list[str]] = []
-    for path in iter_workspace_product_files(workspace, excludes=excludes):
+    for path in iter_workspace_product_paths(workspace, excludes=excludes):
         rel = path.relative_to(root).as_posix()
-        digest, _ = fingerprint_path(path)
+        digest = product_path_fingerprint(path)
         rows.append([rel, "fs", digest])
     rows.sort()
     return rows

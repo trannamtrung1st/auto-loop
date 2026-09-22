@@ -5,7 +5,6 @@ from pathlib import Path
 from auto_loop.config import default_config
 from auto_loop.product_state import (
     capture_product_working_fingerprint,
-    filesystem_product_rows,
     product_working_fingerprints_equal,
 )
 from tests.integration.scenario_harness import git
@@ -44,4 +43,6 @@ def test_filesystem_snapshot_detects_product_changes_without_git(tmp_path: Path)
     (repo / "app.py").write_text("v2\n", encoding="utf-8")
     _, after = capture_product_working_fingerprint(repo, config=config)
     assert not product_working_fingerprints_equal(before, after)
-    assert len(filesystem_product_rows(repo)) == 1
+    from auto_loop.product_state import iter_workspace_product_paths
+
+    assert len(iter_workspace_product_paths(repo)) == 1

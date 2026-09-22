@@ -42,10 +42,22 @@ def test_unterminated_block_does_not_leak_json():
     assert filt.flush() == ""
 
 
-def test_flush_discards_incomplete_marker_prefix():
+def test_flush_emits_incomplete_marker_prefix_when_not_inside_block():
     filt = ResultTraceFilter()
     assert filt.feed("partial <AUTO_LO") == "partial "
+    assert filt.flush() == "<AUTO_LO"
+
+
+def test_message_preserve_lt_across_newlines_without_marker():
+    filt = ResultTraceFilter()
+    assert filt.feed("comparison <\nnext") == "comparison <\nnext"
     assert filt.flush() == ""
+
+
+def test_trailing_lt_preserved_at_end_of_turn():
+    filt = ResultTraceFilter()
+    assert filt.feed("value is <") == "value is "
+    assert filt.flush() == "<"
 
 
 def test_run_console_hides_result_block():

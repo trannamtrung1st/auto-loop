@@ -27,6 +27,54 @@ def _build_wheel(tmp_path: Path) -> Path:
     return wheels[0]
 
 
+def _build_sdist(tmp_path: Path) -> Path:
+    dist_dir = tmp_path / "sdist"
+    dist_dir.mkdir()
+    install = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "build>=1"],
+        capture_output=True,
+        text=True,
+    )
+    assert install.returncode == 0, install.stderr or install.stdout
+    proc = subprocess.run(
+        [sys.executable, "-m", "build", "--sdist", "-o", str(dist_dir), str(_repo_root())],
+        capture_output=True,
+        text=True,
+        cwd=_repo_root(),
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    tarballs = list(dist_dir.glob("auto_loop-*.tar.gz"))
+    assert len(tarballs) == 1
+    return tarballs[0]
+
+
+def _wheel_from_sdist(tmp_path: Path, sdist: Path) -> Path:
+    wheel_dir = tmp_path / "wheels-from-sdist"
+    wheel_dir.mkdir()
+    proc = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", str(sdist), "--no-deps", "-w", str(wheel_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+    wheels = list(wheel_dir.glob("auto_loop-*.whl"))
+    assert len(wheels) == 1
+    return wheels[0]
+
+
+def test_sdist_contains_sample_and_wheel_from_sdist_includes_it(tmp_path: Path):
+    import tarfile
+
+    sdist = _build_sdist(tmp_path)
+    with tarfile.open(sdist, "r:gz") as tf:
+        names = tf.getnames()
+    assert any("samples/kanban-board/README.md" in n for n in names)
+    wheel = _wheel_from_sdist(tmp_path, sdist)
+    with zipfile.ZipFile(wheel) as zf:
+        wheel_names = zf.namelist()
+    assert any(n.endswith("auto_loop/samples/kanban-board/README.md") for n in wheel_names)
+
+
 def test_wheel_contains_templates_and_license(tmp_path: Path):
     wheel = _build_wheel(tmp_path)
     with zipfile.ZipFile(wheel) as zf:

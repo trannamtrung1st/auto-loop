@@ -365,24 +365,26 @@ class RunConsole:
         """End an open thinking or message line so the next console row starts clean."""
         trailing = self._result_trace_filter.flush()
         if trailing:
-            self._emit_trace_text(TraceEventKind.MESSAGE, trailing)
+            self._emit_trace_multiline(TraceEventKind.MESSAGE, trailing)
         self._result_trace_filter.reset()
         self._finish_stream_line()
 
     def _trace_text(self, event: TraceEvent) -> None:
-        parts = event.text.split("\n")
+        if event.kind is TraceEventKind.MESSAGE:
+            filtered = self._result_trace_filter.feed(event.text)
+            self._emit_trace_multiline(event.kind, filtered)
+            return
+        self._emit_trace_multiline(event.kind, event.text)
+
+    def _emit_trace_multiline(self, kind: TraceEventKind, text: str) -> None:
+        if not text:
+            return
+        parts = text.split("\n")
         for index, part in enumerate(parts):
             if index:
                 self._finish_stream_line()
-            if not part:
-                continue
-            if event.kind is TraceEventKind.MESSAGE:
-                filtered = self._result_trace_filter.feed(part)
-                if not filtered:
-                    continue
-                self._emit_trace_text(event.kind, filtered)
-            else:
-                self._emit_trace_text(event.kind, part)
+            if part:
+                self._emit_trace_text(kind, part)
 
     def _emit_trace_text(self, kind: TraceEventKind, text: str) -> None:
         style = _TRACE_TEXT_STYLES[kind]
