@@ -71,6 +71,14 @@ def resolve_commit(repo: Path, ref: str) -> str:
         raise GitProtocolError(f"Unknown Git ref: {ref}") from exc
 
 
+def resolve_requested_commit(repo: Path, ref: str, *, field: str) -> str:
+    """Resolve a commit ref supplied by the worker in a review request."""
+    try:
+        return resolve_commit(repo, ref)
+    except GitProtocolError as exc:
+        raise ReviewRequestError(f"Worker {field} is not a valid Git ref: {ref}") from exc
+
+
 def git_has_commits(repo: Path) -> bool:
     """True when HEAD resolves to a commit (repository is not unborn)."""
     if not is_git_repository(repo):
@@ -147,7 +155,9 @@ def normalize_batch_range(
 
     warnings: list[str] = []
     if worker_base_commit:
-        worker_base = resolve_commit(repo, worker_base_commit)
+        worker_base = resolve_requested_commit(
+            repo, worker_base_commit, field="base_commit"
+        )
         if worker_base != authoritative_base:
             warnings.append(
                 "Worker base_commit "
@@ -155,9 +165,9 @@ def normalize_batch_range(
                 f"{authoritative_base[:7]}; using approved baseline"
             )
     if worker_head_commit:
-        worker_head = resolve_commit(repo, worker_head_commit)
+        worker_head = resolve_requested_commit(repo, worker_head_commit, field="head_commit")
         if worker_head != authoritative_head:
-            raise GitProtocolError(
+            raise ReviewRequestError(
                 "Worker head_commit does not match current HEAD; "
                 "commit or reconcile before requesting review"
             )

@@ -162,11 +162,16 @@ def normalize_path_target(
 ) -> ActivePathTarget:
     if not request.id.strip():
         raise ReviewRequestError("Path review target id must be non-empty")
-    resolved = resolve_review_path(repo, request.path)
+    try:
+        resolved = resolve_review_path(repo, request.path)
+    except GitProtocolError as exc:
+        raise ReviewRequestError(str(exc)) from exc
     try:
         rel = posix_relpath(repo, resolved)
     except ValueError as exc:
-        raise GitProtocolError(f"Review path escapes workspace: {request.path}") from exc
+        raise ReviewRequestError(
+            f"Review path escapes workspace: {request.path}"
+        ) from exc
     git_available = git_mode != "off" and is_git_repository(repo)
     classification = classify_path(repo, rel, git_available=git_available)
     if classification == "untracked" and not path_target_permitted(

@@ -7,6 +7,7 @@ import pytest
 
 from auto_loop.git import (
     GitProtocolError,
+    ReviewRequestError,
     assert_approved_baseline_ancestry,
     git_has_commits,
     head_commit,
@@ -103,6 +104,34 @@ def test_dirty_tree_blocks_batch_normalization(tmp_path: Path):
     (repo / "dirty.txt").write_text("d", encoding="utf-8")
     with pytest.raises(GitProtocolError, match="not clean"):
         normalize_batch_range(repo, last_approved_commit=base)
+
+
+def test_wrong_worker_head_raises_review_request_error(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    base = head_commit(repo)
+    (repo / "feature.txt").write_text("a", encoding="utf-8")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-m", "feature")
+    with pytest.raises(ReviewRequestError, match="head_commit does not match"):
+        normalize_batch_range(
+            repo,
+            last_approved_commit=base,
+            worker_head_commit=base,
+            require_clean=False,
+        )
+
+
+def test_unknown_worker_head_ref_raises_review_request_error(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    base = head_commit(repo)
+    with pytest.raises(ReviewRequestError, match="Worker head_commit"):
+        normalize_batch_range(
+            repo,
+            last_approved_commit=base,
+            worker_head_commit="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            require_clean=False,
+            allow_empty=True,
+        )
 
 
 def test_history_rewrite_raises_git_protocol_error(tmp_path: Path):

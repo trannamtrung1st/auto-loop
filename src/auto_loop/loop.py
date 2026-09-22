@@ -1473,7 +1473,7 @@ class LifecycleRunner:
                 state=self._load_state(),
             )
         register_active_run(self.repo, state.lifecycle_id, artifact_root=self.artifact_root)
-        if state.status == LifecycleStatus.STOPPED:
+        if state.status in (LifecycleStatus.STOPPED, LifecycleStatus.LIMIT_REACHED):
             state.status = LifecycleStatus.RUNNING
             state.updated_at = utc_now()
             self._save_state(state)

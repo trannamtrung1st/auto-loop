@@ -298,23 +298,3 @@ def test_batch_reviewer_prompt_allows_widened_inspection(tmp_path: Path):
     batch_prompt = provider.reviewer_prompts[-1]
     assert "outside the targets" in batch_prompt
     assert f"{baseline}..{head}" in batch_prompt
-
-
-def test_wrong_batch_head_exits_git_protocol_error(tmp_path: Path):
-    repo = _repo(tmp_path)
-    provider = ScriptedProvider()
-    _approve_plan(repo, provider)
-    baseline = load_lifecycle_state(repo).last_approved_commit
-    (repo / "feature.txt").write_text("x\n", encoding="utf-8")
-    _git(repo, "add", "feature.txt")
-    _git(repo, "commit", "-m", "feature")
-    provider.set_response(
-        "worker",
-        _batch_worker_payload(baseline, baseline),
-    )
-    outcome = run_lifecycle(
-        repo,
-        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
-        provider,
-    )
-    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR

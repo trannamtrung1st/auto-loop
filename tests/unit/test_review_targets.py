@@ -29,6 +29,16 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
+def test_path_traversal_via_normalize_path_target_raises_review_request_error(tmp_path: Path):
+    repo = _repo(tmp_path)
+    with pytest.raises(ReviewRequestError, match="escapes workspace"):
+        normalize_path_target(
+            repo,
+            PathTargetRequest(id="bad", path="../outside"),
+            scope="batch",
+        )
+
+
 def test_path_traversal_rejected(tmp_path: Path):
     repo = _repo(tmp_path)
     with pytest.raises(GitProtocolError, match="escapes workspace"):

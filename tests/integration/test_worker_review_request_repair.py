@@ -36,6 +36,73 @@ def _pass_batch() -> dict:
     }
 
 
+def test_wrong_batch_head_repairs_without_opening_reviewer(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = PromptCapturingProvider()
+    _approve_plan(repo, provider)
+    baseline = load_lifecycle_state(repo).last_approved_commit
+    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    provider.set_response("worker", batch_worker_payload(baseline, baseline))
+    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("reviewer", _pass_batch())
+    outcome = run_lifecycle(repo, run_opts(3), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.completed_provider_turn is None
+    assert execution_reviewer_invocation_count(provider._inner) == 1
+    repair_prompts = [p for p in provider.worker_prompts if "controller rejected" in p.lower()]
+    assert repair_prompts
+    assert "head_commit" in repair_prompts[-1].lower()
+
+
+def test_unknown_batch_head_ref_repairs_on_resume(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = PromptCapturingProvider()
+    _approve_plan(repo, provider)
+    baseline = head_commit(repo)
+    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    bad = batch_worker_payload(baseline, head)
+    bad["review"]["head_commit"] = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    provider.set_response("worker", bad)
+    stopped = run_lifecycle(repo, run_opts(1), provider)
+    assert stopped.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.completed_provider_turn is None
+    assert state.inflight is not None
+    assert "head_commit" in state.inflight.repair_reason.lower()
+    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("reviewer", _pass_batch())
+    continued = run_lifecycle(repo, run_opts(2), provider)
+    assert continued.exit_code == ExitCode.LIMIT_REACHED
+    assert execution_reviewer_invocation_count(provider._inner) == 1
+
+
+def test_escaping_path_target_repairs_without_reviewer(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = PromptCapturingProvider()
+    _approve_plan(repo, provider)
+    baseline = head_commit(repo)
+    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    provider.set_response(
+        "worker",
+        batch_worker_payload_with_path(baseline, head, "../outside", path_id="escape"),
+    )
+    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("reviewer", _pass_batch())
+    outcome = run_lifecycle(repo, run_opts(3), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    assert execution_reviewer_invocation_count(provider._inner) == 1
+    repair_prompts = [
+        p
+        for p in provider.worker_prompts
+        if "escapes workspace" in p.lower() or "controller rejected" in p.lower()
+    ]
+    assert repair_prompts
+    assert any("escapes workspace" in p.lower() for p in repair_prompts)
+
+
 def test_batch_with_plan_path_repairs_in_run_and_opens_reviewer(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = PromptCapturingProvider()

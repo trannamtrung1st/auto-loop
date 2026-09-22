@@ -92,6 +92,45 @@ def test_max_turns_normal_mode_marks_terminal_summary_rendered(tmp_path: Path):
     assert outcome.terminal_summary_rendered is True
 
 
+def test_limit_reached_resume_resets_status_to_running(tmp_path: Path, monkeypatch):
+    from auto_loop.git import head_commit
+    from auto_loop.loop import LifecycleRunner
+    from tests.integration.scenario_harness import (
+        PromptCapturingProvider,
+        batch_worker_payload,
+        batch_worker_payload_with_path,
+        commit_file,
+        make_repo,
+        run_lifecycle,
+        run_opts,
+    )
+    from tests.integration.test_lifecycle_flows import _approve_plan
+
+    recorded: list[LifecycleStatus] = []
+    orig_save = LifecycleRunner._save_state
+
+    def tracked_save(self, state):
+        recorded.append(state.status)
+        return orig_save(self, state)
+
+    monkeypatch.setattr(LifecycleRunner, "_save_state", tracked_save)
+
+    repo = make_repo(tmp_path)
+    provider = PromptCapturingProvider()
+    _approve_plan(repo, provider)
+    baseline = head_commit(repo)
+    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    plan_rel = ".ai/auto-loop/plan.md"
+    provider.set_response(
+        "worker",
+        batch_worker_payload_with_path(baseline, head, plan_rel, path_id="plan-bad"),
+    )
+    run_lifecycle(repo, run_opts(1), provider)
+    provider.set_response("worker", batch_worker_payload(baseline, head))
+    run_lifecycle(repo, run_opts(1), provider)
+    assert LifecycleStatus.RUNNING in recorded
+
+
 def test_stop_marks_running_lifecycle_stopped(tmp_path: Path):
     repo = _repo(tmp_path)
     from auto_loop.git import head_commit
