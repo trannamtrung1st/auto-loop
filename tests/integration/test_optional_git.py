@@ -377,6 +377,25 @@ def test_optional_rejects_planner_mutating_already_dirty_file(tmp_path: Path):
     assert "mutated" in (state.completed_provider_turn.transition_error or "").lower()
 
 
+def test_optional_rejects_planner_mutating_product_in_unborn_repo(tmp_path: Path):
+    repo = tmp_path / "unborn-plan"
+    repo.mkdir()
+    git(repo, "init")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "T")
+    bootstrap_workspace(repo, git_mode="optional", commit_git_inputs=False)
+    (repo / ".gitignore").write_text("local/\n", encoding="utf-8")
+    provider = _MutatingPlanner(repo, ".gitignore", "planner edited\n")
+    provider.set_planner_review_request()
+    outcome = run_lifecycle(repo, run_opts(2), provider)
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.next_session == "planner"
+    assert state.completed_provider_turn is not None
+    assert "mutated" in (state.completed_provider_turn.transition_error or "").lower()
+
+
 def test_optional_final_without_targets_is_rejected(tmp_path: Path):
     repo = git_repo(tmp_path)
     bootstrap_workspace(repo, git_mode="optional")
@@ -390,7 +409,36 @@ def test_optional_final_without_targets_is_rejected(tmp_path: Path):
     provider.set_reviewer_complete(target_ids=[])
     outcome = run_lifecycle(repo, run_opts(3), provider)
     assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
-    assert load_lifecycle_state(repo).status.value != "completed"
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.status.value != "completed"
+    assert state.inflight is not None
+    assert state.completed_provider_turn is None
+    assert state.next_session == "worker"
+
+
+def test_optional_final_without_targets_worker_repairs_on_resume(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    bootstrap_workspace(repo, git_mode="optional")
+    provider = ScriptedProvider()
+    _approve_plan(repo, provider)
+    (repo / "report.md").write_text("v1\n", encoding="utf-8")
+    provider.set_response("worker", _path_batch("report.md", "report"))
+    provider.set_response("reviewer", _pass("batch", "batch", ["report"]))
+    (repo / "report.md").write_text("v2\n", encoding="utf-8")
+    provider.set_worker_final_request()
+    rejected = run_lifecycle(repo, run_opts(3), provider)
+    assert rejected.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    worker_session_before = state.sessions["worker"].session_id
+    provider.set_response("worker", _final_path_request("report.md", "report"))
+    provider.set_reviewer_complete(target_ids=["report"])
+    completed = run_lifecycle(repo, run_opts(3), provider)
+    assert completed.exit_code == ExitCode.COMPLETE
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.sessions["worker"].session_id == worker_session_before
 
 
 def test_optional_unborn_git_repository_completes_with_path_targets(tmp_path: Path):

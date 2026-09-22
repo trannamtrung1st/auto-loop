@@ -117,6 +117,12 @@ Your state was saved.
 Resume with:
   auto-loop resume RUN_CONFIG"""
 
+# Worker review-request mistakes the agent can correct on the same session turn.
+_WORKER_REVIEW_REQUEST_REPAIR_HINTS = (
+    "Final review requires explicit path, content, or Git targets",
+    "Review request contains no reviewable evidence",
+)
+
 
 class ProviderInvoker(Protocol):
     def prepare(self, role: str) -> None: ...
@@ -559,6 +565,10 @@ class LifecycleRunner:
         state.updated_at = utc_now()
         self._save_state(state)
 
+    def _worker_review_request_needs_repair(self, exc: GitProtocolError) -> bool:
+        message = str(exc)
+        return any(hint in message for hint in _WORKER_REVIEW_REQUEST_REPAIR_HINTS)
+
     def _record_approved_evidence(self, state: LifecycleState, review: ActiveReview) -> None:
         for target in review.targets:
             if target.kind == "git_range":
@@ -600,7 +610,7 @@ class LifecycleRunner:
             assert_clean_product_tree(self.repo, excludes=self._excludes())
             return
         done = state.completed_provider_turn
-        if done is None or done.product_head_before is None:
+        if done is None:
             return
         current_head, current_changes = self._product_snapshot()
         before = done.product_changes_before
@@ -871,7 +881,10 @@ class LifecycleRunner:
             self._reopen_provider_turn(state, "worker")
             raise
         except GitProtocolError as exc:
-            self._note_transition_error(state, exc)
+            if self._worker_review_request_needs_repair(exc):
+                self._reopen_provider_turn(state, "worker")
+            else:
+                self._note_transition_error(state, exc)
             raise
 
     def _apply_worker_result(
