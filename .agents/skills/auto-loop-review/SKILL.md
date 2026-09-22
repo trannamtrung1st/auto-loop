@@ -34,9 +34,10 @@ Review like an execution reviewer, but for **contributor changes** to auto-loop 
 Report with:
 
 ```text
-pytest result (command + pass/fail/skip)
-packaging/harness tests
+focused pytest result (commands + pass/fail/skip)
+additional targeted checks relevant to the change
+full offline suite: result, or "not run (not explicitly requested)"
 residual risks
 ```
 
-Do not approve from narrative alone. Optional live smoke: state pass / fail / not run / blocked honestly.
+Run focused tests by default. Do not run the full offline suite (`python -m pytest -q`) unless the user explicitly requests it. Packaging/harness tests are required only when those areas are affected. Do not approve from narrative alone. Optional live smoke: state pass / fail / not run / blocked honestly.

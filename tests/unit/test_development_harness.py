@@ -36,6 +36,19 @@ def test_root_agents_md_describes_contributor_harness():
     assert "mechanical controller" in text
 
 
+def test_harness_requires_explicit_request_for_full_test_suite():
+    guidance_paths = (
+        _REPO / "AGENTS.md",
+        _SKILLS_ROOT / "auto-loop-develop" / "SKILL.md",
+        _SKILLS_ROOT / "auto-loop-review" / "SKILL.md",
+    )
+    for path in guidance_paths:
+        text = path.read_text(encoding="utf-8").lower()
+        assert "focused" in text, path
+        assert "full offline" in text, path
+        assert "explicitly request" in text, path
+
+
 def test_contributor_skills_exist_with_valid_frontmatter():
     skill_files = _discover_contributor_skills()
     assert len(skill_files) >= 2, "expected at least develop + review workflow skills"

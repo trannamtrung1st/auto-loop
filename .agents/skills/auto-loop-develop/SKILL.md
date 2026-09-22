@@ -35,7 +35,7 @@ Do not add semantic orchestration (task DAGs, plan-item scheduling, “major pla
 | Config / init | `config.py`, `init_cmd.py`, templates |
 | Migrations | `lifecycle.migrate_lifecycle_data`, tests in `test_lifecycle.py` |
 
-Add or extend **fake-provider integration tests** for behavior changes. Run focused tests, then `python -m pytest -q`.
+Add or extend **fake-provider integration tests** for behavior changes. Run only the tests focused on the affected behavior by default. Do not run the full offline suite (`python -m pytest -q`) unless the user explicitly requests it.
 
 ## Development harness rules
 
@@ -45,11 +45,18 @@ Add or extend **fake-provider integration tests** for behavior changes. Run focu
 
 ## Verification
 
+Install development dependencies only when the environment needs them:
+
 ```bash
 python -m pip install -e ".[dev]"
-python -m pytest -q
-python -m pytest tests/unit/test_packaging.py tests/unit/test_development_harness.py -q
-ruff check src tests
 ```
 
-Live Cursor smoke is opt-in (`AUTO_LOOP_LIVE_CURSOR=1`); do not claim it passed unless you ran it. GitHub Actions runs the offline suite, packaging tests, and Ruff only.
+Choose focused checks that cover the changed behavior, for example:
+
+```bash
+python -m pytest tests/unit/test_<affected_area>.py -q
+python -m pytest tests/unit/test_packaging.py tests/unit/test_development_harness.py -q
+ruff check <changed-python-paths>
+```
+
+The packaging/harness tests above are relevant when those areas change; they are not a default requirement for unrelated work. Run `python -m pytest -q` only on explicit user request. Live Cursor smoke is also opt-in (`AUTO_LOOP_LIVE_CURSOR=1`); do not claim it passed unless you ran it. GitHub Actions runs the offline suite, packaging tests, and Ruff.
