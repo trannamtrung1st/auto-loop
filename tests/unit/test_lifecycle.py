@@ -19,7 +19,7 @@ from auto_loop.lifecycle import (
     session_consistency_errors,
 )
 from auto_loop.providers.cursor import SessionError
-from auto_loop.models import ActiveGitTarget
+from auto_loop.models import ActiveGitTarget, ActivePathTarget
 from auto_loop.prompts import TurnContext, build_reviewer_prompt, build_worker_prompt
 from auto_loop.review_targets import fingerprint_path
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state, state_path
@@ -112,6 +112,37 @@ def test_reviewer_batch_and_final_prompts():
         ActiveReview(cycle_id="review-0002", scope="final", target="whole-task", summary="final please"),
     )
     assert "whole-task final review" in final_prompt.lower()
+
+
+def test_final_reviewer_prompt_lists_required_targets():
+    state = create_lifecycle("base")
+    state.plan_approved = True
+    ctx = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="head",
+        product_clean=True,
+    )
+    final = ActiveReview(
+        cycle_id="review-0002",
+        scope="final",
+        target="whole-task",
+        summary="final please",
+        targets=[
+            ActivePathTarget(
+                id="report",
+                path="report.md",
+                fingerprint="deadbeef",
+                exists=True,
+                git_classification="untracked",
+            )
+        ],
+    )
+    prompt = build_reviewer_prompt(state, ctx, final)
+    assert "Required review targets:" in prompt
+    assert "- report: path `report.md`" in prompt
+    assert "reviewed_target_ids" in prompt
 
 
 def test_reviewer_prompt_surfaces_controller_repair_reason():

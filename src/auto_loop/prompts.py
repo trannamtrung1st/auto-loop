@@ -274,6 +274,10 @@ def build_reviewer_prompt(
             "Only return COMPLETE if the whole task is satisfied with zero findings.",
             "",
         ]
+        target_lines = _format_targets(review)
+        if target_lines:
+            lines.extend(target_lines)
+            lines.append("")
         _append_reviewer_result_guidance(lines, ctx)
         return _append_manifest("\n".join(lines), ctx.resource_manifest)
 

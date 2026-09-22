@@ -481,6 +481,42 @@ def test_reviewer_pass_missing_targets_repairs_on_resume(tmp_path: Path):
     assert state.sessions["reviewer"].session_id == reviewer_session_before
 
 
+def test_final_reviewer_complete_missing_targets_repairs_on_resume(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    bootstrap_workspace(repo, git_mode="optional")
+    provider = PromptCapturingProvider()
+    _approve_plan(repo, provider)
+    (repo / "report.md").write_text("report\n", encoding="utf-8")
+    provider.set_response("worker", _path_batch("report.md", "report"))
+    provider.set_response("reviewer", _pass("batch", "batch", ["report"]))
+    provider.set_response("worker", _final_path_request("report.md", "report"))
+    provider.set_reviewer_complete()
+    rejected = run_lifecycle(repo, run_opts(4), provider)
+    assert rejected.exit_code == ExitCode.PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.inflight is not None
+    assert state.inflight.session_slot == "reviewer"
+    assert state.active_review is not None
+    assert state.active_review.scope == "final"
+    assert state.inflight.repair_reason
+    assert "reviewed_target_ids" in state.inflight.repair_reason
+    reviewer_session_before = state.sessions["reviewer"].session_id
+    prompts_before_resume = len(provider.reviewer_prompts)
+    provider.set_reviewer_complete(target_ids=["report"])
+    completed = run_lifecycle(repo, run_opts(2), provider)
+    assert completed.exit_code == ExitCode.COMPLETE
+    assert len(provider.reviewer_prompts) > prompts_before_resume
+    repair_prompt = provider.reviewer_prompts[-1]
+    assert "controller rejected it" in repair_prompt.lower()
+    assert "reviewed_target_ids" in repair_prompt.lower()
+    assert "Required review targets:" in repair_prompt
+    assert "- report: path `report.md`" in repair_prompt
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.sessions["reviewer"].session_id == reviewer_session_before
+
+
 def test_optional_unborn_git_repository_completes_with_path_targets(tmp_path: Path):
     repo = tmp_path / "unborn"
     repo.mkdir()
