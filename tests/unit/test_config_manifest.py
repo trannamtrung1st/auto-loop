@@ -161,6 +161,28 @@ def test_rejects_top_level_limits_section(tmp_path: Path):
         load_config(path)
 
 
+def test_rejects_unknown_agents_role(tmp_path: Path):
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
+        "agents:\n  workr:\n    mode: agent\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="Unknown agents role"):
+        load_config(path)
+
+
+def test_rejects_unknown_agents_worker_field(tmp_path: Path):
+    path = tmp_path / "run.yaml"
+    path.write_text(
+        "version: 2\nworkspace: .\ntask:\n  source: t.md\n"
+        "agents:\n  worker:\n    role_fil: worker.md\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="Extra inputs are not permitted"):
+        load_config(path)
+
+
 def test_rejects_unknown_top_level_manifest_key(tmp_path: Path):
     path = tmp_path / "run.yaml"
     path.write_text(
