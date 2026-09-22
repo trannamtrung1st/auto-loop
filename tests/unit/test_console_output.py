@@ -130,6 +130,18 @@ def test_baseline_and_terminal_states_are_labeled():
     assert "Lifecycle blocked by reviewer" in text
 
 
+def test_stopped_and_limit_terminal_separators():
+    console, stream = _console()
+    console.lifecycle_stopped("Run interrupted.\nResume with:\n  auto-loop resume RUN_CONFIG")
+    console.lifecycle_limit_reached("max_turns")
+    text = stream.getvalue()
+    assert "STOPPED" in text
+    assert "Run interrupted." in text
+    assert "auto-loop resume" in text
+    assert "LIMIT REACHED" in text
+    assert "max_turns" in text
+
+
 def test_external_text_is_literal_when_color_is_disabled():
     console, stream = _console(color=False)
     markup = "[bold red]not markup[/bold red]"

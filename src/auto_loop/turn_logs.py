@@ -12,6 +12,14 @@ from auto_loop.atomic_io import atomic_write_text
 from auto_loop.config import AutoLoopConfig
 from auto_loop.paths import auto_loop_root
 
+# Session slot names used in turn log filenames (matches TurnLogWriter ``role``).
+TURN_LOG_ROLES: tuple[str, ...] = (
+    "planner",
+    "plan_reviewer",
+    "worker",
+    "reviewer",
+)
+
 
 def run_logs_dir(repo: Path, lifecycle_id: str, artifact_root: Path | None = None) -> Path:
     root = artifact_root if artifact_root is not None else auto_loop_root(repo)
@@ -126,7 +134,7 @@ def read_turn_logs(
     if not run_dir.is_dir():
         return ""
     suffix = ".jsonl" if raw else ".log"
-    roles = [role] if role else ("worker", "reviewer")
+    roles = [role] if role else TURN_LOG_ROLES
     chunks: list[str] = []
     for r in roles:
         path = run_dir / f"turn-{turn:04d}-{r}{suffix}"
@@ -155,12 +163,12 @@ def role_with_log_for_turn(
     raw: bool = False,
     artifact_root: Path | None = None,
 ) -> str | None:
-    """Return a role name that has a log file for ``turn`` (worker first)."""
+    """Return the first role (lifecycle order) that has a log file for ``turn``."""
     run_dir = run_logs_dir(repo, lifecycle_id, artifact_root)
     if not run_dir.is_dir():
         return None
     suffix = ".jsonl" if raw else ".log"
-    for role in ("worker", "reviewer"):
+    for role in TURN_LOG_ROLES:
         if (run_dir / f"turn-{turn:04d}-{role}{suffix}").is_file():
             return role
     return None

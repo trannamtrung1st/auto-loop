@@ -286,6 +286,16 @@ class RunConsole:
     def lifecycle_blocked(self) -> None:
         self._outcome("BLOCKED", "Lifecycle blocked by reviewer", style="bold red")
 
+    def lifecycle_stopped(self, message: str) -> None:
+        if not self._enabled("normal"):
+            return
+        self._blank()
+        self._rule(Text("STOPPED", style="bold yellow"), style="bold yellow")
+        self._rich.print(Text(message))
+
+    def lifecycle_limit_reached(self, reason: str) -> None:
+        self._outcome("LIMIT REACHED", reason, style="bold yellow")
+
     def _outcome(self, title: str, message: str, *, style: str) -> None:
         if not self._enabled("normal"):
             return

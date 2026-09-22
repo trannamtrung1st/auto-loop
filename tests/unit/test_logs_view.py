@@ -23,6 +23,50 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _write_role_turn_log(
+    repo: Path,
+    lifecycle_id: str,
+    turn: int,
+    role: str,
+    body: str,
+) -> None:
+    jsonl_path, log_path = turn_log_paths(repo, lifecycle_id, turn, role)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    jsonl_path.write_text('{"type":"assistant","text":"x"}\n', encoding="utf-8")
+    log_path.write_text(f"{body}\n", encoding="utf-8")
+
+
+def test_render_logs_discovers_latest_planner_turn(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    save_lifecycle_state(repo, state)
+    _write_role_turn_log(repo, state.lifecycle_id, 3, "planner", "planner turn log")
+    output = render_logs(repo, color=False)
+    assert "planner turn log" in output
+    assert "PLANNER" in output
+    assert "turn 0003" in output
+
+
+def test_stream_follow_discovers_plan_reviewer_turn(tmp_path: Path):
+    repo = _repo(tmp_path)
+    from auto_loop.git import head_commit
+
+    state = create_lifecycle(head_commit(repo))
+    state.status = LifecycleStatus.COMPLETED
+    save_lifecycle_state(repo, state)
+    _write_role_turn_log(
+        repo, state.lifecycle_id, 2, "plan_reviewer", "plan reviewer follow log"
+    )
+    chunks: list[str] = []
+    stream_follow_logs(repo, write=chunks.append, follow_idle_seconds=0.15, color=False)
+    body = "".join(chunks)
+    assert "plan reviewer follow log" in body
+    assert "PLAN REVIEWER" in body
+    assert "No turn logs recorded" not in body
+
+
 def test_stream_follow_emits_incremental_chunks_before_return(tmp_path: Path):
     repo = _repo(tmp_path)
     from auto_loop.git import head_commit

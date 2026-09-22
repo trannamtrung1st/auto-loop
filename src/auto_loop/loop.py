@@ -248,7 +248,18 @@ class LifecycleRunner:
         )
         self._limit_reason = reason
         self._terminal_exit = ExitCode.LIMIT_REACHED
-        self._terminal_message = reason
+        self._publish_terminal_user_message(ExitCode.LIMIT_REACHED, reason)
+
+    def _publish_terminal_user_message(self, exit_code: ExitCode, message: str) -> None:
+        """Show structured terminal output, or keep ``message`` for CLI in quiet mode."""
+        if self._console.level == "quiet":
+            self._terminal_message = message
+            return
+        if exit_code == ExitCode.STOPPED:
+            self._console.lifecycle_stopped(message)
+        elif exit_code == ExitCode.LIMIT_REACHED:
+            self._console.lifecycle_limit_reached(message)
+        self._terminal_message = None
 
     def _handle_stop_requested(self, state: LifecycleState) -> bool:
         if not self._stop.requested:
@@ -260,7 +271,7 @@ class LifecycleRunner:
             {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
         )
         self._terminal_exit = ExitCode.STOPPED
-        self._terminal_message = INTERRUPTED_MESSAGE
+        self._publish_terminal_user_message(ExitCode.STOPPED, INTERRUPTED_MESSAGE)
         return True
 
     def _protocol_repair_or_fail(self, state: LifecycleState, slot: str) -> bool:
@@ -465,7 +476,9 @@ class LifecycleRunner:
                                 {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
                             )
                             self._terminal_exit = ExitCode.STOPPED
-                            self._terminal_message = INTERRUPTED_MESSAGE
+                            self._publish_terminal_user_message(
+                                ExitCode.STOPPED, INTERRUPTED_MESSAGE
+                            )
                         raise ProviderError(f"Provider interrupted for session {slot}")
                     if attempt_result.failure is not None:
                         if not is_retryable_provider_failure(attempt_result.failure):
@@ -506,7 +519,9 @@ class LifecycleRunner:
                             {"type": "lifecycle_stopped", "lifecycle_id": state.lifecycle_id},
                         )
                         self._terminal_exit = ExitCode.STOPPED
-                        self._terminal_message = INTERRUPTED_MESSAGE
+                        self._publish_terminal_user_message(
+                            ExitCode.STOPPED, INTERRUPTED_MESSAGE
+                        )
                     raise
                 except FakeCursorError as exc:
                     if attempt >= max_attempts:
