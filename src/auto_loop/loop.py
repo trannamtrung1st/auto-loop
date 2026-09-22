@@ -16,6 +16,7 @@ from auto_loop.git import (
     GitProtocolError,
     assert_approved_baseline_ancestry,
     head_commit,
+    is_git_repository,
     resolve_commit,
 )
 from auto_loop.git_policy import git_usable, repository_required_error
@@ -45,9 +46,10 @@ from auto_loop.models import (
 )
 from auto_loop.product_state import (
     assert_clean_product_tree,
+    capture_product_working_fingerprint,
     is_product_tree_clean,
-    list_product_changes,
     product_excludes,
+    product_working_fingerprints_equal,
 )
 from auto_loop.prompts import TurnContext, build_planner_prompt, build_reviewer_prompt, build_worker_prompt
 from auto_loop.protocol import (
@@ -515,14 +517,9 @@ class LifecycleRunner:
         return head_commit(self.repo)
 
     def _product_snapshot(self) -> tuple[str | None, list[list[str]] | None]:
-        if not self._git_usable():
+        if self.config.git.mode == "off" or not is_git_repository(self.repo):
             return None, None
-        changes = [
-            [change.path, change.status]
-            for change in list_product_changes(self.repo, excludes=self._excludes())
-        ]
-        changes.sort()
-        return head_commit(self.repo), changes
+        return capture_product_working_fingerprint(self.repo, excludes=self._excludes())
 
     def _adopt_parsed_result(
         self,
@@ -593,7 +590,7 @@ class LifecycleRunner:
                 )
 
     def _assert_planning_policy(self, state: LifecycleState) -> None:
-        if not self._git_usable():
+        if self.config.git.mode == "off" or not is_git_repository(self.repo):
             return
         if self.config.git.mode == "required":
             if head_commit(self.repo) != state.initial_base_commit:
@@ -606,8 +603,10 @@ class LifecycleRunner:
         if done is None or done.product_head_before is None:
             return
         current_head, current_changes = self._product_snapshot()
-        before = done.product_changes_before or []
-        if current_head != done.product_head_before or (current_changes or []) != before:
+        before = done.product_changes_before
+        if current_head != done.product_head_before or not product_working_fingerprints_equal(
+            before, current_changes
+        ):
             raise GitProtocolError("Planner mutated product files outside the artifact root")
 
     def _assert_final_complete_valid(
@@ -619,6 +618,10 @@ class LifecycleRunner:
         if active.targets and not set(active.target_ids) <= set(result.reviewed_target_ids):
             raise missing_pass_targets(active.target_ids, result.reviewed_target_ids)
         if self.config.git.mode != "required":
+            if not active.targets:
+                raise GitProtocolError(
+                    "Final review requires explicit path, content, or Git targets"
+                )
             if not active.has_git_target:
                 return
             current_head = head_commit(self.repo)
@@ -983,8 +986,12 @@ class LifecycleRunner:
             excludes=self._excludes(),
             git_mode=self.config.git.mode,
             protect_history=self.config.git.protect_approved_history,
-            allow_empty=True,
+            allow_empty=False,
         )
+        if not targets:
+            raise GitProtocolError(
+                "Final review requires explicit path, content, or Git targets"
+            )
         state.active_review = ActiveReview(
             cycle_id=next_cycle_id(state),
             scope="final",

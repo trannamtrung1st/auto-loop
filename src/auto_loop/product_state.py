@@ -95,3 +95,45 @@ def assert_clean_product_tree(
     paths = ", ".join(change.path for change in changes[:5])
     extra = "" if len(changes) <= 5 else f" (+{len(changes) - 5} more)"
     raise GitProtocolError(f"Product working tree is not clean: {paths}{extra}")
+
+
+def capture_product_working_fingerprint(
+    repo: Path,
+    *,
+    excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES,
+) -> tuple[str | None, list[list[str]]]:
+    """Snapshot product dirtiness for planner mutation checks.
+
+    Each row is ``[path, git-status, content-fingerprint]``. Fingerprints cover
+    dirty and untracked paths so content edits are visible even when status is
+    unchanged.
+    """
+    from auto_loop.git import head_commit_optional
+    from auto_loop.review_targets import fingerprint_path, sha256_bytes
+
+    head = head_commit_optional(repo)
+    rows: list[list[str]] = []
+    for change in list_product_changes(repo, excludes=excludes):
+        resolved = repo / change.path
+        if resolved.exists():
+            digest, _ = fingerprint_path(resolved)
+        else:
+            digest = sha256_bytes(b"")
+        rows.append([change.path, change.status, digest])
+    rows.sort()
+    return head, rows
+
+
+def product_working_fingerprints_equal(
+    before: list[list[str]] | None,
+    after: list[list[str]] | None,
+) -> bool:
+    if before is None and after is None:
+        return True
+    if before is None or after is None:
+        return False
+    if all(len(row) >= 3 for row in before) and all(len(row) >= 3 for row in after):
+        return before == after
+    legacy_before = sorted([row[:2] for row in before])
+    legacy_after = sorted([row[:2] for row in after])
+    return legacy_before == legacy_after

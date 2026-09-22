@@ -145,6 +145,7 @@ def bootstrap_workspace(
     minimal: bool = False,
     goal: str = "Test task",
     git_mode: str = "required",
+    commit_git_inputs: bool = True,
 ) -> InitResult:
     """Create a v2 manifest, proposal, and frozen run snapshot. Intended for tests.
 
@@ -174,7 +175,8 @@ def bootstrap_workspace(
 
     prepared = prepare_repo_for_run(load_run_manifest(manifest_path), resume=False)
     write_resolved_config(prepared.workspace, prepared.config)
-    _commit_user_owned_inputs(repo)
+    if commit_git_inputs:
+        _commit_user_owned_inputs(repo)
     return InitResult(created=[".ai/run.yaml", ".ai/proposal.md"], message="bootstrapped")
 
 

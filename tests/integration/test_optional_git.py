@@ -230,13 +230,37 @@ def test_reviewer_path_mutation_is_detected_without_a_clean_tree(tmp_path: Path)
     assert outcome.exit_code == ExitCode.REVIEW_MUTATION_ERROR
 
 
+def _final_path_request(path: str, target_id: str) -> dict:
+    return {
+        "schema_version": 2,
+        "actor": "worker",
+        "status": "review_requested",
+        "review": {
+            "scope": "final",
+            "target": "whole-task",
+            "summary": "ready for final review",
+            "targets": [
+                {
+                    "kind": "path",
+                    "id": target_id,
+                    "path": path,
+                    "purpose": "final review evidence",
+                }
+            ],
+        },
+        "work_summary": "ready",
+        "verification": [],
+        "notes": [],
+    }
+
+
 def _queue_no_git_lifecycle(provider: ScriptedProvider, *, path: str, target_id: str) -> None:
     provider.set_planner_review_request()
     provider.set_plan_reviewer_pass()
     provider.set_response("worker", _path_batch(path, target_id))
     provider.set_response("reviewer", _pass("batch", "batch", [target_id]))
-    provider.set_worker_final_request()
-    provider.set_reviewer_complete(target_ids=[])
+    provider.set_response("worker", _final_path_request(path, target_id))
+    provider.set_reviewer_complete(target_ids=[target_id])
 
 
 class _WritingWorker(ScriptedProvider):
@@ -323,6 +347,67 @@ def test_final_complete_with_path_only_output(tmp_path: Path):
     assert state.initial_base_commit == head_commit(repo)
     assert state.last_approved_commit == state.initial_base_commit
     assert any(item.id == "result" and item.kind == "path" for item in state.approved_evidence)
+
+
+class _MutatingPlanner(ScriptedProvider):
+    def __init__(self, repo: Path, rel: str, text: str) -> None:
+        super().__init__()
+        self.repo = repo
+        self.rel = rel
+        self.text = text
+
+    def invoke(self, argv: list[str]):
+        if os.environ.get("AUTO_LOOP_FAKE_SLOT") == "planner":
+            (self.repo / self.rel).write_text(self.text, encoding="utf-8")
+        return super().invoke(argv)
+
+
+def test_optional_rejects_planner_mutating_already_dirty_file(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    bootstrap_workspace(repo, git_mode="optional")
+    (repo / "README.md").write_text("already dirty\n", encoding="utf-8")
+    provider = _MutatingPlanner(repo, "README.md", "planner edited\n")
+    provider.set_planner_review_request()
+    outcome = run_lifecycle(repo, run_opts(2), provider)
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.next_session == "planner"
+    assert state.completed_provider_turn is not None
+    assert "mutated" in (state.completed_provider_turn.transition_error or "").lower()
+
+
+def test_optional_final_without_targets_is_rejected(tmp_path: Path):
+    repo = git_repo(tmp_path)
+    bootstrap_workspace(repo, git_mode="optional")
+    provider = ScriptedProvider()
+    _approve_plan(repo, provider)
+    (repo / "report.md").write_text("v1\n", encoding="utf-8")
+    provider.set_response("worker", _path_batch("report.md", "report"))
+    provider.set_response("reviewer", _pass("batch", "batch", ["report"]))
+    (repo / "report.md").write_text("v2\n", encoding="utf-8")
+    provider.set_worker_final_request()
+    provider.set_reviewer_complete(target_ids=[])
+    outcome = run_lifecycle(repo, run_opts(3), provider)
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert load_lifecycle_state(repo).status.value != "completed"
+
+
+def test_optional_unborn_git_repository_completes_with_path_targets(tmp_path: Path):
+    repo = tmp_path / "unborn"
+    repo.mkdir()
+    git(repo, "init")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "T")
+    bootstrap_workspace(repo, git_mode="optional", commit_git_inputs=False)
+    provider = _WritingWorker(repo, "report.md", "analysis\n")
+    _queue_no_git_lifecycle(provider, path="report.md", target_id="report")
+    outcome = run_lifecycle(repo, run_opts(8), provider)
+    assert outcome.exit_code == ExitCode.COMPLETE
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.initial_base_commit is None
+    assert state.last_approved_commit is None
 
 
 def test_doctor_matches_git_policy(tmp_path: Path, monkeypatch):

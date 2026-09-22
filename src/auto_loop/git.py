@@ -63,8 +63,32 @@ def resolve_commit(repo: Path, ref: str) -> str:
         raise GitProtocolError(f"Unknown Git ref: {ref}") from exc
 
 
-def head_commit(repo: Path) -> str:
+def git_has_commits(repo: Path) -> bool:
+    """True when HEAD resolves to a commit (repository is not unborn)."""
+    if not is_git_repository(repo):
+        return False
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def head_commit_optional(repo: Path) -> str | None:
+    """Return HEAD when the repository has commits; otherwise None (unborn or no Git)."""
+    if not git_has_commits(repo):
+        return None
     return resolve_commit(repo, "HEAD")
+
+
+def head_commit(repo: Path) -> str:
+    resolved = head_commit_optional(repo)
+    if resolved is None:
+        raise GitProtocolError("Git repository has no commits (unborn HEAD)")
+    return resolved
 
 
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:

@@ -8,7 +8,9 @@ import pytest
 from auto_loop.git import (
     GitProtocolError,
     assert_approved_baseline_ancestry,
+    git_has_commits,
     head_commit,
+    head_commit_optional,
     is_ancestor,
     normalize_batch_range,
 )
@@ -29,6 +31,18 @@ def _init_repo(tmp_path: Path) -> Path:
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "initial")
     return repo
+
+
+def test_unborn_repository_has_no_optional_head(tmp_path: Path):
+    repo = tmp_path / "unborn"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    assert not git_has_commits(repo)
+    assert head_commit_optional(repo) is None
+    with pytest.raises(GitProtocolError, match="no commits"):
+        head_commit(repo)
 
 
 def test_product_tree_allows_auto_loop_changes(tmp_path: Path):

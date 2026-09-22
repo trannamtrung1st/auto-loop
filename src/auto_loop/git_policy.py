@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from auto_loop.config import AutoLoopConfig, GitMode
-from auto_loop.git import is_git_repository
+from auto_loop.git import git_has_commits, is_git_repository
 from auto_loop.product_state import is_product_tree_clean, product_excludes
 
 SeverityName = Literal["ok", "warning", "error"]
@@ -32,13 +32,16 @@ def strict_git(config: AutoLoopConfig) -> bool:
 
 
 def git_usable(repo: Path, config: AutoLoopConfig) -> bool:
-    """True when this run may inspect Git state.
+    """True when this run may use HEAD and commit ranges as review evidence.
 
-    ``mode=off`` does not invoke Git, even if a repository happens to exist.
+    ``mode=off`` does not invoke Git. An initialized repository with no commits
+    is treated like no Git baseline in optional mode.
     """
     if not git_commands_allowed(config):
         return False
-    return is_git_repository(repo)
+    if not is_git_repository(repo):
+        return False
+    return git_has_commits(repo)
 
 
 def git_policy_issues(repo: Path, config: AutoLoopConfig) -> list[GitPolicyIssue]:
@@ -69,6 +72,20 @@ def git_policy_issues(repo: Path, config: AutoLoopConfig) -> list[GitPolicyIssue
                 "No Git repository; optional mode reviews explicit path and content targets",
             )
         ]
+    if not git_has_commits(repo):
+        if mode == "required":
+            return [
+                GitPolicyIssue(
+                    "error",
+                    "git.mode=required requires at least one commit (unborn HEAD)",
+                )
+            ]
+        return [
+            GitPolicyIssue(
+                "ok",
+                "Git repository has no commits; optional mode uses path and content targets",
+            )
+        ]
     issues = [GitPolicyIssue("ok", "Git repository detected")]
     excludes = product_excludes(config)
     dirty = not is_product_tree_clean(repo, excludes=excludes)
@@ -92,8 +109,16 @@ def git_policy_issues(repo: Path, config: AutoLoopConfig) -> list[GitPolicyIssue
 
 
 def repository_required_error(repo: Path, config: AutoLoopConfig) -> str | None:
-    """Startup failure when strict mode has no repository. Dirty trees are separate."""
-    for issue in git_policy_issues(repo, config):
-        if issue.severity == "error" and "Git repository" in issue.message:
-            return issue.message
+    """Startup failure when strict mode cannot establish a Git baseline.
+
+    A dirty product tree is enforced when planning closes or review is requested,
+    not at lifecycle start (doctor may still warn or error early for visibility).
+    """
+    mode = config.git.mode
+    if mode != "required":
+        return None
+    if not is_git_repository(repo):
+        return "git.mode=required requires a Git repository"
+    if not git_has_commits(repo):
+        return "git.mode=required requires at least one commit (unborn HEAD)"
     return None
