@@ -62,7 +62,7 @@ def test_build_resume_command_uses_explicit_session_id():
     )
     assert "--resume=sess-123" in argv
     assert "--mode=ask" not in argv
-    assert "--force" not in argv
+    assert "--force" in argv
 
 
 def _reviewer_ask_config():
@@ -79,7 +79,19 @@ def test_reviewer_ask_mode_adds_mode_flag():
         binary="/usr/bin/agent",
     )
     assert "--mode=ask" in argv
-    assert "--force" not in argv
+    assert "--force" in argv
+
+
+def test_build_reviewer_command_includes_force_by_default():
+    config = default_config()
+    argv = build_cursor_command(config, _request("reviewer"), binary="/usr/bin/agent")
+    assert argv[0] == "/usr/bin/agent"
+    assert "-p" in argv
+    assert "--trust" in argv
+    assert "--force" in argv
+    prompt_idx = argv.index("do work")
+    force_idx = argv.index("--force")
+    assert force_idx < prompt_idx
 
 
 def test_plan_reviewer_uses_reviewer_agent_mode():
@@ -90,12 +102,21 @@ def test_plan_reviewer_uses_reviewer_agent_mode():
         binary="/usr/bin/agent",
     )
     assert "--mode=ask" in argv
+    assert "--force" in argv
 
 
 def test_reviewer_extra_args_forwarded():
     config = default_config()
     config.provider.cursor.reviewer_extra_args = ["--foo"]
     assert role_extra_args(config, "reviewer") == ["--foo"]
+    assert role_extra_args(config, "plan_reviewer") == ["--foo"]
+
+
+def test_reviewer_extra_args_empty_override():
+    config = default_config()
+    config.provider.cursor.reviewer_extra_args = []
+    argv = build_cursor_command(config, _request("reviewer"), binary="/usr/bin/agent")
+    assert "--force" not in argv
 
 
 def test_parse_stream_captures_session_and_result():

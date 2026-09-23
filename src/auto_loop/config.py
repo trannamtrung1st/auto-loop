@@ -38,7 +38,7 @@ class CursorProviderSettings(ManifestModel):
     command: CursorCommand = "agent"
     planner_extra_args: list[str] = Field(default_factory=lambda: ["--force"])
     worker_extra_args: list[str] = Field(default_factory=lambda: ["--force"])
-    reviewer_extra_args: list[str] = Field(default_factory=list)
+    reviewer_extra_args: list[str] = Field(default_factory=lambda: ["--force"])
 
 
 class ProviderSettings(ManifestModel):

@@ -29,6 +29,7 @@ def test_default_config_round_trip():
     assert cfg.version == 2
     assert cfg.provider.type == "cursor"
     assert cfg.provider.cursor.worker_extra_args == ["--force"]
+    assert cfg.provider.cursor.reviewer_extra_args == ["--force"]
     assert cfg.agents["planner"].mode == "agent"
     assert cfg.agents["planner"].role_file == ""
     assert cfg.agents["worker"].mode == "agent"

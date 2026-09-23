@@ -63,7 +63,8 @@ provider:
       - --force
     worker_extra_args:
       - --force
-    reviewer_extra_args: []
+    reviewer_extra_args:
+      - --force
 
 # Per-role advanced behavior only (role_file, mode). Models come from models.* above.
 agents:

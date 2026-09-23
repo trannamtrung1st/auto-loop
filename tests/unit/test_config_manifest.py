@@ -67,6 +67,7 @@ def test_packaged_full_template_parses():
     ).replace("{{artifacts_root}}", ".ai/auto-loop")
     cfg = parse_config_dict(yaml.safe_load(text))
     assert cfg.run.protocol_retries == 1
+    assert cfg.provider.cursor.reviewer_extra_args == ["--force"]
     assert cfg.agents["reviewer"].mode == "agent"
     assert cfg.context.version == 1
 

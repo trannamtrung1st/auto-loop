@@ -310,8 +310,8 @@ Version 2 is the supported public schema. Version 1 files fail with a clear erro
 | `artifacts.root` | Tool-managed output tree (`task.md`, `task-resources/`, `plan.md`, `reviews/`, `runtime/`). |
 | `models.planner` / `models.worker` / `models.reviewer` | Per-role model ids (canonical; plan-reviewer uses `models.reviewer`). |
 | `run.*` | Turns, runtime, agent timeouts, provider/protocol retries, no-progress streak (canonical). |
-| `provider.cursor` | CLI command (`agent` / `cursor-agent`), extra args per role. |
-| `agents.planner` / `agents.worker` / `agents.reviewer` | Optional custom role files and Cursor `agent` vs `ask` capability (defaults: all `agent`). This is provider tool access, not write authority: the controller still blocks planner/reviewer product mutations and protects plan/review targets. Reviewers do not receive `--force` unless you set `provider.cursor.reviewer_extra_args`. Set `agents.reviewer.mode: ask` when you want a more restricted provider mode. |
+| `provider.cursor` | CLI command (`agent` / `cursor-agent`), extra args per role (defaults: planner, worker, and reviewer each include `--force` for unrestricted shell/tool execution). |
+| `agents.planner` / `agents.worker` / `agents.reviewer` | Optional custom role files and Cursor `agent` vs `ask` capability (defaults: all `agent`). This is provider tool access, not write authority: the controller still blocks planner/reviewer product mutations and protects plan/review targets. `--force` enables verification commands (Git, tests, linters, builds); read-only reviewer behavior is enforced by role instructions and post-turn mutation guards, not by withholding `--force`. Override `provider.cursor.reviewer_extra_args` (for example `[]`) to change reviewer CLI flags. Set `agents.reviewer.mode: ask` when you want a more restricted provider mode. |
 | `instructions` | Optional shared/planner/worker/reviewer markdown stacks. |
 | `context` | Optional per-role resource and skill lists (`path`, `purpose`, `required`). |
 | `git` | `mode` (`required`, `optional`, or `off`) and approved-history protection. |
