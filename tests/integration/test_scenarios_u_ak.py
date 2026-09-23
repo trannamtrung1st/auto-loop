@@ -406,13 +406,11 @@ def test_scenario_AF_mixed_git_and_ignored_artifact_review(tmp_path: Path):
         "reviewer",
         _reviewer_pass_targets("batch", "generated-validation", ["git"]),
     )
-    missing = run_lifecycle(repo, run_opts(2), provider)
-    assert missing.exit_code == ExitCode.PROTOCOL_ERROR
     provider.set_response(
         "reviewer",
         _reviewer_pass_targets("batch", "generated-validation", ["git", "generated"]),
     )
-    outcome = run_lifecycle(repo, run_opts(1), provider)
+    outcome = run_lifecycle(repo, run_opts(2), provider)
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
     assert load_lifecycle_state(repo).last_approved_commit == head
 

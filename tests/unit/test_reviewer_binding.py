@@ -10,7 +10,13 @@ from auto_loop.config import default_config
 from auto_loop.exits import ExitCode
 from auto_loop.protocol import ProtocolParseError
 from auto_loop.init_cmd import bootstrap_workspace
-from auto_loop.lifecycle import ActiveReview, PendingRevision, create_lifecycle
+from auto_loop.lifecycle import (
+    ActiveReview,
+    CompletedProviderTurn,
+    PendingRevision,
+    create_lifecycle,
+)
+from auto_loop.runtime import save_lifecycle_state
 from auto_loop.loop import LifecycleRunner
 from auto_loop.models import ActiveGitTarget, ReviewerResult
 from auto_loop.run_options import RunOptions
@@ -131,6 +137,7 @@ def test_plan_reviewer_wrong_plan_target_repairs_in_same_run(tmp_path: Path):
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.plan_approved
+    assert state.consecutive_protocol_failures == 0
     plan_reviewer_invocations = [
         inv for inv in provider.engine.invocations if inv.role == "plan_reviewer"
     ]
@@ -162,6 +169,54 @@ def test_reviewer_binding_mismatch_exhausts_protocol_retries(tmp_path: Path):
         inv for inv in provider.engine.invocations if inv.role == "plan_reviewer"
     ]
     assert len(plan_reviewer_invocations) == 2
+
+
+def test_legacy_completed_reviewer_turn_repairs_in_same_resume(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    baseline = load_lifecycle_state(repo).last_approved_commit
+    head = commit_file(repo, "f.txt", "x\n", "f")
+    provider.set_response("worker", batch_worker_payload(baseline, head, "W01"))
+    run_lifecycle(repo, run_opts(1), provider)
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.active_review is not None
+    assert state.next_session == "reviewer"
+    reviewer_session = state.sessions["reviewer"].session_id or "legacy-reviewer-session"
+    state.sessions["reviewer"].session_id = reviewer_session
+    provider.engine.sessions["reviewer"] = reviewer_session
+    state.completed_provider_turn = CompletedProviderTurn(
+        session_slot="reviewer",
+        role="reviewer",
+        turn=state.turn,
+        session_id=reviewer_session,
+        result_kind="reviewer",
+        result={
+            "schema_version": 2,
+            "actor": "reviewer",
+            "verdict": "pass",
+            "scope": "batch",
+            "target": "WRONG",
+            "summary": "ok",
+            "findings": [],
+            "verification": [],
+            "reviewed_target_ids": ["git"],
+        },
+    )
+    state.inflight = None
+    save_lifecycle_state(repo, state)
+
+    provider.set_reviewer_pass("batch", "W01")
+    outcome = run_lifecycle(repo, run_opts(1), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.next_session == "worker"
+    assert state.consecutive_protocol_failures == 0
+    reviewer_invocations = [inv for inv in provider.engine.invocations if inv.role == "reviewer"]
+    assert len(reviewer_invocations) == 1
+    assert reviewer_invocations[0].resume_session_id == reviewer_session
 
 
 def test_planning_review_cycle_reuses_pending_revision(tmp_path: Path):

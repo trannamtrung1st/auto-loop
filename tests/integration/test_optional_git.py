@@ -488,8 +488,11 @@ def test_final_reviewer_complete_missing_targets_repairs_in_same_run(tmp_path: P
     provider.set_response("worker", _final_path_request("report.md", "report"))
     provider.set_reviewer_complete()
     provider.set_reviewer_complete(target_ids=["report"])
+    reviews_dir = repo / ".ai" / "auto-loop" / "reviews"
+    review_count_before = len(list(reviews_dir.glob("*.md")))
     completed = run_lifecycle(repo, run_opts(4), provider)
     assert completed.exit_code == ExitCode.COMPLETE
+    assert len(list(reviews_dir.glob("*.md"))) == review_count_before + 2
     repair_prompts = [
         prompt
         for prompt in provider.reviewer_prompts

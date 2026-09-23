@@ -1276,6 +1276,7 @@ class LifecycleRunner:
                     continue
                 raise
             state.consecutive_protocol_failures = 0
+            self._save_state(state)
             break
 
     def _transition_reviewer(
@@ -1293,18 +1294,30 @@ class LifecycleRunner:
             self._note_transition_error(state, exc)
             raise
 
+    def _validate_reviewer_handoff(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        result: ReviewerResult,
+    ) -> ActiveReview:
+        if state.active_review is None:
+            raise GitProtocolError("Reviewer invoked without active review")
+        active = state.active_review
+        self._assert_reviewer_matches_active(active, result)
+        self._assert_pass_targets(active, result)
+        if slot == "plan_reviewer" and result.verdict == "complete":
+            raise GitProtocolError("Plan reviewer cannot declare task completion")
+        if result.verdict == "complete" and result.scope == "final":
+            self._assert_final_complete_valid(state, result, active)
+        return active
+
     def _apply_reviewer_result(
         self,
         state: LifecycleState,
         slot: SessionSlot,
         result: ReviewerResult,
     ) -> None:
-        if state.active_review is None:
-            raise GitProtocolError("Reviewer invoked without active review")
-        self._assert_reviewer_matches_active(state.active_review, result)
-        self._assert_pass_targets(state.active_review, result)
-        if slot == "plan_reviewer" and result.verdict == "complete":
-            raise GitProtocolError("Plan reviewer cannot declare task completion")
+        active = self._validate_reviewer_handoff(state, slot, result)
 
         implementer_slot: SessionSlot = "planner" if slot == "plan_reviewer" else "worker"
         review_rel = self._write_review_artifact(
@@ -1330,9 +1343,6 @@ class LifecycleRunner:
         )
         self._console.review_result(result.verdict, result.scope, len(result.findings))
 
-        active = state.active_review
-        if active is None:
-            raise GitProtocolError("Reviewer invoked without active review")
         if slot == "plan_reviewer":
             if result.verdict == "pass":
                 self._record_approved_evidence(state, active)
@@ -1362,7 +1372,6 @@ class LifecycleRunner:
             return
 
         if result.verdict == "complete" and result.scope == "final":
-            self._assert_final_complete_valid(state, result, active)
             self._record_approved_evidence(state, active)
             task_hash, plan_hash = task_and_plan_hashes(self.repo, self.config)
             final_head = self._optional_head()
@@ -1445,6 +1454,23 @@ class LifecycleRunner:
         state.next_session = "worker"
         self._persist_after_turn(state)
 
+    def _replay_reviewer_completed_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
+        if slot == "plan_reviewer":
+            self._assert_planning_slot_active(state, "plan_reviewer")
+        done = state.completed_provider_turn
+        if done is None:
+            return
+        result = ReviewerResult.model_validate(done.result)
+        try:
+            self._apply_reviewer_result(state, slot, result)
+        except ProtocolParseError as exc:
+            if self._protocol_repair_or_fail(state, slot, repair_reason=str(exc)):
+                self._reviewer_slot_turn(state, slot)
+                return
+            raise
+        state.consecutive_protocol_failures = 0
+        self._save_state(state)
+
     def _replay_completed_turn(self, state: LifecycleState) -> None:
         done = state.completed_provider_turn
         if done is None:
@@ -1459,14 +1485,7 @@ class LifecycleRunner:
                 from_replay=True,
             )
         else:
-            slot = done.session_slot
-            if slot == "plan_reviewer":
-                self._assert_planning_slot_active(state, "plan_reviewer")
-            self._transition_reviewer(
-                state,
-                slot,
-                ReviewerResult.model_validate(done.result),
-            )
+            self._replay_reviewer_completed_turn(state, done.session_slot)
 
     def run(self) -> RunOutcome:
         self._stop.install()
