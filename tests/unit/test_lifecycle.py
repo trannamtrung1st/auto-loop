@@ -175,8 +175,13 @@ def test_reviewer_prompt_surfaces_controller_repair_reason():
         target="plan",
         summary="plan ready",
         session_purpose="plan_reviewer",
+        round=2,
     )
     plan_prompt = build_reviewer_prompt(state, ctx, plan_review)
+    assert "review cycle: review-plan" in plan_prompt
+    assert "- scope: plan" in plan_prompt
+    assert "- target: plan" in plan_prompt
+    assert "echo `scope` and `target` exactly" in plan_prompt
     assert "controller rejected it" in plan_prompt.lower()
     assert reason in plan_prompt
 

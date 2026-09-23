@@ -59,6 +59,7 @@ from auto_loop.protocol import (
     parse_planner_result,
     parse_reviewer_result,
     parse_worker_result,
+    reviewer_active_binding_mismatch,
 )
 from auto_loop.stop_control import (
     RunStopController,
@@ -766,13 +767,9 @@ class LifecycleRunner:
         result: ReviewerResult,
     ) -> None:
         if result.scope != active.scope:
-            raise GitProtocolError(
-                f"Reviewer scope {result.scope!r} does not match active review {active.scope!r}"
-            )
+            raise reviewer_active_binding_mismatch("scope", active.scope, result.scope)
         if result.target != active.target:
-            raise GitProtocolError(
-                f"Reviewer target {result.target!r} does not match active review {active.target!r}"
-            )
+            raise reviewer_active_binding_mismatch("target", active.target, result.target)
         if not active.has_git_target:
             return
         expected_base = active.git_base
@@ -781,15 +778,15 @@ class LifecycleRunner:
             if resolve_commit(self.repo, result.reviewed_base_commit) != resolve_commit(
                 self.repo, expected_base
             ):
-                raise GitProtocolError(
-                    "Reviewer reviewed_base_commit does not match active Git review"
+                raise reviewer_active_binding_mismatch(
+                    "reviewed_base_commit", expected_base, result.reviewed_base_commit
                 )
         if result.reviewed_head_commit is not None and expected_head is not None:
             if resolve_commit(self.repo, result.reviewed_head_commit) != resolve_commit(
                 self.repo, expected_head
             ):
-                raise GitProtocolError(
-                    "Reviewer reviewed_head_commit does not match active Git review"
+                raise reviewer_active_binding_mismatch(
+                    "reviewed_head_commit", expected_head, result.reviewed_head_commit
                 )
 
     def _persist_after_turn(self, state: LifecycleState) -> None:

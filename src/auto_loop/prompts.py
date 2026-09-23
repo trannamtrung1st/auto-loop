@@ -250,12 +250,32 @@ def build_reviewer_prompt(
             "Inspect the repository as needed to test plan feasibility.",
             f"Review `{ctx.plan_path}` for coverage, ordering, risks, and verification.",
             "",
-            "Return PASS only with zero findings.",
-            "Do not modify product/control state.",
-            "",
+            "Review request:",
+            f"- session purpose: {purpose}",
+            f"- review cycle: {review.cycle_id}",
+            f"- round: {review.round}",
+            f"- scope: {review.scope}",
+            f"- target: {review.target}",
+            f"- task: {ctx.task_path}",
+            f"- plan: {ctx.plan_path}",
+            f"- latest prior review: {_format_review_path(ctx.latest_review_path)}",
         ]
-        lines.extend(_format_targets(review))
-        if lines[-1] != "":
+        if review.plan_summary:
+            lines.append(f"- planner summary: {review.plan_summary}")
+        lines.extend(
+            [
+                "",
+                "Your AUTO_LOOP_RESULT must echo `scope` and `target` exactly as in this review request.",
+                "`reviewed_target_ids` lists the target ids you inspected (see required targets below).",
+                "",
+                "Return PASS only with zero findings.",
+                "Do not modify product/control state.",
+                "",
+            ]
+        )
+        target_lines = _format_targets(review)
+        if target_lines:
+            lines.extend(target_lines)
             lines.append("")
         _append_reviewer_result_guidance(lines, ctx)
         return _append_manifest("\n".join(lines), ctx.resource_manifest)

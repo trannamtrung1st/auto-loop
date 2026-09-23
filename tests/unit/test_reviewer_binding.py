@@ -8,7 +8,7 @@ import pytest
 
 from auto_loop.config import default_config
 from auto_loop.exits import ExitCode
-from auto_loop.git import GitProtocolError
+from auto_loop.protocol import ProtocolParseError
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import ActiveReview, PendingRevision, create_lifecycle
 from auto_loop.loop import LifecycleRunner
@@ -58,7 +58,7 @@ def test_assert_reviewer_matches_active_scope_and_target(tmp_path: Path):
     )
     runner._assert_reviewer_matches_active(active, ok)
     bad = ok.model_copy(update={"target": "W02"})
-    with pytest.raises(GitProtocolError, match="target"):
+    with pytest.raises(ProtocolParseError, match="target"):
         runner._assert_reviewer_matches_active(active, bad)
 
 
@@ -95,11 +95,11 @@ def test_assert_reviewer_rejects_wrong_git_commits(tmp_path: Path):
             "reviewed_head_commit": wrong,
         }
     )
-    with pytest.raises(GitProtocolError, match="reviewed_head_commit"):
+    with pytest.raises(ProtocolParseError, match="reviewed_head_commit"):
         runner._assert_reviewer_matches_active(active, result)
 
 
-def test_integration_wrong_batch_target_is_git_protocol_error(tmp_path: Path):
+def test_integration_wrong_batch_target_repairs_on_resume(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     approve_plan(repo, provider)
@@ -107,17 +107,46 @@ def test_integration_wrong_batch_target_is_git_protocol_error(tmp_path: Path):
     head = commit_file(repo, "f.txt", "x\n", "f")
     provider.set_response("worker", batch_worker_payload(baseline, head, "W01"))
     provider.set_reviewer_pass("batch", "WRONG")
-    outcome = run_lifecycle(repo, run_opts(2), provider)
-    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    rejected = run_lifecycle(repo, run_opts(3), provider)
+    assert rejected.exit_code == ExitCode.PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.inflight is not None
+    assert state.inflight.session_slot == "reviewer"
+    assert state.completed_provider_turn is None
+    assert state.inflight.repair_reason
+    assert "target" in state.inflight.repair_reason.lower()
+    reviewer_session_before = state.sessions["reviewer"].session_id
+    provider.set_reviewer_pass("batch", "W01")
+    continued = run_lifecycle(repo, run_opts(1), provider)
+    assert continued.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.next_session == "worker"
+    assert state.sessions["reviewer"].session_id == reviewer_session_before
 
 
-def test_plan_reviewer_wrong_plan_target_rejected(tmp_path: Path):
+def test_plan_reviewer_wrong_plan_target_repairs_on_resume(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "not-plan", slot="plan_reviewer")
-    outcome = run_lifecycle(repo, run_opts(2), provider)
-    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    rejected = run_lifecycle(repo, run_opts(3), provider)
+    assert rejected.exit_code == ExitCode.PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.inflight is not None
+    assert state.inflight.session_slot == "plan_reviewer"
+    assert state.inflight.repair_reason
+    assert "target" in state.inflight.repair_reason.lower()
+    plan_reviewer_before = state.sessions["plan_reviewer"].session_id
+    provider.set_reviewer_pass("plan", "plan", slot="plan_reviewer")
+    continued = run_lifecycle(repo, run_opts(1), provider)
+    assert continued.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.plan_approved
+    assert state.sessions["plan_reviewer"].session_id == plan_reviewer_before
 
 
 def test_planning_review_cycle_reuses_pending_revision(tmp_path: Path):

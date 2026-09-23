@@ -249,6 +249,22 @@ def missing_pass_targets(required_ids: list[str], reviewed_ids: list[str]) -> Pr
     )
 
 
+def reviewer_active_binding_mismatch(field: str, expected: str, actual: str) -> ProtocolParseError:
+    return ProtocolParseError(
+        ProtocolDiagnostic(
+            code=ProtocolDiagnosticCode.SCHEMA_VIOLATION,
+            message=(
+                f"Reviewer result {field} must exactly match the active review request "
+                f"(expected {expected!r}, got {actual!r})"
+            ),
+            detail=(
+                "Re-emit the same review verdict, findings, and verification with corrected "
+                "protocol metadata (scope, target, and Git commit fields when applicable)."
+            ),
+        )
+    )
+
+
 def normalize_commit(sha: str | None) -> str | None:
     if sha is None:
         return None
