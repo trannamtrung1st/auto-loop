@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from auto_loop.blocked_resume import resolve_resume_session
+from auto_loop.blocked_resume import (
+    finalize_unblocked_archive,
+    persist_unblock_state,
+    reconcile_blocked_resume,
+    resolve_resume_session,
+)
+from auto_loop.config import load_resolved_config_optional
 from auto_loop.exits import ExitCode
 from auto_loop.lifecycle import LifecycleStatus, create_lifecycle, utc_now
 from auto_loop.manifest import load_run_manifest
@@ -113,3 +119,70 @@ def test_legacy_blocked_record_infers_resume_session():
     assert resolve_resume_session(record, state) == "worker"
     state.phase = "planning"
     assert resolve_resume_session(record, state) == "planner"
+
+
+def test_unblock_persist_before_archive_survives_crash(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    provider.set_worker_blocked()
+    provider.set_reviewer_blocked("CI gate")
+    run_lifecycle(repo, run_opts(3), provider)
+    state = load_lifecycle_state(repo)
+    record = load_blocked_record(repo)
+    assert state is not None and record is not None
+    assert state.status == LifecycleStatus.BLOCKED
+    assert blocked_path(repo).is_file()
+
+    source = load_run_manifest(repo / ".ai/run.yaml")
+    config = load_resolved_config_optional(source.artifact_root) or source.config
+    state = persist_unblock_state(state, record)
+    save_lifecycle_state(repo, state, artifact_root=source.artifact_root)
+    assert state.status == LifecycleStatus.RUNNING
+    assert state.blocked_resume_context is not None
+    assert blocked_path(repo).is_file()
+
+    state = reconcile_blocked_resume(
+        repo, config, load_lifecycle_state(repo, source.artifact_root), artifact_root=source.artifact_root
+    )
+    assert load_blocked_record(repo) is None
+    archives = list((repo / ".ai/auto-loop/runtime/archive").glob("blocked-*-turn*.json"))
+    assert len(archives) == 1
+    assert "turn" in archives[0].name
+    events = [e for e in load_events(repo, config) if e.get("type") == "lifecycle_resumed_from_blocked"]
+    assert len(events) == 1
+
+    provider.set_worker_final_request()
+    provider.set_reviewer_complete()
+    outcome = run_lifecycle(repo, run_opts(3, resuming=True), provider)
+    assert outcome.exit_code == ExitCode.COMPLETE
+    events = [e for e in load_events(repo, config) if e.get("type") == "lifecycle_resumed_from_blocked"]
+    assert len(events) == 1
+
+
+def test_finalize_unblock_is_idempotent(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    state = create_lifecycle(None)
+    state.status = LifecycleStatus.BLOCKED
+    save_lifecycle_state(repo, state)
+    record = BlockedRecord(
+        blocked_at=utc_now(),
+        lifecycle_id=state.lifecycle_id,
+        turn=state.turn,
+        worker_session_id="w",
+        reviewer_session_id="r",
+        summary="blocked",
+        resume_session="worker",
+        blocked_by_session="reviewer",
+    )
+    save_blocked_record(repo, record)
+    source = load_run_manifest(repo / ".ai/run.yaml")
+    config = load_resolved_config_optional(source.artifact_root) or source.config
+
+    state = persist_unblock_state(state, record)
+    save_lifecycle_state(repo, state, artifact_root=source.artifact_root)
+    state = finalize_unblocked_archive(repo, config, state, record, artifact_root=source.artifact_root)
+    assert not blocked_path(repo).is_file()
+    state = finalize_unblocked_archive(repo, config, state, record, artifact_root=source.artifact_root)
+    events = [e for e in load_events(repo, config) if e.get("type") == "lifecycle_resumed_from_blocked"]
+    assert len(events) == 1

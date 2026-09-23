@@ -104,7 +104,7 @@ from auto_loop.events import append_event
 from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
 from auto_loop.turn_logs import TurnLogWriter, prune_run_history, write_unseen_stream_lines
-from auto_loop.blocked_resume import apply_resume_from_blocked
+from auto_loop.blocked_resume import reconcile_blocked_resume
 from auto_loop.run_inputs import RunInputs, load_matching_blocked_record, load_matching_completion_record
 from auto_loop.paths import resolved_artifact_root
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
@@ -1511,20 +1511,12 @@ class LifecycleRunner:
             )
         register_active_run(self.repo, state.lifecycle_id, artifact_root=self.artifact_root)
         if self.options.resuming:
-            record = load_matching_blocked_record(self.repo, self.artifact_root)
-            if record is not None:
-                state = apply_resume_from_blocked(
-                    self.repo,
-                    self.config,
-                    state,
-                    record,
-                    artifact_root=self.artifact_root,
-                )
-            elif state.status == LifecycleStatus.BLOCKED:
-                raise GitProtocolError(
-                    "Lifecycle is blocked but the suspension record is missing or stale. "
-                    "Inspect auto-loop status before retrying resume."
-                )
+            state = reconcile_blocked_resume(
+                self.repo,
+                self.config,
+                state,
+                artifact_root=self.artifact_root,
+            )
         if state.status in (LifecycleStatus.STOPPED, LifecycleStatus.LIMIT_REACHED):
             state.status = LifecycleStatus.RUNNING
             state.updated_at = utc_now()
