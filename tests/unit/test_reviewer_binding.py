@@ -46,6 +46,34 @@ def _runner(tmp_path: Path) -> LifecycleRunner:
     )
 
 
+def test_plan_reviewer_complete_is_protocol_parse_error(tmp_path: Path):
+    runner = _runner(tmp_path)
+    state = create_lifecycle("abc")
+    state.active_review = ActiveReview(
+        cycle_id="c1",
+        scope="plan",
+        target="plan",
+        summary="s",
+        session_purpose="plan_reviewer",
+    )
+    result = ReviewerResult.model_validate(
+        {
+            "schema_version": 2,
+            "actor": "reviewer",
+            "verdict": "complete",
+            "scope": "final",
+            "target": "whole-task",
+            "whole_task_reviewed": True,
+            "summary": "done",
+            "findings": [],
+            "verification": [],
+            "reviewed_target_ids": ["plan"],
+        }
+    )
+    with pytest.raises(ProtocolParseError, match="Plan reviewer cannot declare"):
+        runner._validate_reviewer_handoff(state, "plan_reviewer", result)
+
+
 def test_assert_reviewer_matches_active_scope_and_target(tmp_path: Path):
     runner = _runner(tmp_path)
     active = ActiveReview(cycle_id="c1", scope="batch", target="W01", summary="s")

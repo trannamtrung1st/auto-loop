@@ -59,6 +59,7 @@ from auto_loop.protocol import (
     parse_planner_result,
     parse_reviewer_result,
     parse_worker_result,
+    plan_reviewer_forbidden_complete,
     reviewer_active_binding_mismatch,
 )
 from auto_loop.stop_control import (
@@ -1279,21 +1280,6 @@ class LifecycleRunner:
             self._save_state(state)
             break
 
-    def _transition_reviewer(
-        self,
-        state: LifecycleState,
-        slot: SessionSlot,
-        result: ReviewerResult,
-    ) -> None:
-        try:
-            self._apply_reviewer_result(state, slot, result)
-        except ProtocolParseError as exc:
-            self._reopen_provider_turn(state, slot, repair_reason=str(exc))
-            raise
-        except GitProtocolError as exc:
-            self._note_transition_error(state, exc)
-            raise
-
     def _validate_reviewer_handoff(
         self,
         state: LifecycleState,
@@ -1303,10 +1289,10 @@ class LifecycleRunner:
         if state.active_review is None:
             raise GitProtocolError("Reviewer invoked without active review")
         active = state.active_review
+        if slot == "plan_reviewer" and result.verdict == "complete":
+            raise plan_reviewer_forbidden_complete()
         self._assert_reviewer_matches_active(active, result)
         self._assert_pass_targets(active, result)
-        if slot == "plan_reviewer" and result.verdict == "complete":
-            raise GitProtocolError("Plan reviewer cannot declare task completion")
         if result.verdict == "complete" and result.scope == "final":
             self._assert_final_complete_valid(state, result, active)
         return active

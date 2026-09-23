@@ -249,6 +249,18 @@ def missing_pass_targets(required_ids: list[str], reviewed_ids: list[str]) -> Pr
     )
 
 
+def plan_reviewer_forbidden_complete() -> ProtocolParseError:
+    return ProtocolParseError(
+        ProtocolDiagnostic(
+            code=ProtocolDiagnosticCode.SCHEMA_VIOLATION,
+            message="Plan reviewer cannot declare task completion (verdict=complete)",
+            detail=(
+                "Re-emit a planning review result with verdict pass, revise, or blocked only."
+            ),
+        )
+    )
+
+
 def reviewer_active_binding_mismatch(field: str, expected: str, actual: str) -> ProtocolParseError:
     return ProtocolParseError(
         ProtocolDiagnostic(
