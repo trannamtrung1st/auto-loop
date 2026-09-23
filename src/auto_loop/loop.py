@@ -301,24 +301,35 @@ class LifecycleRunner:
         self._publish_terminal_user_message(ExitCode.STOPPED, INTERRUPTED_MESSAGE)
         return True
 
-    def _protocol_repair_or_fail(self, state: LifecycleState, slot: str) -> bool:
+    def _protocol_repair_or_fail(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        *,
+        repair_reason: str | None = None,
+    ) -> bool:
         """Return True to retry the same slot turn with a repair prompt."""
         state.consecutive_protocol_failures += 1
         if state.consecutive_protocol_failures > self.config.limits.protocol_retries:
+            state.updated_at = utc_now()
+            self._save_state(state)
             return False
         append_event(
             self.repo,
             self.config,
             {
                 "type": "protocol_repair",
-                "actor": ROLE_FOR_SLOT[slot],  # type: ignore[index]
+                "actor": ROLE_FOR_SLOT[slot],
                 "session_purpose": slot,
                 "attempt": state.consecutive_protocol_failures,
                 "lifecycle_id": state.lifecycle_id,
             },
         )
         state.updated_at = utc_now()
-        self._save_state(state)
+        if repair_reason is not None:
+            self._reopen_provider_turn(state, slot, repair_reason=repair_reason)
+        else:
+            self._save_state(state)
         return True
 
     def _context_manifest(self, role: Role) -> str:
@@ -1256,10 +1267,16 @@ class LifecycleRunner:
                     protocol_repair = True
                     continue
                 raise
+            self._adopt_parsed_result(state, slot, "reviewer", result, (None, None))
+            try:
+                self._apply_reviewer_result(state, slot, result)
+            except ProtocolParseError as exc:
+                if self._protocol_repair_or_fail(state, slot, repair_reason=str(exc)):
+                    protocol_repair = True
+                    continue
+                raise
+            state.consecutive_protocol_failures = 0
             break
-        state.consecutive_protocol_failures = 0
-        self._adopt_parsed_result(state, slot, "reviewer", result, (None, None))
-        self._transition_reviewer(state, slot, result)
 
     def _transition_reviewer(
         self,

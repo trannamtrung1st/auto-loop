@@ -99,7 +99,7 @@ def test_assert_reviewer_rejects_wrong_git_commits(tmp_path: Path):
         runner._assert_reviewer_matches_active(active, result)
 
 
-def test_integration_wrong_batch_target_repairs_on_resume(tmp_path: Path):
+def test_integration_wrong_batch_target_repairs_in_same_run(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     approve_plan(repo, provider)
@@ -107,46 +107,61 @@ def test_integration_wrong_batch_target_repairs_on_resume(tmp_path: Path):
     head = commit_file(repo, "f.txt", "x\n", "f")
     provider.set_response("worker", batch_worker_payload(baseline, head, "W01"))
     provider.set_reviewer_pass("batch", "WRONG")
-    rejected = run_lifecycle(repo, run_opts(3), provider)
-    assert rejected.exit_code == ExitCode.PROTOCOL_ERROR
-    state = load_lifecycle_state(repo)
-    assert state is not None
-    assert state.inflight is not None
-    assert state.inflight.session_slot == "reviewer"
-    assert state.completed_provider_turn is None
-    assert state.inflight.repair_reason
-    assert "target" in state.inflight.repair_reason.lower()
-    reviewer_session_before = state.sessions["reviewer"].session_id
     provider.set_reviewer_pass("batch", "W01")
-    continued = run_lifecycle(repo, run_opts(1), provider)
-    assert continued.exit_code == ExitCode.LIMIT_REACHED
+    outcome = run_lifecycle(repo, run_opts(2), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.next_session == "worker"
-    assert state.sessions["reviewer"].session_id == reviewer_session_before
+    reviewer_invocations = [inv for inv in provider.engine.invocations if inv.role == "reviewer"]
+    assert len(reviewer_invocations) == 2
+    reviewer_session = state.sessions["reviewer"].session_id
+    assert reviewer_session
+    assert reviewer_invocations[1].resume_session_id == reviewer_session
 
 
-def test_plan_reviewer_wrong_plan_target_repairs_on_resume(tmp_path: Path):
+def test_plan_reviewer_wrong_plan_target_repairs_in_same_run(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "not-plan", slot="plan_reviewer")
-    rejected = run_lifecycle(repo, run_opts(3), provider)
-    assert rejected.exit_code == ExitCode.PROTOCOL_ERROR
-    state = load_lifecycle_state(repo)
-    assert state is not None
-    assert state.inflight is not None
-    assert state.inflight.session_slot == "plan_reviewer"
-    assert state.inflight.repair_reason
-    assert "target" in state.inflight.repair_reason.lower()
-    plan_reviewer_before = state.sessions["plan_reviewer"].session_id
     provider.set_reviewer_pass("plan", "plan", slot="plan_reviewer")
-    continued = run_lifecycle(repo, run_opts(1), provider)
-    assert continued.exit_code == ExitCode.LIMIT_REACHED
+    outcome = run_lifecycle(repo, run_opts(2), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.plan_approved
-    assert state.sessions["plan_reviewer"].session_id == plan_reviewer_before
+    plan_reviewer_invocations = [
+        inv for inv in provider.engine.invocations if inv.role == "plan_reviewer"
+    ]
+    assert len(plan_reviewer_invocations) == 2
+    session_id = state.sessions["plan_reviewer"].session_id
+    assert session_id
+    assert all(inv.resume_session_id in (None, session_id) for inv in plan_reviewer_invocations)
+
+
+def test_reviewer_binding_mismatch_exhausts_protocol_retries(tmp_path: Path):
+    from tests.repo_utils import frozen_config
+
+    repo = make_repo(tmp_path)
+    cfg = frozen_config(repo)
+    cfg = cfg.model_copy(update={"run": cfg.run.model_copy(update={"protocol_retries": 1})})
+
+    provider = ScriptedProvider()
+    provider.set_worker_plan_request()
+    provider.set_reviewer_pass("plan", "wrong-1", slot="plan_reviewer")
+    provider.set_reviewer_pass("plan", "wrong-2", slot="plan_reviewer")
+
+    outcome = run_lifecycle(repo, run_opts(2), provider, config=cfg)
+    assert outcome.exit_code == ExitCode.PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.consecutive_protocol_failures == 2
+    assert state.next_session == "plan_reviewer"
+    plan_reviewer_invocations = [
+        inv for inv in provider.engine.invocations if inv.role == "plan_reviewer"
+    ]
+    assert len(plan_reviewer_invocations) == 2
 
 
 def test_planning_review_cycle_reuses_pending_revision(tmp_path: Path):

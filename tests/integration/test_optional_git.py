@@ -449,7 +449,7 @@ def test_optional_final_without_targets_worker_repairs_on_resume(tmp_path: Path)
     assert state.sessions["worker"].session_id == worker_session_before
 
 
-def test_reviewer_pass_missing_targets_repairs_on_resume(tmp_path: Path):
+def test_reviewer_pass_missing_targets_repairs_in_same_run(tmp_path: Path):
     repo = git_repo(tmp_path)
     bootstrap_workspace(repo, git_mode="optional")
     provider = PromptCapturingProvider()
@@ -457,31 +457,27 @@ def test_reviewer_pass_missing_targets_repairs_on_resume(tmp_path: Path):
     (repo / "report.md").write_text("report\n", encoding="utf-8")
     provider.set_response("worker", _path_batch("report.md", "report"))
     provider.set_reviewer_pass("batch", "batch")
-    rejected = run_lifecycle(repo, run_opts(3), provider)
-    assert rejected.exit_code == ExitCode.PROTOCOL_ERROR
-    state = load_lifecycle_state(repo)
-    assert state is not None
-    assert state.inflight is not None
-    assert state.inflight.session_slot == "reviewer"
-    assert state.completed_provider_turn is None
-    assert state.inflight.repair_reason
-    assert "reviewed_target_ids" in state.inflight.repair_reason
-    reviewer_session_before = state.sessions["reviewer"].session_id
-    prompts_before_resume = len(provider.reviewer_prompts)
     provider.set_response("reviewer", _pass("batch", "batch", ["report"]))
-    continued = run_lifecycle(repo, run_opts(1), provider)
-    assert continued.exit_code == ExitCode.LIMIT_REACHED
-    assert len(provider.reviewer_prompts) > prompts_before_resume
-    repair_prompt = provider.reviewer_prompts[-1]
-    assert "controller rejected it" in repair_prompt.lower()
-    assert "reviewed_target_ids" in repair_prompt.lower()
+    outcome = run_lifecycle(repo, run_opts(2), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    repair_prompts = [
+        prompt
+        for prompt in provider.reviewer_prompts
+        if "controller rejected it" in prompt.lower()
+    ]
+    assert repair_prompts
+    assert "reviewed_target_ids" in repair_prompts[-1]
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.next_session == "worker"
-    assert state.sessions["reviewer"].session_id == reviewer_session_before
+    reviewer_invocations = [inv for inv in provider.engine.invocations if inv.role == "reviewer"]
+    assert len(reviewer_invocations) == 2
+    reviewer_session = state.sessions["reviewer"].session_id
+    assert reviewer_session
+    assert reviewer_invocations[1].resume_session_id == reviewer_session
 
 
-def test_final_reviewer_complete_missing_targets_repairs_on_resume(tmp_path: Path):
+def test_final_reviewer_complete_missing_targets_repairs_in_same_run(tmp_path: Path):
     repo = git_repo(tmp_path)
     bootstrap_workspace(repo, git_mode="optional")
     provider = PromptCapturingProvider()
@@ -491,30 +487,28 @@ def test_final_reviewer_complete_missing_targets_repairs_on_resume(tmp_path: Pat
     provider.set_response("reviewer", _pass("batch", "batch", ["report"]))
     provider.set_response("worker", _final_path_request("report.md", "report"))
     provider.set_reviewer_complete()
-    rejected = run_lifecycle(repo, run_opts(4), provider)
-    assert rejected.exit_code == ExitCode.PROTOCOL_ERROR
-    state = load_lifecycle_state(repo)
-    assert state is not None
-    assert state.inflight is not None
-    assert state.inflight.session_slot == "reviewer"
-    assert state.active_review is not None
-    assert state.active_review.scope == "final"
-    assert state.inflight.repair_reason
-    assert "reviewed_target_ids" in state.inflight.repair_reason
-    reviewer_session_before = state.sessions["reviewer"].session_id
-    prompts_before_resume = len(provider.reviewer_prompts)
     provider.set_reviewer_complete(target_ids=["report"])
-    completed = run_lifecycle(repo, run_opts(2), provider)
+    completed = run_lifecycle(repo, run_opts(4), provider)
     assert completed.exit_code == ExitCode.COMPLETE
-    assert len(provider.reviewer_prompts) > prompts_before_resume
-    repair_prompt = provider.reviewer_prompts[-1]
-    assert "controller rejected it" in repair_prompt.lower()
-    assert "reviewed_target_ids" in repair_prompt.lower()
+    repair_prompts = [
+        prompt
+        for prompt in provider.reviewer_prompts
+        if "controller rejected it" in prompt.lower()
+    ]
+    assert repair_prompts
+    repair_prompt = repair_prompts[-1]
+    assert "reviewed_target_ids" in repair_prompt
     assert "Required review targets:" in repair_prompt
     assert "- report: path `report.md`" in repair_prompt
     state = load_lifecycle_state(repo)
     assert state is not None
-    assert state.sessions["reviewer"].session_id == reviewer_session_before
+    final_reviewer_invocations = [
+        inv
+        for inv in provider.engine.invocations
+        if inv.role == "reviewer"
+        and inv.resume_session_id is not None
+    ]
+    assert len(final_reviewer_invocations) >= 1
 
 
 def test_optional_unborn_git_repository_completes_with_path_targets(tmp_path: Path):
