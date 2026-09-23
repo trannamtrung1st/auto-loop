@@ -104,18 +104,24 @@ def has_lifecycle_state(repo: Path, artifact_root: Path | None = None) -> bool:
     return load_lifecycle_state(repo, artifact_root) is not None
 
 
+def has_completion_record(repo: Path, artifact_root: Path | None = None) -> bool:
+    return load_matching_completion_record(repo, artifact_root) is not None
+
+
+def has_suspended_blocked_record(repo: Path, artifact_root: Path | None = None) -> bool:
+    return load_matching_blocked_record(repo, artifact_root) is not None
+
+
 def has_terminal_record(repo: Path, artifact_root: Path | None = None) -> bool:
-    return (
-        load_matching_completion_record(repo, artifact_root) is not None
-        or load_matching_blocked_record(repo, artifact_root) is not None
-    )
+    """True when the lifecycle reached idempotent completion (not blocked suspension)."""
+    return has_completion_record(repo, artifact_root)
 
 
 def has_active_lifecycle(repo: Path, artifact_root: Path | None = None) -> bool:
-    """True when a lifecycle exists and has not reached a terminal completion/blocked record."""
+    """True when a lifecycle exists and has not completed idempotently."""
     if not has_lifecycle_state(repo, artifact_root):
         return False
-    return not has_terminal_record(repo, artifact_root)
+    return not has_completion_record(repo, artifact_root)
 
 
 def _archive_repo_file(

@@ -258,6 +258,22 @@ def test_scenario_S_blocked_worker_reviewer_blocked_writes_record(tmp_path: Path
     assert outcome.exit_code == ExitCode.BLOCKED
     blocked = json.loads((repo / ".ai/auto-loop/runtime/blocked.json").read_text(encoding="utf-8"))
     assert blocked["status"] == "blocked"
+    assert blocked["resume_session"] == "worker"
+    assert blocked["blocked_by_session"] == "reviewer"
+
+
+def test_scenario_S_blocked_reviewer_resume_worker(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    provider.set_worker_blocked()
+    provider.set_reviewer_blocked("external CI gate")
+    assert run_lifecycle(repo, run_opts(3), provider).exit_code == ExitCode.BLOCKED
+    provider.set_worker_final_request()
+    provider.set_reviewer_complete()
+    outcome = run_lifecycle(repo, run_opts(3, resuming=True), provider)
+    assert outcome.exit_code == ExitCode.COMPLETE
+    assert load_lifecycle_state(repo).status == LifecycleStatus.COMPLETED
 
 
 def test_scenario_T_limit_reached_never_complete(tmp_path: Path):

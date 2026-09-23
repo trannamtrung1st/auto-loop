@@ -13,6 +13,8 @@ from pydantic import BaseModel, ValidationError
 from auto_loop.config import AutoLoopConfig
 from auto_loop.git import head_commit
 from auto_loop.atomic_io import atomic_write_json
+from auto_loop.lifecycle import LifecyclePhase
+from auto_loop.models import ReviewScope, SessionSlot
 from auto_loop.paths import auto_loop_root
 from auto_loop.product_state import is_product_tree_clean, product_excludes
 from auto_loop.run_prerequisites import RunPreconditionError
@@ -60,6 +62,11 @@ class BlockedRecord(BaseModel):
     reviewer_session_id: str | None
     summary: str
     review_file: str | None = None
+    blocked_by_session: SessionSlot | None = None
+    resume_session: SessionSlot | None = None
+    phase: LifecyclePhase | None = None
+    review_scope: ReviewScope | None = None
+    review_target: str | None = None
 
 
 def completion_path(repo: Path, artifact_root: Path | None = None) -> Path:
@@ -157,5 +164,6 @@ IDEMPOTENT_COMPLETE_MESSAGE = (
 )
 
 IDEMPOTENT_BLOCKED_MESSAGE = (
-    "This lifecycle is blocked. Start a new run with an updated task source, or inspect status for details."
+    "This lifecycle is blocked on an external dependency. "
+    "Resume it with auto-loop resume, or inspect status for details."
 )

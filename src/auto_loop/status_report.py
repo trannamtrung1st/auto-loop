@@ -12,7 +12,7 @@ from auto_loop.manifest import RunManifestSource
 from auto_loop.paths import workspace_relative
 from auto_loop.product_state import is_product_tree_clean, product_excludes
 from auto_loop.runtime import load_lifecycle_state
-from auto_loop.run_inputs import load_matching_completion_record
+from auto_loop.run_inputs import load_matching_blocked_record, load_matching_completion_record
 
 
 def _redact_session_id(session_id: str | None) -> str:
@@ -129,6 +129,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         return "\n".join(lines)
 
     state = load_lifecycle_state(repo, artifact_root)
+    blocked = load_matching_blocked_record(repo, artifact_root)
     if state is None:
         return "\n".join(
             [
@@ -195,6 +196,18 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         lines.append(
             f"inflight: {state.inflight.session_slot} turn {state.inflight.turn} "
             f"since {state.inflight.started_at.isoformat()}"
+        )
+    if blocked is not None:
+        summary = (blocked.summary or "").strip() or "(no summary)"
+        by = blocked.blocked_by_session or "reviewer"
+        resume = blocked.resume_session or "(unknown)"
+        lines.extend(
+            [
+                "",
+                f"blocked: {by} · {summary[:120]}",
+                f"resume: auto-loop resume {config_rel}",
+                f"resume session: {resume}",
+            ]
         )
     completed = state.completed_provider_turn
     if completed is not None:

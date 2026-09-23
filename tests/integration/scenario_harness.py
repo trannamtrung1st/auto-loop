@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 from auto_loop.git import head_commit
@@ -14,11 +15,12 @@ from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.run_inputs import (
     has_active_lifecycle,
     has_lifecycle_state,
+    has_suspended_blocked_record,
     has_terminal_record,
     prepare_repo_for_run,
 )
 from auto_loop.run_options import RunOptions
-from auto_loop.config import AutoLoopConfig
+from auto_loop.config import AutoLoopConfig, load_resolved_config_optional
 
 
 def bootstrapped_manifest_path(repo: Path) -> Path:
@@ -42,6 +44,15 @@ def run_lifecycle(
 
     manifest_path = bootstrapped_manifest_path(repo)
     operational = resolve_operational_source(manifest_path)
+    if has_suspended_blocked_record(operational.workspace, operational.artifact_root) and not options.resuming:
+        frozen = load_resolved_config_optional(operational.artifact_root) or operational.config
+        return _core_run_lifecycle(
+            operational.workspace,
+            options,
+            provider,
+            config=frozen,
+            artifact_root=operational.artifact_root,
+        )
     if has_active_lifecycle(operational.workspace, operational.artifact_root):
         prepared = prepare_repo_for_run(operational, resume=True)
     elif not has_lifecycle_state(operational.workspace, operational.artifact_root):
@@ -56,9 +67,12 @@ def run_lifecycle(
         )
     else:
         prepared = prepare_repo_for_run(operational, resume=True)
+    effective = options
+    if prepared.is_resume and not options.resuming:
+        effective = replace(options, resuming=True)
     return _core_run_lifecycle(
         prepared.workspace,
-        options,
+        effective,
         provider,
         config=prepared.config,
         artifact_root=prepared.artifact_root,
@@ -80,7 +94,7 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def run_opts(max_turns: int = 10) -> RunOptions:
+def run_opts(max_turns: int = 10, *, resuming: bool = False) -> RunOptions:
     return RunOptions(
         "auto",
         "auto",
@@ -88,6 +102,7 @@ def run_opts(max_turns: int = 10) -> RunOptions:
         max_runtime_minutes=60,
         verbose=False,
         quiet=True,
+        resuming=resuming,
     )
 
 

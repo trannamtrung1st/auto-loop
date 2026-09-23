@@ -99,6 +99,17 @@ class InflightMarker(BaseModel):
     repair_reason: str | None = None
 
 
+class BlockedResumeContext(BaseModel):
+    """One-shot implementer context after consuming a blocked suspension."""
+
+    summary: str
+    review_file: str | None = None
+    blocked_by_session: SessionSlot
+    review_scope: ReviewScope | None = None
+    review_target: str | None = None
+    resume_session: SessionSlot
+
+
 class CompletedProviderTurn(BaseModel):
     """Provider output that was parsed, before controller transition succeeds.
 
@@ -154,6 +165,7 @@ class LifecycleState(BaseModel):
     worker_no_progress_streak: int = 0
     last_worker_progress_key: str | None = None
     legacy_v1_sessions: dict[str, Any] | None = None
+    blocked_resume_context: BlockedResumeContext | None = None
     started_at: datetime
     updated_at: datetime
 
@@ -371,6 +383,8 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
             data = dict(data)
             actor = data.pop("next_actor")
             data["next_session"] = actor if actor in ("planner", "plan_reviewer", "worker", "reviewer") else "planner"
+        data = dict(data)
+        data.setdefault("blocked_resume_context", None)
         return data
     if version != 1:
         raise ValueError(f"Unsupported lifecycle schema_version {version}")

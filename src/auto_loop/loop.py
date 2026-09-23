@@ -104,6 +104,7 @@ from auto_loop.events import append_event
 from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
 from auto_loop.turn_logs import TurnLogWriter, prune_run_history, write_unseen_stream_lines
+from auto_loop.blocked_resume import apply_resume_from_blocked
 from auto_loop.run_inputs import RunInputs, load_matching_blocked_record, load_matching_completion_record
 from auto_loop.paths import resolved_artifact_root
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
@@ -407,6 +408,7 @@ class LifecycleRunner:
             plan_changed_since_approval=changed,
             first_execution_turn=first_execution,
             pending_revision=state.pending_revision,
+            blocked_resume=state.blocked_resume_context,
         )
 
     def _parse_provider_attempt(
@@ -853,6 +855,8 @@ class LifecycleRunner:
         except GitProtocolError as exc:
             self._note_transition_error(state, exc)
             raise
+        if self._clear_blocked_resume_context(state, "planner"):
+            self._save_state(state)
 
     def _apply_planner_result(self, state: LifecycleState, result: PlannerResult) -> None:
         if result.status == "blocked":
@@ -986,6 +990,8 @@ class LifecycleRunner:
         except GitProtocolError as exc:
             self._note_transition_error(state, exc)
             raise
+        if self._clear_blocked_resume_context(state, "worker"):
+            self._save_state(state)
 
     def _apply_worker_result(
         self,
@@ -1192,6 +1198,13 @@ class LifecycleRunner:
         atomic_write_text(path, markdown)
         return str(path.relative_to(self.repo))
 
+    def _clear_blocked_resume_context(self, state: LifecycleState, slot: SessionSlot) -> bool:
+        ctx = state.blocked_resume_context
+        if ctx is not None and slot == ctx.resume_session:
+            state.blocked_resume_context = None
+            return True
+        return False
+
     def _handle_reviewer_blocked(
         self,
         state: LifecycleState,
@@ -1200,6 +1213,7 @@ class LifecycleRunner:
         implementer_slot: SessionSlot,
         reviewer_slot: SessionSlot,
     ) -> None:
+        active = state.active_review
         save_blocked_record(
             self.repo,
             BlockedRecord(
@@ -1212,10 +1226,16 @@ class LifecycleRunner:
                 plan_reviewer_session_id=state.sessions["plan_reviewer"].session_id,
                 summary=result.summary,
                 review_file=review_rel,
+                blocked_by_session=reviewer_slot,
+                resume_session=implementer_slot,
+                phase=state.phase,
+                review_scope=active.scope if active else result.scope,
+                review_target=active.target if active else result.target,
             ),
             artifact_root=self.artifact_root,
         )
         state.status = LifecycleStatus.BLOCKED
+        state.next_session = implementer_slot
         state.active_review = None
         state.completed_provider_turn = None
         state.updated_at = utc_now()
@@ -1490,6 +1510,21 @@ class LifecycleRunner:
                 state=self._load_state(),
             )
         register_active_run(self.repo, state.lifecycle_id, artifact_root=self.artifact_root)
+        if self.options.resuming:
+            record = load_matching_blocked_record(self.repo, self.artifact_root)
+            if record is not None:
+                state = apply_resume_from_blocked(
+                    self.repo,
+                    self.config,
+                    state,
+                    record,
+                    artifact_root=self.artifact_root,
+                )
+            elif state.status == LifecycleStatus.BLOCKED:
+                raise GitProtocolError(
+                    "Lifecycle is blocked but the suspension record is missing or stale. "
+                    "Inspect auto-loop status before retrying resume."
+                )
         if state.status in (LifecycleStatus.STOPPED, LifecycleStatus.LIMIT_REACHED):
             state.status = LifecycleStatus.RUNNING
             state.updated_at = utc_now()
@@ -1646,9 +1681,10 @@ def run_lifecycle(
     from auto_loop.locking import ConcurrentRunError, acquire_workspace_lock
 
     del inputs
-    idempotent_blocked = _check_idempotent_blocked(repo, artifact_root)
-    if idempotent_blocked is not None:
-        return idempotent_blocked
+    if not options.resuming:
+        idempotent_blocked = _check_idempotent_blocked(repo, artifact_root)
+        if idempotent_blocked is not None:
+            return idempotent_blocked
     idempotent = _check_idempotent_completion(repo, config, artifact_root)
     if idempotent is not None:
         return idempotent
