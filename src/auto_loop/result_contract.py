@@ -34,7 +34,8 @@ _RESULT_RULES: dict[Role, str] = {
 - verdict=pass or complete requires findings=[] (empty array).
 - verdict=revise requires at least one finding with id, title, detail, evidence, required_change.
 - verdict=complete requires scope=final and whole_task_reviewed=true (sole whole-task completion).
-- PASS/COMPLETE on scope=batch or plan does not complete the lifecycle; only execution reviewer COMPLETE does.""",
+- PASS on scope=plan or batch does not complete the lifecycle.
+- COMPLETE is valid only for scope=final by the execution reviewer.""",
 }
 
 

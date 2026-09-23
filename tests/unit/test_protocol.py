@@ -10,6 +10,7 @@ from auto_loop.protocol import (
     ProtocolParseError,
     RESULT_BLOCK_END,
     RESULT_BLOCK_START,
+    extract_result_blocks,
     extract_result_json,
     parse_planner_result,
     parse_reviewer_result,
@@ -71,6 +72,16 @@ def _reviewer_payload(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+def test_extract_result_blocks_finds_multiple_blocks():
+    payload = json.dumps(_worker_payload())
+    block = f"{RESULT_BLOCK_START}\n{payload}\n{RESULT_BLOCK_END}"
+    text = f"Example (batch):\n{block}\n\nExample (final):\n{block}"
+    blocks = extract_result_blocks(text)
+    assert len(blocks) == 2
+    assert blocks[0] == block
+    assert blocks[1] == block
 
 
 def test_extract_accepts_single_block_with_surrounding_prose():

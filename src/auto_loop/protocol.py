@@ -76,6 +76,12 @@ def _find_block_spans(text: str) -> list[tuple[int, int, str]]:
     return spans
 
 
+def extract_result_blocks(text: str) -> list[str]:
+    """Return each full AUTO_LOOP_RESULT block in document order."""
+    spans = _find_block_spans(text)
+    return [text[start:end] for start, end, _ in spans]
+
+
 def extract_result_json(text: str) -> str:
     """Extract JSON from exactly one AUTO_LOOP_RESULT block."""
     spans = _find_block_spans(text)

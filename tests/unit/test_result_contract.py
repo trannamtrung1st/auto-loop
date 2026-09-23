@@ -8,6 +8,7 @@ from auto_loop.models import PlannerResult, ReviewerResult, WorkerResult
 from auto_loop.protocol import (
     RESULT_BLOCK_END,
     RESULT_BLOCK_START,
+    extract_result_blocks,
     parse_planner_result,
     parse_reviewer_result,
     parse_worker_result,
@@ -56,9 +57,7 @@ def test_example_parses_for_each_role():
     assert "Example (batch PASS):" in reviewer_examples
     assert "Example (final COMPLETE" in reviewer_examples
     assert '"whole_task_reviewed": true' in reviewer_examples
-    blocks = reviewer_examples.split(RESULT_BLOCK_START)[1:]
-    for fragment in blocks:
-        block = RESULT_BLOCK_START + fragment
-        if not block.strip().endswith(RESULT_BLOCK_END):
-            continue
+    blocks = extract_result_blocks(reviewer_examples)
+    assert len(blocks) == 2
+    for block in blocks:
         parse_reviewer_result(block)
