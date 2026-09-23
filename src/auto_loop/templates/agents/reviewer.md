@@ -73,4 +73,5 @@ For `scope=final`, re-read the entire task and inspect the repository holistical
 
 If the worker or planner reports blocked, independently investigate. Return `BLOCKED` only when external intervention genuinely prevents progress.
 
-End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block using the supplied reviewer schema.
+End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block conforming to
+`AUTO_LOOP_RESULT_SCHEMA` from your first-turn instructions (see `AUTO_LOOP_RESULT_EXAMPLE`).

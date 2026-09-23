@@ -6,6 +6,7 @@ from importlib import resources
 from pathlib import Path
 
 from auto_loop.config import AutoLoopConfig, InstructionMode, InstructionRoleSettings
+from auto_loop.result_contract import format_result_example, format_result_json_schema
 
 REPOSITORY_GUIDANCE_REMINDER = (
     "Follow applicable repository-level agent instructions and skills in addition to "
@@ -108,6 +109,9 @@ def compose_role_instructions(
     mode: InstructionMode = settings.mode
     if mode == "extend":
         sections.append(_section("AUTO_LOOP_ROLE_PLAYBOOK", _playbook_text(repo, config, role)))
+
+    sections.append(_section("AUTO_LOOP_RESULT_SCHEMA", format_result_json_schema(role)))
+    sections.append(_section("AUTO_LOOP_RESULT_EXAMPLE", format_result_example(role)))
 
     for rel in config.instructions.shared.files:
         sections.append(_section(f"ADVISORY_SHARED:{rel}", _read_repo_file(repo, rel)))

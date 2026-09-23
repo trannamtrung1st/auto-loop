@@ -50,4 +50,5 @@ The worker will receive the approved plan in a separate session and may later up
 
 You may never declare the task complete.
 
-End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block.
+End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block conforming to
+`AUTO_LOOP_RESULT_SCHEMA` from your first-turn instructions (see `AUTO_LOOP_RESULT_EXAMPLE`).

@@ -37,6 +37,11 @@ def test_protocol_present_on_first_invocation(tmp_path: Path):
     assert "sole whole-task completion authority" in reviewer.lower()
     assert ".ai/auto-loop/agents/reviewer.md" not in worker
     assert ".ai/auto-loop/agents/worker.md" not in reviewer
+    for stack in (planner, worker, reviewer):
+        assert "===== AUTO_LOOP_RESULT_SCHEMA =====" in stack
+        assert "===== AUTO_LOOP_RESULT_EXAMPLE =====" in stack
+        assert '"schema_version"' in stack
+        assert "<AUTO_LOOP_RESULT>" in stack
 
 
 def test_resume_turn_omits_instruction_stack(tmp_path: Path):
@@ -56,6 +61,8 @@ def test_replace_role_omits_playbook_only(tmp_path: Path):
     worker = compose_role_instructions(repo, config, "worker", first_invocation=True)
     assert "AUTO_LOOP_PROTOCOL" in worker
     assert "AUTO_LOOP_ROLE_PLAYBOOK" not in worker
+    assert "AUTO_LOOP_RESULT_SCHEMA" in worker
+    assert "AUTO_LOOP_RESULT_EXAMPLE" in worker
     assert "ADVISORY_SHARED" in worker
 
 

@@ -74,4 +74,5 @@ Request `scope=final` only when scoped batches have passed review and verificati
 
 If blocked, explain the blocker and emit worker `status=blocked` for independent reviewer assessment.
 
-End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block using the supplied worker schema.
+End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block conforming to
+`AUTO_LOOP_RESULT_SCHEMA` from your first-turn instructions (see `AUTO_LOOP_RESULT_EXAMPLE`).
