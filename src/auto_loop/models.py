@@ -99,8 +99,8 @@ class VerificationEvidence(BaseModel):
 
 
 class PlannerResult(BaseModel):
-    schema_version: Literal[2] = PROTOCOL_SCHEMA_VERSION
-    actor: Literal["planner"] = "planner"
+    schema_version: Literal[2]
+    actor: Literal["planner"]
     status: PlannerStatus
     review: ReviewRequest | None = None
     plan_summary: str
@@ -117,8 +117,8 @@ class PlannerResult(BaseModel):
 
 
 class WorkerResult(BaseModel):
-    schema_version: Literal[2] = PROTOCOL_SCHEMA_VERSION
-    actor: Literal["worker"] = "worker"
+    schema_version: Literal[2]
+    actor: Literal["worker"]
     status: WorkerStatus
     review: ReviewRequest | None = None
     work_summary: str
@@ -135,8 +135,8 @@ class Finding(BaseModel):
 
 
 class ReviewerResult(BaseModel):
-    schema_version: Literal[2] = PROTOCOL_SCHEMA_VERSION
-    actor: Literal["reviewer"] = "reviewer"
+    schema_version: Literal[2]
+    actor: Literal["reviewer"]
     verdict: ReviewerVerdict
     scope: ReviewScope
     target: str

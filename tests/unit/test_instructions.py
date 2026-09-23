@@ -39,6 +39,7 @@ def test_protocol_present_on_first_invocation(tmp_path: Path):
     assert ".ai/auto-loop/agents/worker.md" not in reviewer
     for stack in (planner, worker, reviewer):
         assert "===== AUTO_LOOP_RESULT_SCHEMA =====" in stack
+        assert "===== AUTO_LOOP_RESULT_RULES =====" in stack
         assert "===== AUTO_LOOP_RESULT_EXAMPLE =====" in stack
         assert '"schema_version"' in stack
         assert "<AUTO_LOOP_RESULT>" in stack
@@ -62,6 +63,7 @@ def test_replace_role_omits_playbook_only(tmp_path: Path):
     assert "AUTO_LOOP_PROTOCOL" in worker
     assert "AUTO_LOOP_ROLE_PLAYBOOK" not in worker
     assert "AUTO_LOOP_RESULT_SCHEMA" in worker
+    assert "AUTO_LOOP_RESULT_RULES" in worker
     assert "AUTO_LOOP_RESULT_EXAMPLE" in worker
     assert "ADVISORY_SHARED" in worker
 
