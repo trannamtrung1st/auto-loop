@@ -234,6 +234,7 @@ def normalize_work_targets(
     git_mode: GitMode = "required",
     protect_history: bool = True,
     allow_empty: bool = False,
+    legacy_git_handoff_stripped: bool = False,
 ) -> tuple[list[ActiveReviewTarget], tuple[str, ...]]:
     """Normalize explicit targets and, when Git evidence exists, a commit range.
 
@@ -242,7 +243,7 @@ def normalize_work_targets(
     """
     active = _explicit_targets(repo, request, git_mode=git_mode)
     warnings: list[str] = []
-    if request.legacy_git_range_ignored:
+    if legacy_git_handoff_stripped:
         warnings.append(
             "Ignored deprecated review.targets git_range; controller derives Git range "
             "from last_approved_commit..HEAD"

@@ -1217,6 +1217,7 @@ class LifecycleRunner:
             excludes=self._excludes(),
             git_mode=self.config.git.mode,
             protect_history=self.config.git.protect_approved_history,
+            legacy_git_handoff_stripped=result.legacy_git_handoff_stripped,
         )
         pending = state.pending_revision
         if pending and pending.scope == "batch" and pending.target == result.review.target:
@@ -1227,7 +1228,6 @@ class LifecycleRunner:
             cycle_id = next_cycle_id(state)
             round_no = 1
             production_head = self._optional_head()
-        git_target = next((item for item in targets if item.kind == "git_range"), None)
         state.active_review = ActiveReview(
             cycle_id=cycle_id,
             round=round_no,
@@ -1242,9 +1242,6 @@ class LifecycleRunner:
             plan_sha256=self._plan_hash(),
             targets=targets,
         )
-        if git_target is not None:
-            result.review.base_commit = git_target.base_commit
-            result.review.head_commit = git_target.head_commit
 
     def _review_kind(self, review: ActiveReview, result: ReviewerResult) -> str:
         if result.scope == "final" or review.scope == "final":

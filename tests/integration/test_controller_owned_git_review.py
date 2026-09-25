@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from auto_loop.exits import ExitCode
+from auto_loop.git import resolve_commit
 from auto_loop.runtime import load_lifecycle_state
 from tests.integration.scenario_harness import (
     PromptCapturingProvider,
@@ -31,11 +32,17 @@ def _reviewer_pass_batch(target: str = "W01") -> dict:
     }
 
 
-def test_committed_batch_without_targets_derives_git_range_for_reviewer(tmp_path: Path):
+def test_committed_batch_without_targets_derives_exact_git_range_for_reviewer(tmp_path):
     repo = make_repo(tmp_path)
     provider = PromptCapturingProvider()
     _approve_plan(repo, provider)
-    commit_file(repo, "feature.txt", "x\n", "feature")
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    baseline = state.last_approved_commit
+    assert baseline
+    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    base_resolved = resolve_commit(repo, baseline)
+    head_resolved = resolve_commit(repo, head)
     provider.set_response("worker", batch_worker_payload())
     provider.set_response("reviewer", _reviewer_pass_batch())
     outcome = run_lifecycle(repo, run_opts(2), provider)
@@ -43,9 +50,10 @@ def test_committed_batch_without_targets_derives_git_range_for_reviewer(tmp_path
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.active_review is None
-    reviews = sorted((repo / ".ai" / "auto-loop" / "reviews").glob("*.md"))
-    assert reviews
-    assert ".." in reviews[-1].read_text(encoding="utf-8")
+    assert resolve_commit(repo, state.last_approved_commit) == head_resolved
+    assert provider.reviewer_prompts
+    reviewer_prompt = provider.reviewer_prompts[-1]
+    assert f"- git: Git range {base_resolved}..{head_resolved}" in reviewer_prompt
 
 
 def test_legacy_git_range_target_still_parses_and_reviewer_gets_git_target(tmp_path: Path):
@@ -56,6 +64,8 @@ def test_legacy_git_range_target_still_parses_and_reviewer_gets_git_target(tmp_p
     assert state is not None
     baseline = state.last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
+    base_resolved = resolve_commit(repo, baseline)
+    head_resolved = resolve_commit(repo, head)
     payload = batch_worker_payload()
     payload["review"]["targets"] = [
         {
@@ -69,7 +79,6 @@ def test_legacy_git_range_target_still_parses_and_reviewer_gets_git_target(tmp_p
     provider.set_response("reviewer", _reviewer_pass_batch())
     outcome = run_lifecycle(repo, run_opts(2), provider)
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
-    reviewer_invocations = [inv for inv in provider.engine.invocations if inv.role == "reviewer"]
-    assert len(reviewer_invocations) == 1
-
-
+    assert len([inv for inv in provider.engine.invocations if inv.role == "reviewer"]) == 1
+    assert resolve_commit(repo, load_lifecycle_state(repo).last_approved_commit) == head_resolved
+    assert f"{base_resolved}..{head_resolved}" in provider.reviewer_prompts[-1]

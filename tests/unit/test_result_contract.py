@@ -61,6 +61,19 @@ def test_json_schema_matches_model(role: str):
     assert "actor" in required
 
 
+def test_worker_json_schema_review_has_no_controller_git_fields():
+    schema = json.loads(format_result_json_schema("worker"))
+    review_props = (
+        schema.get("$defs", {})
+        .get("ReviewRequest", {})
+        .get("properties", {})
+    )
+    assert "base_commit" not in review_props
+    assert "head_commit" not in review_props
+    assert "legacy_git_range_ignored" not in review_props
+    assert "legacy_git_handoff_stripped" not in review_props
+
+
 def test_example_parses_for_each_role():
     for role, parser in (
         ("planner", parse_planner_result),

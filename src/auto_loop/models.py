@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 PROTOCOL_SCHEMA_VERSION = 2
 
@@ -77,36 +77,12 @@ ActiveReviewTarget = Annotated[
 
 
 class ReviewRequest(BaseModel):
+    """Agent-facing review handoff (path/content targets only; Git range is controller-owned)."""
+
     scope: ReviewScope
     target: str
     summary: str
     targets: list[ReviewTargetRequest] = Field(default_factory=list)
-    base_commit: str | None = None
-    head_commit: str | None = None
-    legacy_git_range_ignored: bool = Field(default=False, exclude=True)
-
-    @model_validator(mode="before")
-    @classmethod
-    def strip_controller_owned_fields(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        normalized = dict(data)
-        targets = normalized.get("targets")
-        if isinstance(targets, list):
-            kept: list[Any] = []
-            stripped_git = False
-            for item in targets:
-                if isinstance(item, dict) and item.get("kind") == "git_range":
-                    stripped_git = True
-                    continue
-                kept.append(item)
-            normalized["targets"] = kept
-            if stripped_git:
-                normalized["legacy_git_range_ignored"] = True
-        if normalized.get("scope") in ("batch", "final"):
-            normalized.pop("base_commit", None)
-            normalized.pop("head_commit", None)
-        return normalized
 
 
 class VerificationEvidence(BaseModel):
@@ -141,6 +117,11 @@ class WorkerResult(BaseModel):
     work_summary: str
     verification: list[VerificationEvidence] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    _legacy_git_handoff_stripped: bool = PrivateAttr(default=False)
+
+    @property
+    def legacy_git_handoff_stripped(self) -> bool:
+        return self._legacy_git_handoff_stripped
 
 
 class Finding(BaseModel):

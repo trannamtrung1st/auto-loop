@@ -54,6 +54,48 @@ class ProtocolParseError(Exception):
 _REPAIR_FOOTER = "Re-emit the result only. Do not redo successful work."
 
 
+def sanitize_agent_review_request(review: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Strip legacy controller-owned Git fields before validating agent handoffs."""
+    normalized = dict(review)
+    stripped = False
+    targets = normalized.get("targets")
+    if isinstance(targets, list):
+        kept: list[Any] = []
+        for item in targets:
+            if isinstance(item, dict) and item.get("kind") == "git_range":
+                stripped = True
+                continue
+            kept.append(item)
+        normalized["targets"] = kept
+    if normalized.get("scope") in ("batch", "final"):
+        if normalized.pop("base_commit", None) is not None:
+            stripped = True
+        if normalized.pop("head_commit", None) is not None:
+            stripped = True
+    return normalized, stripped
+
+
+def sanitize_worker_result_payload(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Normalize raw worker JSON before Pydantic validation."""
+    payload = dict(data)
+    stripped = False
+    review = payload.get("review")
+    if isinstance(review, dict):
+        sanitized_review, review_stripped = sanitize_agent_review_request(review)
+        payload["review"] = sanitized_review
+        stripped = stripped or review_stripped
+    return payload, stripped
+
+
+def sanitize_planner_result_payload(data: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(data)
+    review = payload.get("review")
+    if isinstance(review, dict):
+        sanitized_review, _ = sanitize_agent_review_request(review)
+        payload["review"] = sanitized_review
+    return payload
+
+
 _WORKER_GIT_TARGET_REMEDIATION = (
     "review.targets must use path or content evidence only.\n"
     "For committed Git work, omit git_range targets; Auto Loop derives the Git range "
@@ -292,6 +334,7 @@ def _wrong_actor(expected: str, actual: Any) -> ProtocolParseError:
 
 def parse_planner_result(text: str) -> PlannerResult:
     data = _load_json(extract_result_json(text))
+    data = sanitize_planner_result_payload(data)
     actor = data.get("actor")
     if actor != "planner":
         raise _wrong_actor("planner", actor)
@@ -316,8 +359,9 @@ def parse_worker_result(text: str) -> WorkerResult:
         raise _wrong_actor("worker", actor)
     _reject_implementer_forbidden_fields(data, "worker")
     _require_schema_version(data, "worker")
+    data, legacy_stripped = sanitize_worker_result_payload(data)
     try:
-        return WorkerResult.model_validate(data)
+        result = WorkerResult.model_validate(data)
     except ValidationError as exc:
         raise ProtocolParseError(
             ProtocolDiagnostic(
@@ -326,6 +370,8 @@ def parse_worker_result(text: str) -> WorkerResult:
                 detail=_worker_schema_validation_detail(exc),
             )
         ) from exc
+    result._legacy_git_handoff_stripped = legacy_stripped
+    return result
 
 
 def parse_reviewer_result(text: str) -> ReviewerResult:
