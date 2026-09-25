@@ -51,6 +51,63 @@ class ProtocolParseError(Exception):
         super().__init__(diagnostic.message)
 
 
+_REPAIR_FOOTER = "Re-emit the result only. Do not redo successful work."
+
+
+def _compact_validation_detail(detail: str) -> str:
+    """Turn Pydantic validation traces into short field-scoped lines."""
+    text = detail.strip()
+    if not text:
+        return text
+    if "validation error" not in text.splitlines()[0]:
+        return text
+    lines = text.splitlines()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line or line.startswith("For further information"):
+            index += 1
+            continue
+        if "validation error" in line:
+            index += 1
+            continue
+        if index + 1 < len(lines) and lines[index + 1].startswith("  "):
+            field = line
+            msg_line = lines[index + 1].strip()
+            msg = msg_line.split("[", 1)[0].strip()
+            received = ""
+            marker = "input_value="
+            if marker in msg_line:
+                start = msg_line.index(marker) + len(marker)
+                if msg_line[start] == "'":
+                    end = msg_line.find("'", start + 1)
+                    if end > start:
+                        received = f"; received {msg_line[start + 1 : end]!r}."
+                elif msg_line[start] == '"':
+                    end = msg_line.find('"', start + 1)
+                    if end > start:
+                        received = f"; received {msg_line[start + 1 : end]!r}."
+            out.append(f"{field}: {msg}{received}")
+            index += 2
+            continue
+        out.append(line)
+        index += 1
+    return "\n".join(out) if out else text
+
+
+def format_protocol_repair_reason(exc: ProtocolParseError) -> str:
+    """Canonical repair text for prompts, durable state, and CLI diagnostics."""
+    diag = exc.diagnostic
+    parts = [diag.message]
+    if diag.detail:
+        compact = _compact_validation_detail(diag.detail)
+        if compact and compact not in parts:
+            parts.append(compact)
+    parts.append(_REPAIR_FOOTER)
+    return "\n".join(parts)
+
+
 def _find_block_spans(text: str) -> list[tuple[int, int, str]]:
     """Return (start, end, inner_json) for each non-nested result block."""
     spans: list[tuple[int, int, str]] = []

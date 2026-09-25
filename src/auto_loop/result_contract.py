@@ -26,7 +26,10 @@ _RESULT_RULES: dict[Role, str] = {
 - Never emit reviewer verdict fields or worker-style whole-task completion.""",
     "worker": """\
 - Every serialized result must include schema_version=2 and actor=worker.
-- status must be review_requested or blocked only (never complete or pass).
+- `status` is a controller handoff action, not implementation progress. It has exactly two values:
+  - `review_requested`: work/evidence is ready for review (even when more batches remain).
+  - `blocked`: work cannot proceed because of a blocker.
+- Never use progress states such as `implementing`, `in_progress`, `continued`, `done`, or `complete`.
 - status=review_requested should include review describing scope, target, and evidence.
 - Never emit reviewer verdict values (pass, revise, complete).""",
     "reviewer": """\

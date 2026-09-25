@@ -6,12 +6,14 @@ import pytest
 
 from auto_loop.models import PlannerResult, ReviewerResult, WorkerResult
 from auto_loop.protocol import (
+    ProtocolDiagnostic,
     ProtocolDiagnosticCode,
     ProtocolParseError,
     RESULT_BLOCK_END,
     RESULT_BLOCK_START,
     extract_result_blocks,
     extract_result_json,
+    format_protocol_repair_reason,
     parse_planner_result,
     parse_reviewer_result,
     parse_role_result,
@@ -218,3 +220,27 @@ def test_render_review_markdown_batch():
     assert "abcdef0..1234567" in md
     assert "Worker summary" in md
     assert "Verdict: PASS" in md
+
+
+def test_worker_invalid_status_repair_reason_includes_field_detail():
+    bad = _worker_payload(status="implementing")
+    with pytest.raises(ProtocolParseError) as exc:
+        parse_worker_result(_wrap(bad))
+    reason = format_protocol_repair_reason(exc.value)
+    assert "Worker result failed schema validation" in reason
+    assert "status:" in reason
+    assert "review_requested" in reason
+    assert "implementing" in reason
+    assert "Re-emit the result only" in reason
+
+
+def test_format_protocol_repair_reason_without_detail():
+    exc = ProtocolParseError(
+        ProtocolDiagnostic(
+            code=ProtocolDiagnosticCode.MISSING_BLOCK,
+            message="Missing AUTO_LOOP_RESULT block",
+        )
+    )
+    reason = format_protocol_repair_reason(exc)
+    assert reason.startswith("Missing AUTO_LOOP_RESULT block")
+    assert reason.endswith("Re-emit the result only. Do not redo successful work.")

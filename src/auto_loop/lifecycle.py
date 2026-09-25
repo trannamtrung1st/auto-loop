@@ -99,6 +99,16 @@ class InflightMarker(BaseModel):
     repair_reason: str | None = None
 
 
+class ProtocolRunFailure(BaseModel):
+    """Durable marker when protocol repair retries are exhausted mid-turn."""
+
+    kind: Literal["protocol_error"] = "protocol_error"
+    session: SessionSlot
+    turn: int
+    repair_reason: str
+    diagnostic_code: str | None = None
+
+
 class BlockedResumeContext(BaseModel):
     """One-shot implementer context after consuming a blocked suspension."""
 
@@ -160,6 +170,7 @@ class LifecycleState(BaseModel):
     review_cycle_seq: int = 0
     sessions: dict[str, SessionRecord] = Field(default_factory=dict)
     inflight: InflightMarker | None = None
+    last_run_failure: ProtocolRunFailure | None = None
     consecutive_provider_failures: int = 0
     consecutive_protocol_failures: int = 0
     worker_no_progress_streak: int = 0
@@ -385,6 +396,7 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
             data["next_session"] = actor if actor in ("planner", "plan_reviewer", "worker", "reviewer") else "planner"
         data = dict(data)
         data.setdefault("blocked_resume_context", None)
+        data.setdefault("last_run_failure", None)
         return data
     if version != 1:
         raise ValueError(f"Unsupported lifecycle schema_version {version}")

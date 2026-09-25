@@ -31,6 +31,7 @@ from auto_loop.lifecycle import (
     LifecycleState,
     LifecycleStatus,
     PendingRevision,
+    ProtocolRunFailure,
     SessionSlot,
     adopt_session_identity,
     create_lifecycle,
@@ -55,6 +56,7 @@ from auto_loop.product_state import (
 from auto_loop.prompts import TurnContext, build_planner_prompt, build_reviewer_prompt, build_worker_prompt
 from auto_loop.protocol import (
     ProtocolParseError,
+    format_protocol_repair_reason,
     missing_pass_targets,
     parse_planner_result,
     parse_reviewer_result,
@@ -309,10 +311,35 @@ class LifecycleRunner:
         slot: SessionSlot,
         *,
         repair_reason: str | None = None,
+        parse_error: ProtocolParseError | None = None,
     ) -> bool:
         """Return True to retry the same slot turn with a repair prompt."""
+        if repair_reason is None and parse_error is not None:
+            repair_reason = format_protocol_repair_reason(parse_error)
+        diagnostic_code = (
+            parse_error.diagnostic.code.value if parse_error is not None else None
+        )
         state.consecutive_protocol_failures += 1
-        if state.consecutive_protocol_failures > self.config.limits.protocol_retries:
+        exhausted = (
+            state.consecutive_protocol_failures > self.config.limits.protocol_retries
+        )
+        if repair_reason is not None:
+            self._reopen_provider_turn(state, slot, repair_reason=repair_reason)
+        elif not exhausted:
+            state.updated_at = utc_now()
+            self._save_state(state)
+        if exhausted:
+            reason_text = repair_reason
+            if reason_text is None and state.inflight is not None:
+                reason_text = state.inflight.repair_reason
+            if reason_text is None:
+                reason_text = "Protocol repair retries exhausted."
+            state.last_run_failure = ProtocolRunFailure(
+                session=slot,
+                turn=state.turn,
+                repair_reason=reason_text,
+                diagnostic_code=diagnostic_code,
+            )
             state.updated_at = utc_now()
             self._save_state(state)
             return False
@@ -327,12 +354,11 @@ class LifecycleRunner:
                 "lifecycle_id": state.lifecycle_id,
             },
         )
-        state.updated_at = utc_now()
-        if repair_reason is not None:
-            self._reopen_provider_turn(state, slot, repair_reason=repair_reason)
-        else:
-            self._save_state(state)
         return True
+
+    def _note_protocol_turn_success(self, state: LifecycleState) -> None:
+        state.consecutive_protocol_failures = 0
+        state.last_run_failure = None
 
     def _context_manifest(self, role: Role) -> str:
         document = self.config.context
@@ -820,14 +846,13 @@ class LifecycleRunner:
 
     def _planner_turn(self, state: LifecycleState) -> None:
         self._assert_planning_slot_active(state, "planner")
-        protocol_repair = False
         product_before = self._product_snapshot()
         while True:
             first = state.sessions["planner"].session_id is None
             instruction_stack = compose_role_instructions(
                 self.repo, self.config, "planner", first_invocation=first
             )
-            ctx = self._turn_context(state, "planner", protocol_repair=protocol_repair)
+            ctx = self._turn_context(state, "planner", protocol_repair=False)
             body = build_planner_prompt(state, ctx)
             prompt = instruction_stack + "\n\n" + body if instruction_stack else body
             protected = capture_protected_baseline(self.repo, self.config)
@@ -835,22 +860,21 @@ class LifecycleRunner:
             assert_protected_unchanged(self.repo, self.config, protected)
             try:
                 result = parse_planner_result(final_text)
-            except ProtocolParseError:
-                if self._protocol_repair_or_fail(state, "planner"):
-                    protocol_repair = True
+            except ProtocolParseError as exc:
+                if self._protocol_repair_or_fail(state, "planner", parse_error=exc):
                     continue
                 raise
             break
-        state.consecutive_protocol_failures = 0
         self._adopt_parsed_result(state, "planner", "planner", result, product_before)
         self._transition_planner(state, result)
+        self._note_protocol_turn_success(state)
 
     def _transition_planner(self, state: LifecycleState, result: PlannerResult) -> None:
         try:
             self._assert_planning_policy(state)
             self._apply_planner_result(state, result)
         except ProtocolParseError as exc:
-            self._reopen_provider_turn(state, "planner", repair_reason=str(exc))
+            self._reopen_provider_turn(state, "planner", repair_reason=format_protocol_repair_reason(exc))
             raise
         except GitProtocolError as exc:
             self._note_transition_error(state, exc)
@@ -945,13 +969,12 @@ class LifecycleRunner:
         )
 
     def _worker_turn(self, state: LifecycleState) -> None:
-        protocol_repair = False
         while True:
             first = state.sessions["worker"].session_id is None
             instruction_stack = compose_role_instructions(
                 self.repo, self.config, "worker", first_invocation=first
             )
-            ctx = self._turn_context(state, "worker", protocol_repair=protocol_repair)
+            ctx = self._turn_context(state, "worker", protocol_repair=False)
             prompt = (
                 instruction_stack + "\n\n" + build_worker_prompt(state, ctx)
                 if instruction_stack
@@ -962,15 +985,15 @@ class LifecycleRunner:
             assert_protected_unchanged(self.repo, self.config, protected)
             try:
                 result = parse_worker_result(final_text)
-            except ProtocolParseError:
-                if self._protocol_repair_or_fail(state, "worker"):
-                    protocol_repair = True
+            except ProtocolParseError as exc:
+                if self._protocol_repair_or_fail(state, "worker", parse_error=exc):
                     continue
                 raise
             break
-        state.consecutive_protocol_failures = 0
         self._adopt_parsed_result(state, "worker", "worker", result, (None, None))
         self._transition_worker(state, result)
+        if state.inflight is None or state.inflight.repair_reason is None:
+            self._note_protocol_turn_success(state)
 
     def _transition_worker(
         self,
@@ -982,7 +1005,7 @@ class LifecycleRunner:
         try:
             self._apply_worker_result(state, result, from_replay=from_replay)
         except ProtocolParseError as exc:
-            self._reopen_provider_turn(state, "worker", repair_reason=str(exc))
+            self._reopen_provider_turn(state, "worker", repair_reason=format_protocol_repair_reason(exc))
             raise
         except ReviewRequestError as exc:
             self._reopen_worker_review_request(state, exc)
@@ -1256,13 +1279,12 @@ class LifecycleRunner:
         if slot == "plan_reviewer":
             self._assert_planning_slot_active(state, "plan_reviewer")
         role = ROLE_FOR_SLOT[slot]
-        protocol_repair = False
         while True:
             first = state.sessions[slot].session_id is None
             instruction_stack = compose_role_instructions(
                 self.repo, self.config, role, first_invocation=first
             )
-            ctx = self._turn_context(state, slot, protocol_repair=protocol_repair)
+            ctx = self._turn_context(state, slot, protocol_repair=False)
             body = build_reviewer_prompt(state, ctx, state.active_review)
             prompt = instruction_stack + "\n\n" + body if instruction_stack else body
             protected = capture_protected_baseline(self.repo, self.config)
@@ -1283,20 +1305,18 @@ class LifecycleRunner:
             )
             try:
                 result = parse_reviewer_result(final_text)
-            except ProtocolParseError:
-                if self._protocol_repair_or_fail(state, slot):
-                    protocol_repair = True
+            except ProtocolParseError as exc:
+                if self._protocol_repair_or_fail(state, slot, parse_error=exc):
                     continue
                 raise
             self._adopt_parsed_result(state, slot, "reviewer", result, (None, None))
             try:
                 self._apply_reviewer_result(state, slot, result)
             except ProtocolParseError as exc:
-                if self._protocol_repair_or_fail(state, slot, repair_reason=str(exc)):
-                    protocol_repair = True
+                if self._protocol_repair_or_fail(state, slot, parse_error=exc):
                     continue
                 raise
-            state.consecutive_protocol_failures = 0
+            self._note_protocol_turn_success(state)
             self._save_state(state)
             break
 
@@ -1470,11 +1490,11 @@ class LifecycleRunner:
         try:
             self._apply_reviewer_result(state, slot, result)
         except ProtocolParseError as exc:
-            if self._protocol_repair_or_fail(state, slot, repair_reason=str(exc)):
+            if self._protocol_repair_or_fail(state, slot, parse_error=exc):
                 self._reviewer_slot_turn(state, slot)
                 return
             raise
-        state.consecutive_protocol_failures = 0
+        self._note_protocol_turn_success(state)
         self._save_state(state)
 
     def _replay_completed_turn(self, state: LifecycleState) -> None:
@@ -1621,7 +1641,7 @@ class LifecycleRunner:
             return RunOutcome(
                 exit_code=ExitCode.PROTOCOL_ERROR,
                 state=self._load_state(),
-                message=str(exc),
+                message=format_protocol_repair_reason(exc),
             )
         if self._terminal_exit is not None:
             return self._terminal_run_outcome(self._terminal_exit, state)

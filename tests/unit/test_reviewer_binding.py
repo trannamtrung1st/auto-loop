@@ -192,6 +192,10 @@ def test_reviewer_binding_mismatch_exhausts_protocol_retries(tmp_path: Path):
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.consecutive_protocol_failures == 2
+    assert state.last_run_failure is not None
+    assert state.last_run_failure.session == "plan_reviewer"
+    assert state.inflight is not None
+    assert state.inflight.repair_reason
     assert state.next_session == "plan_reviewer"
     plan_reviewer_invocations = [
         inv for inv in provider.engine.invocations if inv.role == "plan_reviewer"

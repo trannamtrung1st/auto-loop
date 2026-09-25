@@ -60,7 +60,7 @@ def _plan_hash_lines(ctx: TurnContext) -> list[str]:
 
 
 def _repair_lines(ctx: TurnContext) -> list[str]:
-    if not ctx.protocol_repair:
+    if not ctx.protocol_repair or ctx.repair_reason:
         return []
     return [
         "Your previous turn completed work but did not produce a valid AUTO_LOOP_RESULT.",
@@ -74,13 +74,21 @@ def _repair_lines(ctx: TurnContext) -> list[str]:
 def _controller_repair_lines(ctx: TurnContext) -> list[str]:
     if not ctx.repair_reason:
         return []
-    return [
+    lines = [
         "Your previous turn produced a result, but the controller rejected it:",
-        f"- {ctx.repair_reason}",
-        "Inspect current durable state and emit a corrected AUTO_LOOP_RESULT for this turn.",
-        "Do not assume the rejected request was accepted.",
-        "",
     ]
+    for part in ctx.repair_reason.splitlines():
+        stripped = part.strip()
+        if stripped:
+            lines.append(f"- {stripped}")
+    lines.extend(
+        [
+            "Inspect current durable state and emit a corrected AUTO_LOOP_RESULT for this turn.",
+            "Do not assume the rejected request was accepted.",
+            "",
+        ]
+    )
+    return lines
 
 
 def _blocked_resume_lines(ctx: TurnContext) -> list[str]:

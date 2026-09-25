@@ -72,7 +72,9 @@ def _phase_label(state) -> str:
     return state.phase
 
 
-def _run_label(status: str) -> str:
+def _run_label(status: str, *, protocol_interrupted: bool = False) -> str:
+    if protocol_interrupted and status == "running":
+        return "interrupted · protocol error"
     mapping = {
         "running": "active",
         "completed": "complete",
@@ -95,6 +97,20 @@ def _task_resource_line(config: AutoLoopConfig) -> list[str]:
 def _config_label(source: RunManifestSource) -> str:
     rel = workspace_relative(source.workspace, source.path)
     return rel if rel is not None else str(source.path)
+
+
+def _protocol_failure_reason_line(repair_reason: str) -> str:
+    lines = [line.strip() for line in repair_reason.splitlines() if line.strip()]
+    for line in lines:
+        if line.startswith("Re-emit the result only"):
+            continue
+        if line.startswith("status:"):
+            return line
+    for line in lines:
+        if line.startswith("Re-emit the result only"):
+            continue
+        return line
+    return "(unknown)"
 
 
 def build_status_report(source: RunManifestSource, *, now: datetime | None = None) -> str:
@@ -146,8 +162,9 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         )
 
     reviews_display = f"{reviews_rel}/" if not str(reviews_rel).endswith("/") else reviews_rel
+    protocol_failure = state.last_run_failure
     lines = [
-        f"Run:        {_run_label(state.status.value)}",
+        f"Run:        {_run_label(state.status.value, protocol_interrupted=protocol_failure is not None)}",
         f"Phase:      {_phase_label(state)}",
         f"Planner:    {_session_label(state.sessions['planner'].status, state.sessions['planner'].session_id)}",
         f"Worker:     {_session_label(state.sessions['worker'].status, state.sessions['worker'].session_id)}",
@@ -193,9 +210,23 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
             f"pending revision: {pending.scope}/{pending.target} cycle {pending.cycle_id} round {pending.round}"
         )
     if state.inflight is not None:
+        inflight = state.inflight
+        suffix = ""
+        if protocol_failure is not None and protocol_failure.turn == inflight.turn:
+            suffix = " · repair exhausted"
         lines.append(
-            f"inflight: {state.inflight.session_slot} turn {state.inflight.turn} "
-            f"since {state.inflight.started_at.isoformat()}"
+            f"inflight: {inflight.session_slot} turn {inflight.turn}{suffix} "
+            f"since {inflight.started_at.isoformat()}"
+        )
+    if protocol_failure is not None:
+        reason_line = _protocol_failure_reason_line(protocol_failure.repair_reason)
+        lines.extend(
+            [
+                "",
+                f"protocol error: {protocol_failure.session} turn {protocol_failure.turn} · repair exhausted",
+                f"resume: auto-loop resume {config_rel}",
+                f"reason: {reason_line}",
+            ]
         )
     if blocked is not None:
         summary = (blocked.summary or "").strip() or "(no summary)"
