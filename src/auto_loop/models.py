@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 PROTOCOL_SCHEMA_VERSION = 2
 
@@ -117,11 +117,6 @@ class WorkerResult(BaseModel):
     work_summary: str
     verification: list[VerificationEvidence] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
-    _legacy_git_handoff_stripped: bool = PrivateAttr(default=False)
-
-    @property
-    def legacy_git_handoff_stripped(self) -> bool:
-        return self._legacy_git_handoff_stripped
 
 
 class Finding(BaseModel):

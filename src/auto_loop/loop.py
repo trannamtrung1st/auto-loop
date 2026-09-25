@@ -1217,7 +1217,6 @@ class LifecycleRunner:
             excludes=self._excludes(),
             git_mode=self.config.git.mode,
             protect_history=self.config.git.protect_approved_history,
-            legacy_git_handoff_stripped=result.legacy_git_handoff_stripped,
         )
         pending = state.pending_revision
         if pending and pending.scope == "batch" and pending.target == result.review.target:

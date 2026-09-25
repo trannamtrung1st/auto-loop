@@ -71,7 +71,6 @@ def test_worker_json_schema_review_has_no_controller_git_fields():
     assert "base_commit" not in review_props
     assert "head_commit" not in review_props
     assert "legacy_git_range_ignored" not in review_props
-    assert "legacy_git_handoff_stripped" not in review_props
 
 
 def test_example_parses_for_each_role():

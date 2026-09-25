@@ -359,9 +359,9 @@ def parse_worker_result(text: str) -> WorkerResult:
         raise _wrong_actor("worker", actor)
     _reject_implementer_forbidden_fields(data, "worker")
     _require_schema_version(data, "worker")
-    data, legacy_stripped = sanitize_worker_result_payload(data)
+    data, _legacy_stripped = sanitize_worker_result_payload(data)
     try:
-        result = WorkerResult.model_validate(data)
+        return WorkerResult.model_validate(data)
     except ValidationError as exc:
         raise ProtocolParseError(
             ProtocolDiagnostic(
@@ -370,8 +370,6 @@ def parse_worker_result(text: str) -> WorkerResult:
                 detail=_worker_schema_validation_detail(exc),
             )
         ) from exc
-    result._legacy_git_handoff_stripped = legacy_stripped
-    return result
 
 
 def parse_reviewer_result(text: str) -> ReviewerResult:
