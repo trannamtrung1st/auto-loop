@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -25,13 +25,6 @@ ROLE_FOR_SLOT: dict[SessionSlot, Role] = {
 }
 
 
-class GitRangeTarget(BaseModel):
-    kind: Literal["git_range"] = "git_range"
-    id: str = "git"
-    base_commit: str
-    head_commit: str
-
-
 class PathTargetRequest(BaseModel):
     kind: Literal["path"] = "path"
     id: str
@@ -47,7 +40,7 @@ class ContentTargetRequest(BaseModel):
 
 
 ReviewTargetRequest = Annotated[
-    GitRangeTarget | PathTargetRequest | ContentTargetRequest,
+    PathTargetRequest | ContentTargetRequest,
     Field(discriminator="kind"),
 ]
 
@@ -90,6 +83,30 @@ class ReviewRequest(BaseModel):
     targets: list[ReviewTargetRequest] = Field(default_factory=list)
     base_commit: str | None = None
     head_commit: str | None = None
+    legacy_git_range_ignored: bool = Field(default=False, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def strip_controller_owned_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        targets = normalized.get("targets")
+        if isinstance(targets, list):
+            kept: list[Any] = []
+            stripped_git = False
+            for item in targets:
+                if isinstance(item, dict) and item.get("kind") == "git_range":
+                    stripped_git = True
+                    continue
+                kept.append(item)
+            normalized["targets"] = kept
+            if stripped_git:
+                normalized["legacy_git_range_ignored"] = True
+        if normalized.get("scope") in ("batch", "final"):
+            normalized.pop("base_commit", None)
+            normalized.pop("head_commit", None)
+        return normalized
 
 
 class VerificationEvidence(BaseModel):

@@ -121,12 +121,12 @@ def test_scenario_M_session_mismatch_returns_session_error(tmp_path: Path):
     provider = SessionMismatchOnSecondWorkerProvider()
     baseline = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     expected_session = load_lifecycle_state(repo).sessions["worker"].session_id
     assert expected_session
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     outcome = run_lifecycle(repo, run_opts(1), provider)
     assert outcome.exit_code == ExitCode.SESSION_ERROR
     reloaded = load_lifecycle_state(repo)
@@ -156,7 +156,7 @@ def test_scenario_N_controller_interruption_reconciles_existing_commit(tmp_path:
     reviewer_session = state.sessions["reviewer"].session_id
     if reviewer_session:
         provider.engine.sessions["reviewer"] = reviewer_session
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     assert provider.worker_prompts
@@ -215,7 +215,7 @@ def test_scenario_Q_reviewer_product_mutation_invalidates_verdict(tmp_path: Path
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     outcome = run_lifecycle(repo, run_opts(2), provider)
     assert outcome.exit_code == ExitCode.REVIEW_MUTATION_ERROR

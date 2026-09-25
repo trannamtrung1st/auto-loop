@@ -21,7 +21,7 @@ def test_section_45_notes_empty_on_scripted_complete_lifecycle(tmp_path):
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "feature B")
-    provider.set_response("worker", batch_worker_payload(baseline, head_b))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     mid = load_lifecycle_state(repo)

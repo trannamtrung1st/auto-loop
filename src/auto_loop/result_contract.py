@@ -30,7 +30,10 @@ _RESULT_RULES: dict[Role, str] = {
   - `review_requested`: work/evidence is ready for review (even when more batches remain).
   - `blocked`: work cannot proceed because of a blocker.
 - Never use progress states such as `implementing`, `in_progress`, `continued`, `done`, or `complete`.
-- status=review_requested should include review describing scope, target, and evidence.
+- status=review_requested should include review describing scope, target, summary, and verification.
+- For committed Git changes, do not add a git_range target and do not set base_commit or head_commit.
+  Auto Loop derives last_approved_commit..HEAD automatically.
+- Use review.targets only for additional path or content evidence.
 - Never emit reviewer verdict values (pass, revise, complete).""",
     "reviewer": """\
 - Every serialized result must include schema_version=2 and actor=reviewer.
@@ -79,14 +82,6 @@ def _worker_example() -> WorkerResult:
             "scope": "batch",
             "target": "W01",
             "summary": "First implementation batch ready for review.",
-            "targets": [
-                {
-                    "kind": "path",
-                    "id": "src-main",
-                    "path": "src/example.py",
-                    "purpose": "Primary batch change",
-                }
-            ],
         },
         work_summary="Implemented the batch and ran focused verification.",
         verification=[

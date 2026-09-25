@@ -37,7 +37,7 @@ def test_worker_invalid_status_repair_prompt(tmp_path: Path):
             "notes": [],
         },
     )
-    provider.set_response("worker", batch_worker_payload(baseline, head, "W01"))
+    provider.set_response("worker", batch_worker_payload("W01"))
     provider.set_reviewer_pass("batch", "W01")
     provider.set_worker_blocked()
 
@@ -155,7 +155,7 @@ def test_protocol_exhaustion_resume_corrects_handoff_end_to_end(
     assert stored_reason and "implementing" in stored_reason
     prompts_after_failure = len(provider.worker_prompts)
 
-    provider.set_response("worker", batch_worker_payload(baseline, head, "W01"))
+    provider.set_response("worker", batch_worker_payload("W01"))
     provider.set_reviewer_pass("batch", "W01")
 
     second = run_lifecycle(

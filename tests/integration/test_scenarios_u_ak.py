@@ -170,7 +170,7 @@ def test_scenario_W_execution_sessions_are_fresh(tmp_path: Path):
     plan_reviewer_id = state.sessions["plan_reviewer"].session_id
     baseline = state.last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     final = load_lifecycle_state(repo)
@@ -201,7 +201,7 @@ def test_scenario_X_three_model_selections(tmp_path: Path):
     run_lifecycle(repo, build_run_options(loaded, max_turns=2), provider, config=loaded)
     baseline_before = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
-    provider.set_response("worker", batch_worker_payload(baseline_before, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, build_run_options(loaded, max_turns=2), provider)
     by_role = {inv.role: inv.model for inv in provider.engine.invocations}
@@ -226,7 +226,7 @@ def test_scenario_Y_option_role_override_precedence(tmp_path: Path):
     run_lifecycle(repo, options, provider, config=loaded)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, options, provider)
     by_role = {inv.role: inv.model for inv in provider.engine.invocations}
@@ -244,7 +244,7 @@ def test_scenario_Z_worker_updates_approved_plan(tmp_path: Path):
     initial_hash = state.initial_approved_plan_sha256
     baseline = state.last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     outcome = run_lifecycle(repo, run_opts(2), provider)
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
@@ -291,18 +291,18 @@ def test_scenario_AB_preferred_single_revision_commit(tmp_path: Path):
     approve_plan(repo, provider)
     approved = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "B production")
-    provider.set_response("worker", batch_worker_payload(approved, head_b))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     head_c = commit_file(repo, "c.txt", "c\n", "C review-fix")
-    provider.set_response("worker", batch_worker_payload(approved, head_c))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     (repo / "c.txt").write_text("c2\n", encoding="utf-8")
     git(repo, "add", "c.txt")
     git(repo, "commit", "--amend", "-m", "C2 amended review-fix")
     head_c2 = head_commit(repo)
-    provider.set_response("worker", batch_worker_payload(approved, head_c2))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     history = subprocess.check_output(
@@ -330,7 +330,7 @@ def test_scenario_AC_multiple_revision_commits_still_accepted(tmp_path: Path):
     commit_file(repo, "b.txt", "b\n", "B")
     commit_file(repo, "c.txt", "c\n", "C")
     head_d = commit_file(repo, "d.txt", "d\n", "D")
-    provider.set_response("worker", batch_worker_payload(approved, head_d))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     assert load_lifecycle_state(repo).last_approved_commit == head_d
@@ -350,14 +350,14 @@ def test_scenario_AD_noop_revision(tmp_path: Path):
     approve_plan(repo, provider)
     approved = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "B")
-    provider.set_response("worker", batch_worker_payload(approved, head_b))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     pending = load_lifecycle_state(repo).pending_revision
     assert pending is not None
     assert pending.round == 2
     before = head_commit(repo)
-    provider.set_response("worker", batch_worker_payload(approved, head_b))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     assert head_commit(repo) == before
@@ -434,7 +434,7 @@ def test_scenario_AH_reviewer_mutates_plan(tmp_path: Path):
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     outcome = run_lifecycle(repo, run_opts(2), provider)
     assert outcome.exit_code == ExitCode.REVIEW_MUTATION_ERROR
@@ -524,7 +524,7 @@ def test_scenario_AK_recovery_after_planning_handoff(tmp_path: Path):
     state.next_session = "reviewer"
     save_lifecycle_state(repo, state)
     provider.engine.sessions["worker"] = worker_session
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     workers = [inv for inv in provider.engine.invocations if inv.role == "worker"]

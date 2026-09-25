@@ -213,6 +213,7 @@ The same template ships inside the package as `auto_loop/templates/run.full.yaml
 - Resolved model is stored per session. Changing models in the source YAML applies only to a future lifecycle.
 - **Inflight** markers detect interrupted turns; the next `resume` continues the same session slot with a reconciliation prompt.
 - **Protocol repair** re-prompts the same session when terminal output is missing/invalid `AUTO_LOOP_RESULT`, within `run.protocol_retries`. Parse/handoff failures get a minimal output-only repair turn (role rules + canonical example block, not the full role turn); controller rejections after a parsed result keep the richer reconciliation prompt. Markers must appear on their own lines, not inline in prose.
+- **Batch Git review ranges** are controller-owned: for committed product work the worker sends `scope`, `target`, and summary; auto-loop derives `last_approved_commit..HEAD`. Worker `review.targets` are path/content evidence only (legacy `git_range` entries are ignored).
 - **Provider retries** (`run.provider_retries`) retry infrastructure failures without rotating session ids.
 
 ## Instruction layering

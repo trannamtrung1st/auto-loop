@@ -106,7 +106,7 @@ def run_opts(max_turns: int = 10, *, resuming: bool = False) -> RunOptions:
     )
 
 
-def batch_worker_payload(base: str, head: str, target: str = "W01") -> dict:
+def batch_worker_payload(target: str = "W01") -> dict:
     return {
         "schema_version": 2,
         "actor": "worker",
@@ -115,8 +115,6 @@ def batch_worker_payload(base: str, head: str, target: str = "W01") -> dict:
             "scope": "batch",
             "target": target,
             "summary": "batch",
-            "base_commit": base,
-            "head_commit": head,
         },
         "work_summary": "implemented",
         "verification": [],
@@ -125,15 +123,13 @@ def batch_worker_payload(base: str, head: str, target: str = "W01") -> dict:
 
 
 def batch_worker_payload_with_path(
-    base: str,
-    head: str,
     path: str,
     *,
     target: str = "W01",
     path_id: str = "extra",
 ) -> dict:
-    """Batch request with Git range plus an explicit path target."""
-    payload = batch_worker_payload(base, head, target=target)
+    """Batch request with an explicit path target (Git range is controller-owned)."""
+    payload = batch_worker_payload(target=target)
     payload["review"]["targets"] = [
         {
             "kind": "path",

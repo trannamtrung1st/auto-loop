@@ -54,6 +54,22 @@ class ProtocolParseError(Exception):
 _REPAIR_FOOTER = "Re-emit the result only. Do not redo successful work."
 
 
+_WORKER_GIT_TARGET_REMEDIATION = (
+    "review.targets must use path or content evidence only.\n"
+    "For committed Git work, omit git_range targets; Auto Loop derives the Git range "
+    "from last_approved_commit..HEAD automatically."
+)
+
+
+def _worker_schema_validation_detail(exc: ValidationError) -> str:
+    raw = str(exc)
+    lowered = raw.lower()
+    if "git_range" in lowered or "base_commit" in lowered or "head_commit" in lowered:
+        if "review" in lowered and ("target" in lowered or "targets" in lowered):
+            return _WORKER_GIT_TARGET_REMEDIATION
+    return _compact_validation_detail(raw)
+
+
 def _compact_validation_detail(detail: str) -> str:
     """Turn Pydantic validation traces into short field-scoped lines."""
     text = detail.strip()
@@ -307,7 +323,7 @@ def parse_worker_result(text: str) -> WorkerResult:
             ProtocolDiagnostic(
                 code=ProtocolDiagnosticCode.SCHEMA_VIOLATION,
                 message="Worker result failed schema validation",
-                detail=str(exc),
+                detail=_worker_schema_validation_detail(exc),
             )
         ) from exc
 

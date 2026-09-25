@@ -30,7 +30,7 @@ def test_scenario_A_happy_path(tmp_path: Path):
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "feature B")
-    provider.set_response("worker", batch_worker_payload(baseline, head_b))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     mid = load_lifecycle_state(repo)
@@ -78,11 +78,11 @@ def test_scenario_C_batch_revision_reviews_cumulative_A_to_C_not_B_to_C(tmp_path
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "commit B")
-    provider.set_response("worker", batch_worker_payload(baseline, head_b))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     head_c = commit_file(repo, "c.txt", "c\n", "commit C")
-    provider.set_response("worker", batch_worker_payload(baseline, head_c))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     prompt = provider.reviewer_prompts[-1]
@@ -98,15 +98,15 @@ def test_scenario_D_multiple_revision_commits_accept_A_to_D(tmp_path: Path):
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "B")
-    provider.set_response("worker", batch_worker_payload(baseline, head_b))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     head_c = commit_file(repo, "c.txt", "c\n", "C")
-    provider.set_response("worker", batch_worker_payload(baseline, head_c))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     head_d = commit_file(repo, "d.txt", "d\n", "D")
-    provider.set_response("worker", batch_worker_payload(baseline, head_d))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     prompt = provider.reviewer_prompts[-1]
@@ -121,7 +121,7 @@ def test_scenario_E_wrong_base_normalized_to_approved_through_head(tmp_path: Pat
     baseline = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "B")
     head_c = commit_file(repo, "c.txt", "c\n", "C")
-    provider.set_response("worker", batch_worker_payload(head_b, head_c))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     prompt = provider.reviewer_prompts[-1]
@@ -139,8 +139,8 @@ def test_scenario_F_dirty_batch_suppresses_reviewer_until_exhaustion(tmp_path: P
     baseline = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
     (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
-    provider.set_response("worker", batch_worker_payload(baseline, head))
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
+    provider.set_response("worker", batch_worker_payload())
     reviewers_before_batch = reviewer_invocation_count(provider)
     outcome = run_lifecycle(repo, run_opts(4), provider)
     assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
@@ -155,7 +155,7 @@ def test_scenario_G_history_rewrite_stops_with_git_protocol_error(tmp_path: Path
     baseline = load_lifecycle_state(repo).last_approved_commit
     commit_file(repo, "feature.txt", "x\n", "feature")
     head = head_commit(repo)
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     subprocess.run(["git", "reset", "--hard", baseline], cwd=repo, check=True)
@@ -170,7 +170,7 @@ def test_scenario_H_final_rejected_when_head_ahead_of_approved(tmp_path: Path):
     baseline = load_lifecycle_state(repo).last_approved_commit
     commit_file(repo, "feature.txt", "x\n", "feature")
     head = head_commit(repo)
-    provider.set_response("worker", batch_worker_payload(baseline, head))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     approved = load_lifecycle_state(repo).last_approved_commit
@@ -191,7 +191,7 @@ def test_scenario_I_final_revise_routes_through_batch_before_complete(tmp_path: 
     baseline = load_lifecycle_state(repo).last_approved_commit
     commit_file(repo, "feature.txt", "x\n", "feature")
     head_c = head_commit(repo)
-    provider.set_response("worker", batch_worker_payload(baseline, head_c))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
     approved_c = load_lifecycle_state(repo).last_approved_commit
@@ -199,7 +199,7 @@ def test_scenario_I_final_revise_routes_through_batch_before_complete(tmp_path: 
     provider.set_reviewer_revise("final", "whole-task")
     run_lifecycle(repo, run_opts(2), provider)
     head_d = commit_file(repo, "fix.txt", "fix\n", "fix D")
-    provider.set_response("worker", batch_worker_payload(approved_c, head_d, target="W02"))
+    provider.set_response("worker", batch_worker_payload("W02"))
     provider.set_reviewer_pass("batch", "W02")
     provider.set_worker_final_request(head=head_d)
     provider.set_reviewer_complete(head_d)
@@ -215,7 +215,7 @@ def test_scenario_J_reviewer_finding_outside_diff_is_accepted(tmp_path: Path):
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "B")
-    provider.set_response("worker", batch_worker_payload(baseline, head_b))
+    provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise(
         "batch",
         "W01",

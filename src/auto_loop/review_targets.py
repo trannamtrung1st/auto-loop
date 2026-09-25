@@ -215,8 +215,6 @@ def _explicit_targets(
     seen_ids: set[str] = set()
     active: list[ActiveReviewTarget] = []
     for item in request.targets:
-        if item.kind == "git_range":
-            continue
         if item.id in seen_ids or item.id == "git":
             raise ReviewRequestError(f"Duplicate or reserved review target id: {item.id}")
         seen_ids.add(item.id)
@@ -243,7 +241,12 @@ def normalize_work_targets(
     ``allow_empty`` is set for a final review that attests the whole task.
     """
     active = _explicit_targets(repo, request, git_mode=git_mode)
-    warnings: tuple[str, ...] = ()
+    warnings: list[str] = []
+    if request.legacy_git_range_ignored:
+        warnings.append(
+            "Ignored deprecated review.targets git_range; controller derives Git range "
+            "from last_approved_commit..HEAD"
+        )
     git_available = git_mode != "off" and is_git_repository(repo)
     if git_mode == "required" and not git_available:
         raise GitProtocolError("git.mode=required requires a Git repository")
@@ -253,14 +256,14 @@ def normalize_work_targets(
         normalized = normalize_batch_range(
             repo,
             last_approved_commit=last_approved_commit,
-            worker_base_commit=request.base_commit,
-            worker_head_commit=request.head_commit,
+            worker_base_commit=None,
+            worker_head_commit=None,
             allow_empty=True,
             excludes=excludes,
             require_clean=git_mode == "required",
             protect_history=protect_history,
         )
-        warnings = normalized.warnings
+        warnings.extend(normalized.warnings)
         if normalized.range.base != normalized.range.head:
             active.insert(
                 0,
@@ -274,7 +277,7 @@ def normalize_work_targets(
             "Review request contains no reviewable evidence "
             "(empty Git range and no path or content targets)"
         )
-    return active, warnings
+    return active, tuple(warnings)
 
 
 def current_head_range(last_approved: str, head: str) -> ReviewRange:

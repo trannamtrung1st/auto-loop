@@ -73,7 +73,7 @@ class DirtyAwareProvider:
         self._inner.set_reviewer_revise(scope, target, finding_id)
 
 
-def _batch_worker_payload(base: str, head: str) -> dict:
+def _batch_worker_payload() -> dict:
     return {
         "schema_version": 2,
         "actor": "worker",
@@ -82,8 +82,6 @@ def _batch_worker_payload(base: str, head: str) -> dict:
             "scope": "batch",
             "target": "W01",
             "summary": "batch",
-            "base_commit": base,
-            "head_commit": head,
         },
         "work_summary": "implemented",
         "verification": [],
@@ -121,7 +119,7 @@ def test_batch_revise_does_not_advance_baseline(tmp_path: Path):
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature")
     head = head_commit(repo)
-    provider.set_response("worker", _batch_worker_payload(baseline, head))
+    provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(
         repo,
@@ -148,8 +146,8 @@ def test_dirty_batch_retries_worker_then_succeeds(tmp_path: Path):
     _git(repo, "commit", "-m", "feature")
     head = head_commit(repo)
     (repo / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
-    provider.set_response("worker", _batch_worker_payload(baseline, head))
-    provider.set_response("worker", _batch_worker_payload(baseline, head))
+    provider.set_response("worker", _batch_worker_payload())
+    provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     outcome = run_lifecycle(
         repo,
@@ -177,8 +175,8 @@ def test_dirty_batch_exhaustion_returns_git_protocol_error(tmp_path: Path):
     _git(repo, "commit", "-m", "feature")
     head = head_commit(repo)
     (repo / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
-    provider.set_response("worker", _batch_worker_payload(baseline, head))
-    provider.set_response("worker", _batch_worker_payload(baseline, head))
+    provider.set_response("worker", _batch_worker_payload())
+    provider.set_response("worker", _batch_worker_payload())
     outcome = run_lifecycle(
         repo,
         RunOptions("auto", "auto", max_turns=4, max_runtime_minutes=60, verbose=False, quiet=True),
@@ -198,7 +196,7 @@ def test_multi_fix_cumulative_batch_pass_advances_baseline(tmp_path: Path):
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature v1")
     head_v1 = head_commit(repo)
-    provider.set_response("worker", _batch_worker_payload(baseline, head_v1))
+    provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(
         repo,
@@ -209,7 +207,7 @@ def test_multi_fix_cumulative_batch_pass_advances_baseline(tmp_path: Path):
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "fix v2")
     head_v2 = head_commit(repo)
-    provider.set_response("worker", _batch_worker_payload(baseline, head_v2))
+    provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(
         repo,
@@ -229,7 +227,7 @@ def test_history_rewrite_during_run_exits_git_protocol_error(tmp_path: Path):
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature")
     head = head_commit(repo)
-    provider.set_response("worker", _batch_worker_payload(baseline, head))
+    provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(
         repo,
@@ -287,7 +285,7 @@ def test_batch_reviewer_prompt_allows_widened_inspection(tmp_path: Path):
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature")
     head = head_commit(repo)
-    provider.set_response("worker", _batch_worker_payload(baseline, head))
+    provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(
         repo,

@@ -253,6 +253,26 @@ def test_worker_invalid_status_repair_reason_includes_field_detail():
     assert "Re-emit the result only" in reason
 
 
+def test_worker_schema_validation_detail_remaps_git_range_trace():
+    from pydantic import ValidationError
+
+    from auto_loop.protocol import _worker_schema_validation_detail
+
+    exc = ValidationError.from_exception_data(
+        "WorkerResult",
+        [
+            {
+                "type": "missing",
+                "loc": ("review", "targets", 0, "git_range", "base_commit"),
+                "msg": "Field required",
+                "input": {"kind": "git_range", "id": "git"},
+            }
+        ],
+    )
+    detail = _worker_schema_validation_detail(exc)
+    assert "omit git_range" in detail.lower()
+
+
 def test_output_only_repair_prompt_is_minimal():
     reason = format_protocol_repair_reason(
         ProtocolParseError(

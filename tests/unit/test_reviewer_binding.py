@@ -139,7 +139,7 @@ def test_integration_wrong_batch_target_repairs_in_same_run(tmp_path: Path):
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "f.txt", "x\n", "f")
-    provider.set_response("worker", batch_worker_payload(baseline, head, "W01"))
+    provider.set_response("worker", batch_worker_payload("W01"))
     provider.set_reviewer_pass("batch", "WRONG")
     provider.set_reviewer_pass("batch", "W01")
     outcome = run_lifecycle(repo, run_opts(2), provider)
@@ -209,7 +209,7 @@ def test_legacy_completed_reviewer_turn_repairs_in_same_resume(tmp_path: Path):
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
     head = commit_file(repo, "f.txt", "x\n", "f")
-    provider.set_response("worker", batch_worker_payload(baseline, head, "W01"))
+    provider.set_response("worker", batch_worker_payload("W01"))
     run_lifecycle(repo, run_opts(1), provider)
     state = load_lifecycle_state(repo)
     assert state is not None
