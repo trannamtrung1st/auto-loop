@@ -107,7 +107,7 @@ def test_protocol_repair_exhaustion_persists_failure_and_status(tmp_path: Path, 
 def test_protocol_exhaustion_resume_corrects_handoff_end_to_end(
     tmp_path: Path, monkeypatch
 ):
-    """Exit on PROTOCOL_ERROR, then resume must repair output and continue review."""
+    """PROTOCOL_ERROR exit, then explicit resume repairs output and continues review."""
     repo = make_repo(tmp_path)
     cfg = frozen_config(repo)
     cfg = cfg.model_copy(update={"run": cfg.run.model_copy(update={"protocol_retries": 0})})
@@ -159,12 +159,12 @@ def test_protocol_exhaustion_resume_corrects_handoff_end_to_end(
 
     second = run_lifecycle(
         repo,
-        run_opts(2),
+        run_opts(2, resuming=True),
         provider,
         config=cfg,
         artifact_root=source.artifact_root,
     )
-    assert second.exit_code in (ExitCode.LIMIT_REACHED, ExitCode.BLOCKED, ExitCode.COMPLETE)
+    assert second.exit_code == ExitCode.LIMIT_REACHED
     assert len(provider.worker_prompts) > prompts_after_failure
 
     resume_prompt = provider.worker_prompts[prompts_after_failure]
@@ -178,14 +178,14 @@ def test_protocol_exhaustion_resume_corrects_handoff_end_to_end(
     worker_invocations = [
         inv for inv in provider.engine.invocations if inv.role == "worker"
     ]
-    assert len(worker_invocations) >= 2
+    assert len(worker_invocations) == 2
     assert worker_invocations[-1].resume_session_id == worker_session
 
     reviewer_invocations = [
         inv for inv in provider.engine.invocations if inv.role == "reviewer"
     ]
-    assert reviewer_invocations
-    assert reviewer_invocations[-1].resume_session_id in (
+    assert len(reviewer_invocations) == 1
+    assert reviewer_invocations[0].resume_session_id in (
         None,
         state.sessions["reviewer"].session_id,
     )
