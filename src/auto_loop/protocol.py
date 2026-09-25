@@ -54,45 +54,37 @@ class ProtocolParseError(Exception):
 _REPAIR_FOOTER = "Re-emit the result only. Do not redo successful work."
 
 
-def sanitize_agent_review_request(review: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+def sanitize_agent_review_request(review: dict[str, Any]) -> dict[str, Any]:
     """Strip legacy controller-owned Git fields before validating agent handoffs."""
     normalized = dict(review)
-    stripped = False
     targets = normalized.get("targets")
     if isinstance(targets, list):
         kept: list[Any] = []
         for item in targets:
             if isinstance(item, dict) and item.get("kind") == "git_range":
-                stripped = True
                 continue
             kept.append(item)
         normalized["targets"] = kept
     if normalized.get("scope") in ("batch", "final"):
-        if normalized.pop("base_commit", None) is not None:
-            stripped = True
-        if normalized.pop("head_commit", None) is not None:
-            stripped = True
-    return normalized, stripped
+        normalized.pop("base_commit", None)
+        normalized.pop("head_commit", None)
+    return normalized
 
 
-def sanitize_worker_result_payload(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+def sanitize_worker_result_payload(data: dict[str, Any]) -> dict[str, Any]:
     """Normalize raw worker JSON before Pydantic validation."""
     payload = dict(data)
-    stripped = False
     review = payload.get("review")
     if isinstance(review, dict):
-        sanitized_review, review_stripped = sanitize_agent_review_request(review)
-        payload["review"] = sanitized_review
-        stripped = stripped or review_stripped
-    return payload, stripped
+        payload["review"] = sanitize_agent_review_request(review)
+    return payload
 
 
 def sanitize_planner_result_payload(data: dict[str, Any]) -> dict[str, Any]:
     payload = dict(data)
     review = payload.get("review")
     if isinstance(review, dict):
-        sanitized_review, _ = sanitize_agent_review_request(review)
-        payload["review"] = sanitized_review
+        payload["review"] = sanitize_agent_review_request(review)
     return payload
 
 
@@ -359,7 +351,7 @@ def parse_worker_result(text: str) -> WorkerResult:
         raise _wrong_actor("worker", actor)
     _reject_implementer_forbidden_fields(data, "worker")
     _require_schema_version(data, "worker")
-    data, _legacy_stripped = sanitize_worker_result_payload(data)
+    data = sanitize_worker_result_payload(data)
     try:
         return WorkerResult.model_validate(data)
     except ValidationError as exc:
