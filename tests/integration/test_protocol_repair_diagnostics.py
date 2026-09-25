@@ -46,13 +46,14 @@ def test_worker_invalid_status_repair_prompt(tmp_path: Path):
     repair_prompts = [
         prompt
         for prompt in provider.worker_prompts
-        if "controller rejected it" in prompt.lower()
+        if "Your previous work is preserved" in prompt
     ]
     assert repair_prompts
     repair = repair_prompts[0]
     assert "implementing" in repair
     assert "review_requested" in repair
-    assert "did not produce a valid AUTO_LOOP_RESULT" not in repair
+    assert "controller rejected it" not in repair.lower()
+    assert "Reconcile this durable state" not in repair
 
 
 def test_protocol_repair_exhaustion_persists_failure_and_status(tmp_path: Path, monkeypatch):
@@ -168,9 +169,10 @@ def test_protocol_exhaustion_resume_corrects_handoff_end_to_end(
     assert len(provider.worker_prompts) > prompts_after_failure
 
     resume_prompt = provider.worker_prompts[prompts_after_failure]
-    assert "controller rejected it" in resume_prompt.lower()
+    assert "Your previous work is preserved" in resume_prompt
     assert "implementing" in resume_prompt
     assert "review_requested" in resume_prompt
+    assert "Do not perform implementation work" in resume_prompt
     for line in stored_reason.splitlines():
         if line.strip().startswith("status:"):
             assert line.strip() in resume_prompt

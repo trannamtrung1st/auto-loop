@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from auto_loop.lifecycle import ActiveReview, BlockedResumeContext, LifecycleState, PendingRevision
 from auto_loop.models import SessionSlot
+from auto_loop.protocol import protocol_repair_diagnostic_lines
 
 
 @dataclass(frozen=True)
@@ -59,16 +60,28 @@ def _plan_hash_lines(ctx: TurnContext) -> list[str]:
     return lines
 
 
-def _repair_lines(ctx: TurnContext) -> list[str]:
-    if not ctx.protocol_repair or ctx.repair_reason:
-        return []
-    return [
-        "Your previous turn completed work but did not produce a valid AUTO_LOOP_RESULT.",
-        "Do not redo successful work blindly.",
-        "Inspect current durable state and output the correct result for the work "
-        "currently present.",
+def build_protocol_output_repair_prompt(repair_reason: str) -> str:
+    """Minimal handoff-only turn after terminal output failed protocol parsing."""
+    lines = [
+        "Your previous work is preserved.",
         "",
+        "Your previous response could not be parsed because:",
     ]
+    diagnostic = protocol_repair_diagnostic_lines(repair_reason)
+    if diagnostic:
+        lines.extend(diagnostic)
+    else:
+        lines.append("(unknown)")
+    lines.extend(
+        [
+            "",
+            "Do not perform implementation work.",
+            "Do not run tools unless required to reconstruct missing protocol fields.",
+            "Do not explain the error.",
+            "Return only one valid AUTO_LOOP_RESULT block.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _controller_repair_lines(ctx: TurnContext) -> list[str]:
@@ -143,7 +156,6 @@ def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
                 "",
             ]
         )
-    lines.extend(_repair_lines(ctx))
     lines.append("End with one valid AUTO_LOOP_RESULT.")
     return _append_manifest("\n".join(lines), ctx.resource_manifest)
 
@@ -227,7 +239,6 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
                 "",
             ]
         )
-    lines.extend(_repair_lines(ctx))
     lines.append("End with one valid AUTO_LOOP_RESULT.")
     return _append_manifest("\n".join(lines), ctx.resource_manifest)
 
@@ -264,7 +275,6 @@ def _format_targets(review: ActiveReview) -> list[str]:
 def _append_reviewer_result_guidance(lines: list[str], ctx: TurnContext) -> None:
     if ctx.repair_reason:
         lines.extend(_controller_repair_lines(ctx))
-    lines.extend(_repair_lines(ctx))
     lines.append("End with one valid AUTO_LOOP_RESULT.")
 
 

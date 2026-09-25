@@ -108,28 +108,73 @@ def format_protocol_repair_reason(exc: ProtocolParseError) -> str:
     return "\n".join(parts)
 
 
+def protocol_repair_diagnostic_lines(repair_reason: str) -> list[str]:
+    """User-facing parse/validation lines from a stored repair reason."""
+    lines: list[str] = []
+    for part in repair_reason.splitlines():
+        stripped = part.strip()
+        if not stripped or stripped == _REPAIR_FOOTER:
+            continue
+        if stripped.startswith("Re-emit the result only"):
+            continue
+        lines.append(stripped)
+    return lines
+
+
+def _line_is_marker(line: str, marker: str) -> bool:
+    return line.strip() == marker
+
+
 def _find_block_spans(text: str) -> list[tuple[int, int, str]]:
-    """Return (start, end, inner_json) for each non-nested result block."""
+    """Return (start, end, inner_json) for each line-delimited result block."""
+    if not text:
+        return []
+    line_entries: list[tuple[int, int, str]] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        end = offset + len(line)
+        line_entries.append((offset, end, line))
+        offset = end
+
     spans: list[tuple[int, int, str]] = []
-    pos = 0
-    while True:
-        start = text.find(RESULT_BLOCK_START, pos)
-        if start < 0:
-            break
-        content_start = start + len(RESULT_BLOCK_START)
-        end_tag = text.find(RESULT_BLOCK_END, content_start)
-        if end_tag < 0:
-            break
-        inner = text[content_start:end_tag]
-        if RESULT_BLOCK_START in inner or RESULT_BLOCK_END in inner:
-            raise ProtocolParseError(
-                ProtocolDiagnostic(
-                    code=ProtocolDiagnosticCode.NESTED_BLOCK,
-                    message="Nested AUTO_LOOP_RESULT markup is not allowed",
+    index = 0
+    while index < len(line_entries):
+        start_offset, start_end, start_line = line_entries[index]
+        if not _line_is_marker(start_line, RESULT_BLOCK_START):
+            index += 1
+            continue
+        inner_lines: list[str] = []
+        scan = index + 1
+        while scan < len(line_entries):
+            _, _, candidate = line_entries[scan]
+            if _line_is_marker(candidate, RESULT_BLOCK_END):
+                end_offset, end_end, _ = line_entries[scan]
+                inner = "".join(inner_lines).strip()
+                if any(
+                    _line_is_marker(part, RESULT_BLOCK_START)
+                    or _line_is_marker(part, RESULT_BLOCK_END)
+                    for part in inner.splitlines()
+                ):
+                    raise ProtocolParseError(
+                        ProtocolDiagnostic(
+                            code=ProtocolDiagnosticCode.NESTED_BLOCK,
+                            message="Nested AUTO_LOOP_RESULT markup is not allowed",
+                        )
+                    )
+                spans.append((start_offset, end_end, inner))
+                index = scan + 1
+                break
+            if _line_is_marker(candidate, RESULT_BLOCK_START):
+                raise ProtocolParseError(
+                    ProtocolDiagnostic(
+                        code=ProtocolDiagnosticCode.NESTED_BLOCK,
+                        message="Nested AUTO_LOOP_RESULT markup is not allowed",
+                    )
                 )
-            )
-        spans.append((start, end_tag + len(RESULT_BLOCK_END), inner.strip()))
-        pos = end_tag + len(RESULT_BLOCK_END)
+            inner_lines.append(candidate)
+            scan += 1
+        else:
+            break
     return spans
 
 

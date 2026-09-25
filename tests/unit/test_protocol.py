@@ -5,6 +5,7 @@ import json
 import pytest
 
 from auto_loop.models import PlannerResult, ReviewerResult, WorkerResult
+from auto_loop.prompts import build_protocol_output_repair_prompt
 from auto_loop.protocol import (
     ProtocolDiagnostic,
     ProtocolDiagnosticCode,
@@ -82,8 +83,8 @@ def test_extract_result_blocks_finds_multiple_blocks():
     text = f"Example (batch):\n{block}\n\nExample (final):\n{block}"
     blocks = extract_result_blocks(text)
     assert len(blocks) == 2
-    assert blocks[0] == block
-    assert blocks[1] == block
+    assert block in blocks[0]
+    assert block in blocks[1]
 
 
 def test_extract_accepts_single_block_with_surrounding_prose():
@@ -101,21 +102,39 @@ def test_missing_block_fails():
 
 def test_duplicate_blocks_fail():
     payload = json.dumps(_worker_payload())
-    text = f"{RESULT_BLOCK_START}{payload}{RESULT_BLOCK_END}\n{RESULT_BLOCK_START}{payload}{RESULT_BLOCK_END}"
+    block = f"{RESULT_BLOCK_START}\n{payload}\n{RESULT_BLOCK_END}"
+    text = f"{block}\n\n{block}"
     with pytest.raises(ProtocolParseError) as exc:
         extract_result_json(text)
     assert exc.value.diagnostic.code == ProtocolDiagnosticCode.DUPLICATE_BLOCK
 
 
+def test_inline_marker_mention_does_not_start_block():
+    payload = json.dumps(_worker_payload())
+    text = (
+        f"I should have emitted {RESULT_BLOCK_START} rather than JSON.\n"
+        f"{RESULT_BLOCK_START}\n{payload}\n{RESULT_BLOCK_END}"
+    )
+    raw = extract_result_json(text)
+    assert json.loads(raw)["actor"] == "worker"
+
+
 def test_nested_markup_fails():
-    text = f"{RESULT_BLOCK_START}{{ \"nested\": \"{RESULT_BLOCK_START}x{RESULT_BLOCK_END}\" }}{RESULT_BLOCK_END}"
+    text = (
+        f"{RESULT_BLOCK_START}\n"
+        '{"note": "inner open below"}\n'
+        f"{RESULT_BLOCK_START}\n"
+        "x\n"
+        f"{RESULT_BLOCK_END}\n"
+        f"{RESULT_BLOCK_END}"
+    )
     with pytest.raises(ProtocolParseError) as exc:
         extract_result_json(text)
     assert exc.value.diagnostic.code == ProtocolDiagnosticCode.NESTED_BLOCK
 
 
 def test_malformed_json_fails():
-    text = RESULT_BLOCK_START + "{not-json" + RESULT_BLOCK_END
+    text = f"{RESULT_BLOCK_START}\n{{not-json\n{RESULT_BLOCK_END}"
     with pytest.raises(ProtocolParseError) as exc:
         parse_worker_result(text)
     assert exc.value.diagnostic.code == ProtocolDiagnosticCode.MALFORMED_JSON
@@ -232,6 +251,22 @@ def test_worker_invalid_status_repair_reason_includes_field_detail():
     assert "review_requested" in reason
     assert "implementing" in reason
     assert "Re-emit the result only" in reason
+
+
+def test_output_only_repair_prompt_is_minimal():
+    reason = format_protocol_repair_reason(
+        ProtocolParseError(
+            ProtocolDiagnostic(
+                code=ProtocolDiagnosticCode.MISSING_BLOCK,
+                message="No AUTO_LOOP_RESULT block found in terminal response",
+            )
+        )
+    )
+    prompt = build_protocol_output_repair_prompt(reason)
+    assert "Your previous work is preserved" in prompt
+    assert "No AUTO_LOOP_RESULT block found" in prompt
+    assert "Do not perform implementation work" in prompt
+    assert "Reconcile this durable state" not in prompt
 
 
 def test_format_protocol_repair_reason_without_detail():

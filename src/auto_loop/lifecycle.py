@@ -97,6 +97,7 @@ class InflightMarker(BaseModel):
     started_at: datetime
     head_before: str | None = None
     repair_reason: str | None = None
+    output_only_protocol_repair: bool = False
 
 
 class ProtocolRunFailure(BaseModel):
