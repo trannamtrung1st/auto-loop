@@ -18,6 +18,7 @@ from auto_loop.result_contract import (
     format_output_repair_protocol_contract,
     format_result_example,
     format_result_json_schema,
+    format_single_result_example,
 )
 
 
@@ -25,8 +26,16 @@ from auto_loop.result_contract import (
 def test_output_repair_contract_includes_rules_and_example(role: str):
     text = format_output_repair_protocol_contract(role)
     assert "Required envelope for this turn" in text
-    assert RESULT_BLOCK_START in text
+    assert text.count(RESULT_BLOCK_START) == 1
+    assert text.count(RESULT_BLOCK_END) == 1
     assert f'"actor": "{role}"' in text
+
+
+@pytest.mark.parametrize("role", ("planner", "worker", "reviewer"))
+def test_single_result_example_is_one_block(role: str):
+    block = format_single_result_example(role)
+    assert block.count(RESULT_BLOCK_START) == 1
+    assert block.count(RESULT_BLOCK_END) == 1
 
 
 @pytest.mark.parametrize("role", ("planner", "worker", "reviewer"))

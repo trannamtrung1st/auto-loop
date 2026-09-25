@@ -269,6 +269,8 @@ def test_output_only_repair_prompt_is_minimal():
     assert "Reconcile this durable state" not in prompt
     assert '"actor": "worker"' in prompt
     assert '"schema_version": 2' in prompt
+    assert prompt.count(RESULT_BLOCK_START) == 1
+    assert prompt.count(RESULT_BLOCK_END) == 1
 
 
 def test_format_protocol_repair_reason_without_detail():
