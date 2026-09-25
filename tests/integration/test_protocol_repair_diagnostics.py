@@ -24,8 +24,7 @@ def test_worker_invalid_status_repair_prompt(tmp_path: Path):
     _approve_plan(repo, provider)
     state = load_lifecycle_state(repo)
     assert state is not None
-    baseline = state.last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "worker change")
+    commit_file(repo, "feature.txt", "x\n", "worker change")
     provider.set_response(
         "worker",
         {
@@ -119,8 +118,7 @@ def test_protocol_exhaustion_resume_corrects_handoff_end_to_end(
     _approve_plan(repo, provider)
     state = load_lifecycle_state(repo, source.artifact_root)
     assert state is not None
-    baseline = state.last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "worker change")
+    commit_file(repo, "feature.txt", "x\n", "worker change")
 
     provider.set_response(
         "worker",

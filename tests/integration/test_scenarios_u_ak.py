@@ -168,8 +168,7 @@ def test_scenario_W_execution_sessions_are_fresh(tmp_path: Path):
     state = load_lifecycle_state(repo)
     planner_id = state.sessions["planner"].session_id
     plan_reviewer_id = state.sessions["plan_reviewer"].session_id
-    baseline = state.last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
@@ -199,8 +198,7 @@ def test_scenario_X_three_model_selections(tmp_path: Path):
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
     run_lifecycle(repo, build_run_options(loaded, max_turns=2), provider, config=loaded)
-    baseline_before = load_lifecycle_state(repo).last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, build_run_options(loaded, max_turns=2), provider)
@@ -224,8 +222,7 @@ def test_scenario_Y_option_role_override_precedence(tmp_path: Path):
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
     run_lifecycle(repo, options, provider, config=loaded)
-    baseline = load_lifecycle_state(repo).last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(repo, options, provider)
@@ -242,7 +239,6 @@ def test_scenario_Z_worker_updates_approved_plan(tmp_path: Path):
     approve_plan(repo, provider)
     state = load_lifecycle_state(repo)
     initial_hash = state.initial_approved_plan_sha256
-    baseline = state.last_approved_commit
     head = commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
@@ -294,7 +290,7 @@ def test_scenario_AB_preferred_single_revision_commit(tmp_path: Path):
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
-    head_c = commit_file(repo, "c.txt", "c\n", "C review-fix")
+    commit_file(repo, "c.txt", "c\n", "C review-fix")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
@@ -348,7 +344,6 @@ def test_scenario_AD_noop_revision(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     approve_plan(repo, provider)
-    approved = load_lifecycle_state(repo).last_approved_commit
     head_b = commit_file(repo, "b.txt", "b\n", "B")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
@@ -432,8 +427,7 @@ def test_scenario_AH_reviewer_mutates_plan(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ReviewerMutatesPlanProvider(repo)
     approve_plan(repo, provider)
-    baseline = load_lifecycle_state(repo).last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     outcome = run_lifecycle(repo, run_opts(2), provider)
@@ -510,7 +504,7 @@ def test_scenario_AK_recovery_after_planning_handoff(tmp_path: Path):
     assert state.sessions["plan_reviewer"].status == "retired"
     planner_count = sum(1 for inv in provider.engine.invocations if inv.role == "planner")
     baseline = state.last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     worker_session = "worker-session-ak"
     state.sessions["worker"].session_id = worker_session
     state.inflight = InflightMarker(

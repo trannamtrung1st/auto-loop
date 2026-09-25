@@ -118,7 +118,6 @@ def test_batch_revise_does_not_advance_baseline(tmp_path: Path):
     (repo / "feature.txt").write_text("x\n", encoding="utf-8")
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature")
-    head = head_commit(repo)
     provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(
@@ -140,7 +139,6 @@ def test_dirty_batch_retries_worker_then_succeeds(tmp_path: Path):
         RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
         provider,
     )
-    baseline = load_lifecycle_state(repo).last_approved_commit
     (repo / "feature.txt").write_text("x\n", encoding="utf-8")
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature")
@@ -173,7 +171,6 @@ def test_dirty_batch_exhaustion_returns_git_protocol_error(tmp_path: Path):
     (repo / "feature.txt").write_text("x\n", encoding="utf-8")
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature")
-    head = head_commit(repo)
     (repo / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
     provider.set_response("worker", _batch_worker_payload())
     provider.set_response("worker", _batch_worker_payload())
@@ -191,11 +188,9 @@ def test_multi_fix_cumulative_batch_pass_advances_baseline(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()
     _approve_plan(repo, provider)
-    baseline = load_lifecycle_state(repo).last_approved_commit
     (repo / "feature.txt").write_text("v1\n", encoding="utf-8")
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature v1")
-    head_v1 = head_commit(repo)
     provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(
@@ -226,7 +221,6 @@ def test_history_rewrite_during_run_exits_git_protocol_error(tmp_path: Path):
     (repo / "feature.txt").write_text("x\n", encoding="utf-8")
     _git(repo, "add", "feature.txt")
     _git(repo, "commit", "-m", "feature")
-    head = head_commit(repo)
     provider.set_response("worker", _batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     run_lifecycle(

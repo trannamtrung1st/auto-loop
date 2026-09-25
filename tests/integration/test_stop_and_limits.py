@@ -93,7 +93,6 @@ def test_max_turns_normal_mode_marks_terminal_summary_rendered(tmp_path: Path):
 
 
 def test_limit_reached_resume_resets_status_to_running(tmp_path: Path, monkeypatch):
-    from auto_loop.git import head_commit
     from auto_loop.loop import LifecycleRunner
     from tests.integration.scenario_harness import (
         PromptCapturingProvider,
@@ -118,8 +117,7 @@ def test_limit_reached_resume_resets_status_to_running(tmp_path: Path, monkeypat
     repo = make_repo(tmp_path)
     provider = PromptCapturingProvider()
     _approve_plan(repo, provider)
-    baseline = head_commit(repo)
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     plan_rel = ".ai/auto-loop/plan.md"
     provider.set_response(
         "worker",

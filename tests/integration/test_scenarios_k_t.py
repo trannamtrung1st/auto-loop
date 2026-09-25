@@ -119,8 +119,7 @@ def test_scenario_M_session_mismatch_returns_session_error(tmp_path: Path):
     repo = make_repo(tmp_path)
     approve_plan(repo, ScriptedProvider())
     provider = SessionMismatchOnSecondWorkerProvider()
-    baseline = load_lifecycle_state(repo).last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_revise("batch", "W01")
     run_lifecycle(repo, run_opts(2), provider)
@@ -214,7 +213,7 @@ def test_scenario_Q_reviewer_product_mutation_invalidates_verdict(tmp_path: Path
     provider = ReviewerMutatesProductProvider(repo)
     approve_plan(repo, provider)
     baseline = load_lifecycle_state(repo).last_approved_commit
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response("worker", batch_worker_payload())
     provider.set_reviewer_pass("batch", "W01")
     outcome = run_lifecycle(repo, run_opts(2), provider)

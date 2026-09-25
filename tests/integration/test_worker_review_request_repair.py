@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from auto_loop.exits import ExitCode
-from auto_loop.git import head_commit
 from auto_loop.runtime import load_lifecycle_state
 from tests.integration.scenario_harness import (
     PromptCapturingProvider,
@@ -40,8 +39,7 @@ def test_escaping_path_target_repairs_without_reviewer(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = PromptCapturingProvider()
     _approve_plan(repo, provider)
-    baseline = head_commit(repo)
-    head = commit_file(repo, "feature.txt", "x\n", "feature")
+    commit_file(repo, "feature.txt", "x\n", "feature")
     provider.set_response(
         "worker",
         batch_worker_payload_with_path("../outside", path_id="escape"),
@@ -64,7 +62,6 @@ def test_batch_with_plan_path_repairs_in_run_and_opens_reviewer(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = PromptCapturingProvider()
     _approve_plan(repo, provider)
-    baseline = head_commit(repo)
     head = commit_file(repo, "feature.txt", "x\n", "feature")
     plan_rel = ".ai/auto-loop/plan.md"
     provider.set_response(
@@ -95,7 +92,6 @@ def test_batch_with_plan_path_resume_does_not_replay_rejected_turn(tmp_path: Pat
     repo = make_repo(tmp_path)
     provider = PromptCapturingProvider()
     _approve_plan(repo, provider)
-    baseline = head_commit(repo)
     head = commit_file(repo, "feature.txt", "x\n", "feature")
     plan_rel = ".ai/auto-loop/plan.md"
     provider.set_response(
