@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from auto_loop.lifecycle import ActiveReview, BlockedResumeContext, LifecycleState, PendingRevision
-from auto_loop.models import SessionSlot
+from auto_loop.models import Role, SessionSlot
 from auto_loop.protocol import protocol_repair_diagnostic_lines
+from auto_loop.result_contract import format_output_repair_protocol_contract
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ def _plan_hash_lines(ctx: TurnContext) -> list[str]:
     return lines
 
 
-def build_protocol_output_repair_prompt(repair_reason: str) -> str:
+def build_protocol_output_repair_prompt(role: Role, repair_reason: str) -> str:
     """Minimal handoff-only turn after terminal output failed protocol parsing."""
     lines = [
         "Your previous work is preserved.",
@@ -79,6 +80,8 @@ def build_protocol_output_repair_prompt(repair_reason: str) -> str:
             "Do not run tools unless required to reconstruct missing protocol fields.",
             "Do not explain the error.",
             "Return only one valid AUTO_LOOP_RESULT block.",
+            "",
+            format_output_repair_protocol_contract(role),
         ]
     )
     return "\n".join(lines)

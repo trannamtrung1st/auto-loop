@@ -741,7 +741,7 @@ class LifecycleRunner:
             and inflight.output_only_protocol_repair
             and inflight.repair_reason
         ):
-            return build_protocol_output_repair_prompt(inflight.repair_reason)
+            return build_protocol_output_repair_prompt(ROLE_FOR_SLOT[slot], inflight.repair_reason)
         role = ROLE_FOR_SLOT[slot]
         first = state.sessions[slot].session_id is None
         instruction_stack = compose_role_instructions(

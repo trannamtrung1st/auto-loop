@@ -262,11 +262,13 @@ def test_output_only_repair_prompt_is_minimal():
             )
         )
     )
-    prompt = build_protocol_output_repair_prompt(reason)
+    prompt = build_protocol_output_repair_prompt("worker", reason)
     assert "Your previous work is preserved" in prompt
     assert "No AUTO_LOOP_RESULT block found" in prompt
     assert "Do not perform implementation work" in prompt
     assert "Reconcile this durable state" not in prompt
+    assert '"actor": "worker"' in prompt
+    assert '"schema_version": 2' in prompt
 
 
 def test_format_protocol_repair_reason_without_detail():

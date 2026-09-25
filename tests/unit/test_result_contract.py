@@ -15,9 +15,18 @@ from auto_loop.protocol import (
 )
 from auto_loop.result_contract import (
     canonical_result_payload,
+    format_output_repair_protocol_contract,
     format_result_example,
     format_result_json_schema,
 )
+
+
+@pytest.mark.parametrize("role", ("planner", "worker", "reviewer"))
+def test_output_repair_contract_includes_rules_and_example(role: str):
+    text = format_output_repair_protocol_contract(role)
+    assert "Required envelope for this turn" in text
+    assert RESULT_BLOCK_START in text
+    assert f'"actor": "{role}"' in text
 
 
 @pytest.mark.parametrize("role", ("planner", "worker", "reviewer"))

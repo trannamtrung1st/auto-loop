@@ -154,3 +154,18 @@ def format_result_example(role: Role) -> str:
             ]
         )
     return _wrap_result_block(canonical_result_payload(role))
+
+
+def format_output_repair_protocol_contract(role: Role) -> str:
+    """Compact role contract for output-only protocol repair (rules + example block)."""
+    return "\n".join(
+        [
+            "Required envelope for this turn (adapt values to your prior work; "
+            "do not invent new implementation):",
+            "",
+            format_result_rules(role),
+            "",
+            "Canonical example:",
+            format_result_example(role),
+        ]
+    )
