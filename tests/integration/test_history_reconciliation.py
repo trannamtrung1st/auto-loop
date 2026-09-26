@@ -9,7 +9,10 @@ from auto_loop.config import load_resolved_config_optional
 from auto_loop.events import load_events
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
-from auto_loop.history_reconciliation import reconcile_approved_history
+from auto_loop.history_reconciliation import (
+    apply_operator_history_reconciliation,
+    reconcile_approved_history,
+)
 from auto_loop.lifecycle import HistoryReconciliation
 from auto_loop.manifest import load_run_manifest
 from auto_loop.paths import resolved_artifact_root
@@ -216,6 +219,37 @@ def test_restart_during_reconciliation_finishes_one_mapping(tmp_path: Path):
     )
     assert second.last_approved_commit == candidate
     assert len(_reconciliation_events(repo)) == 1
+
+
+def test_operator_reconcile_history_applies_ambiguous_candidate(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approved, original_head = _approve_feature_then_commit_more(repo, provider)
+    _candidate, extra, new_head = _rewrite_history(
+        repo, approved, original_head, ambiguous=True
+    )
+    workers_before = worker_invocation_count(provider)
+    outcome = run_lifecycle(repo, run_opts(1, resuming=True), provider)
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert worker_invocation_count(provider) == workers_before
+
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    config, root = _frozen_config(repo)
+    state = apply_operator_history_reconciliation(
+        repo, config, state, extra, artifact_root=root
+    )
+    assert state.last_approved_commit == extra
+    assert state.history_reconciliation is not None
+    assert state.history_reconciliation.applied is True
+    events = _reconciliation_events(repo)
+    assert len(events) == 1
+    assert events[0]["new_sha"] == extra
+    assert "operator_approved" in events[0]["evidence"]
+
+    provider.set_response("worker", batch_worker_payload())
+    resumed = run_lifecycle(repo, run_opts(1, resuming=True), provider)
+    assert resumed.exit_code != ExitCode.GIT_PROTOCOL_ERROR
 
 
 def test_pending_mapping_to_head_is_discarded_when_a_midpoint_equivalent_exists(

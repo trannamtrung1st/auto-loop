@@ -184,6 +184,34 @@ def test_final_revise_accepts_revised_candidate_without_advancing_baseline(tmp_p
     assert f"cycle {cycle_id}" in final_review.lower() or cycle_id in final_review
 
 
+def test_final_revise_allows_second_round_without_new_commit(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    approved = _approve_plan_and_batch(repo, provider)
+    provider.set_worker_final_request(head=approved)
+    provider.set_reviewer_revise("final", "whole-task")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    state = load_lifecycle_state(repo)
+    assert state.pending_revision is not None
+    assert state.pending_revision.round == 2
+    assert head_commit(repo) == approved
+
+    provider.set_response("worker", _final_worker_payload())
+    provider.set_reviewer_complete(approved)
+    outcome = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=3, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert outcome.exit_code == ExitCode.COMPLETE
+    final_state = load_lifecycle_state(repo)
+    assert final_state.last_approved_commit == approved
+
+
 def test_final_round_two_rejects_dirty_tree(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()

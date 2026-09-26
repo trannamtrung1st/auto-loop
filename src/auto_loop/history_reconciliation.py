@@ -15,6 +15,7 @@ from typing import NoReturn
 
 from auto_loop.config import AutoLoopConfig
 from auto_loop.events import append_event, load_events
+from auto_loop.exits import ExitCode
 from auto_loop.git import (
     GitError,
     GitProtocolError,
@@ -22,6 +23,7 @@ from auto_loop.git import (
     head_commit,
     is_ancestor,
     list_commit_shas,
+    resolve_commit,
 )
 from auto_loop.lifecycle import (
     ApprovedTargetEvidence,
@@ -35,6 +37,14 @@ from auto_loop.runtime import save_lifecycle_state
 _ANCESTRY_INVARIANT = (
     "Approved baseline is no longer an ancestor of HEAD (history rewrite detected)"
 )
+
+
+class HistoryReconciliationError(Exception):
+    """Operator history reconciliation preconditions failed."""
+
+    def __init__(self, message: str, *, exit_code: ExitCode = ExitCode.CONFIG_ERROR) -> None:
+        self.exit_code = exit_code
+        super().__init__(message)
 
 
 def reconcile_approved_history(
@@ -142,10 +152,68 @@ def reconcile_approved_history(
         old_sha=old,
         head_sha=head,
         candidates=matches,
-        evidence=[reason, "product_tree_fingerprint"],
+        evidence=_decision_evidence(repo, old, reason, excludes=excludes),
         details=details,
         artifact_root=artifact_root,
     )
+
+
+def apply_operator_history_reconciliation(
+    repo: Path,
+    config: AutoLoopConfig,
+    state: LifecycleState,
+    approved_ref: str,
+    *,
+    artifact_root: Path | None = None,
+) -> LifecycleState:
+    """Apply an operator-chosen approved baseline against a pending reconciliation record."""
+    record = state.history_reconciliation
+    if record is None or not record.needs_decision or record.applied:
+        raise HistoryReconciliationError(
+            "No history reconciliation is waiting for an operator decision. "
+            "Run auto-loop status first."
+        )
+    old = record.old_sha
+    if state.last_approved_commit != old:
+        raise HistoryReconciliationError(
+            "Lifecycle trust state does not match the persisted reconciliation record "
+            f"(last_approved_commit={state.last_approved_commit!r}, old_sha={old!r})."
+        )
+    candidate = resolve_commit(repo, approved_ref)
+    head = head_commit(repo)
+    if not is_ancestor(repo, candidate, head):
+        raise GitProtocolError(
+            "Operator-approved commit is not an ancestor of current HEAD",
+            commits={"Approved candidate": candidate, "HEAD": head},
+        )
+    excludes = product_excludes(config)
+    if record.candidates:
+        allowed = {resolve_commit(repo, item) for item in record.candidates}
+        if candidate not in allowed:
+            short = ", ".join(sorted({sha[:7] for sha in allowed}))
+            raise HistoryReconciliationError(
+                f"Approved candidate {candidate[:7]} is not one of the persisted "
+                f"equivalent commits ({short})."
+            )
+    else:
+        _assert_operator_product_equivalence(repo, old, candidate, record, excludes=excludes)
+    fingerprint = commit_product_tree_fingerprint(repo, candidate, excludes=excludes)
+    evidence = list(record.evidence)
+    if "operator_approved" not in evidence:
+        evidence.append("operator_approved")
+    if f"fingerprint:{fingerprint}" not in evidence:
+        evidence.append(f"fingerprint:{fingerprint}")
+    evidence.append("ancestor_of_head")
+    pending = HistoryReconciliation(
+        old_sha=old,
+        new_sha=candidate,
+        head_sha=head,
+        evidence=evidence,
+        candidates=record.candidates or [candidate],
+        applied=False,
+        needs_decision=False,
+    )
+    return _finish_apply(repo, config, state, pending, artifact_root=artifact_root)
 
 
 def _approved_is_ancestor(repo: Path, approved: str, head: str) -> bool:
@@ -193,6 +261,57 @@ def _matching_commits(
         if fingerprint == target:
             matches.append(sha)
     return matches
+
+
+def _decision_evidence(
+    repo: Path,
+    old_sha: str,
+    reason: str,
+    *,
+    excludes: tuple[str, ...],
+) -> list[str]:
+    evidence = [reason, "product_tree_fingerprint"]
+    if commit_exists(repo, old_sha):
+        fingerprint = commit_product_tree_fingerprint(repo, old_sha, excludes=excludes)
+        evidence.append(f"fingerprint:{fingerprint}")
+    return evidence
+
+
+def _fingerprint_from_evidence(evidence: list[str]) -> str | None:
+    for item in evidence:
+        if item.startswith("fingerprint:"):
+            return item.split(":", 1)[1]
+    return None
+
+
+def _assert_operator_product_equivalence(
+    repo: Path,
+    old_sha: str,
+    candidate: str,
+    record: HistoryReconciliation,
+    *,
+    excludes: tuple[str, ...],
+) -> None:
+    candidate_fp = commit_product_tree_fingerprint(repo, candidate, excludes=excludes)
+    if commit_exists(repo, old_sha):
+        old_fp = commit_product_tree_fingerprint(repo, old_sha, excludes=excludes)
+        if old_fp != candidate_fp:
+            raise HistoryReconciliationError(
+                "Operator-approved commit does not match the old approved product tree.",
+                exit_code=ExitCode.GIT_PROTOCOL_ERROR,
+            )
+        return
+    stored = _fingerprint_from_evidence(record.evidence)
+    if stored is None:
+        raise HistoryReconciliationError(
+            "Cannot verify product equivalence without persisted candidates or a "
+            "stored fingerprint. Restore the old commit object or re-run detection."
+        )
+    if stored != candidate_fp:
+        raise HistoryReconciliationError(
+            "Operator-approved commit does not match the stored product-tree fingerprint.",
+            exit_code=ExitCode.GIT_PROTOCOL_ERROR,
+        )
 
 
 def _evidence(repo: Path, old: str, candidate: str, fingerprint: str) -> list[str]:

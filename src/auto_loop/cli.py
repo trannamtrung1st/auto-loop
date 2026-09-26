@@ -22,7 +22,12 @@ from auto_loop.run_inputs import RunInputError, goal_summary, prepare_repo_for_r
 from auto_loop.run_prerequisites import RunPreconditionError
 from auto_loop.status_report import build_status_report
 from auto_loop.stop_control import StopError, request_remote_stop
+from auto_loop.history_reconciliation import (
+    HistoryReconciliationError,
+    apply_operator_history_reconciliation,
+)
 from auto_loop.init_cmd import InitError, run_init
+from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 
 app = typer.Typer(
     name="auto-loop",
@@ -30,7 +35,8 @@ app = typer.Typer(
         "Run Auto Loop from one explicit run manifest and one task document.\n\n"
         "  auto-loop run .ai/run.yaml\n"
         "  auto-loop status .ai/run.yaml\n"
-        "  auto-loop resume .ai/run.yaml"
+        "  auto-loop resume .ai/run.yaml\n"
+        "  auto-loop reconcile-history .ai/run.yaml --approved <sha>"
     ),
     no_args_is_help=True,
     add_completion=False,
@@ -193,6 +199,46 @@ def resume_cmd(
     """Continue the stored run using its frozen configuration and task snapshot."""
     source = _resolve_operational(run_config)
     _run_prepared(source, resume=True, verbose=verbose, quiet=quiet)
+
+
+@app.command("reconcile-history")
+def reconcile_history_cmd(
+    run_config: ConfigArgument,
+    approved: Annotated[
+        str,
+        typer.Option(
+            "--approved",
+            help="Rebased commit to treat as the new approved baseline.",
+        ),
+    ],
+) -> None:
+    """Record an operator-approved history remap and update lifecycle trust state."""
+    source = _resolve_operational(run_config)
+    state = load_lifecycle_state(source.workspace, source.artifact_root)
+    if state is None:
+        typer.echo("No active lifecycle state to reconcile.", err=True)
+        raise typer.Exit(code=int(ExitCode.CONFIG_ERROR))
+    try:
+        state = apply_operator_history_reconciliation(
+            source.workspace,
+            source.config,
+            state,
+            approved,
+            artifact_root=source.artifact_root,
+        )
+        save_lifecycle_state(source.workspace, state, artifact_root=source.artifact_root)
+    except HistoryReconciliationError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(exc.exit_code)) from exc
+    except GitProtocolError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(ExitCode.GIT_PROTOCOL_ERROR)) from exc
+    new_sha = state.last_approved_commit or approved
+    typer.echo(
+        f"History reconciled: approved baseline remapped to {new_sha[:7]} "
+        f"({new_sha}). Resume with auto-loop resume."
+    )
+    raise typer.Exit(code=int(ExitCode.COMPLETE))
 
 
 @app.command("status")

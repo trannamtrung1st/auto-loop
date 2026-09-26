@@ -96,3 +96,4 @@ def test_status_reports_history_reconciliation_decision(tmp_path: Path):
     assert "status: NEEDS HISTORY RECONCILIATION" in report
     assert "approved baseline: unchanged" in report
     assert "bbbbbbb" in report
+    assert "reconcile-history" in report

@@ -300,6 +300,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
                 f"HEAD at detection: {record.head_sha[:7]}",
                 f"candidates: {candidate_text}",
                 "approved baseline: unchanged",
+                f"reconcile: auto-loop reconcile-history {config_rel} --approved <candidate-sha>",
             ]
         )
     if protocol_failure is not None:

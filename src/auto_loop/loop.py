@@ -1313,10 +1313,6 @@ class LifecycleRunner:
                         "Final revision candidate must remain a descendant of the "
                         "approved baseline (history rewrite detected)"
                     )
-                if current_head == approved:
-                    return self._reject_ahead_final_handoff(
-                        state, current_head=current_head, pending=pending
-                    )
             cycle_id, round_no, pending_ctx = self._final_review_cycle(
                 state, result.review.target
             )
