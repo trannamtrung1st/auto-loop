@@ -10,10 +10,11 @@ from auto_loop.events import load_events
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.history_reconciliation import (
-    apply_operator_history_reconciliation,
     reconcile_approved_history,
+    run_operator_history_reconciliation,
 )
 from auto_loop.lifecycle import HistoryReconciliation
+from auto_loop.product_state import commit_product_tree_fingerprint, product_excludes
 from auto_loop.manifest import load_run_manifest
 from auto_loop.paths import resolved_artifact_root
 from auto_loop.providers.scripted import ScriptedProvider
@@ -221,6 +222,82 @@ def test_restart_during_reconciliation_finishes_one_mapping(tmp_path: Path):
     assert len(_reconciliation_events(repo)) == 1
 
 
+def test_reconcile_history_refuses_active_workspace_lock(tmp_path: Path):
+    from typer.testing import CliRunner
+
+    from auto_loop.cli import app
+    from auto_loop.locking import acquire_workspace_lock
+
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approved, original_head = _approve_feature_then_commit_more(repo, provider)
+    _candidate, extra, _new_head = _rewrite_history(
+        repo, approved, original_head, ambiguous=True
+    )
+    run_lifecycle(repo, run_opts(1, resuming=True), provider)
+
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    config, root = _frozen_config(repo)
+    handle = acquire_workspace_lock(repo, state.lifecycle_id, root)
+    try:
+        result = CliRunner().invoke(
+            app,
+            [
+                "reconcile-history",
+                str(repo / ".ai" / "run.yaml"),
+                "--approved",
+                extra,
+            ],
+        )
+    finally:
+        handle.release()
+    assert result.exit_code == int(ExitCode.CONCURRENT_RUN)
+
+
+def test_operator_reconcile_resumes_after_interrupt_mid_apply(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approved, original_head = _approve_feature_then_commit_more(repo, provider)
+    candidate, extra, new_head = _rewrite_history(
+        repo, approved, original_head, ambiguous=True
+    )
+    run_lifecycle(repo, run_opts(1, resuming=True), provider)
+
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    config, root = _frozen_config(repo)
+    excludes = product_excludes(config)
+    fingerprint = commit_product_tree_fingerprint(repo, approved, excludes=excludes)
+    state.last_approved_commit = extra
+    state.history_reconciliation = HistoryReconciliation(
+        old_sha=approved,
+        new_sha=extra,
+        head_sha=new_head,
+        evidence=[
+            "ambiguous",
+            "product_tree_fingerprint",
+            f"fingerprint:{fingerprint}",
+            "operator_approved",
+        ],
+        candidates=[candidate, extra],
+        applied=False,
+        needs_decision=False,
+    )
+    save_lifecycle_state(repo, state)
+
+    assert _reconciliation_events(repo) == []
+
+    resumed = reconcile_approved_history(repo, config, state, artifact_root=root)
+    assert resumed.history_reconciliation is not None
+    assert resumed.history_reconciliation.applied is True
+    assert resumed.last_approved_commit == extra
+    events = _reconciliation_events(repo)
+    assert len(events) == 1
+    assert events[0]["new_sha"] == extra
+    assert "operator_approved" in events[0]["evidence"]
+
+
 def test_operator_reconcile_history_applies_ambiguous_candidate(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
@@ -236,8 +313,8 @@ def test_operator_reconcile_history_applies_ambiguous_candidate(tmp_path: Path):
     state = load_lifecycle_state(repo)
     assert state is not None
     config, root = _frozen_config(repo)
-    state = apply_operator_history_reconciliation(
-        repo, config, state, extra, artifact_root=root
+    state = run_operator_history_reconciliation(
+        repo, config, extra, artifact_root=root
     )
     assert state.last_approved_commit == extra
     assert state.history_reconciliation is not None

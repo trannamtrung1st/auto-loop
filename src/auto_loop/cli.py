@@ -24,10 +24,9 @@ from auto_loop.status_report import build_status_report
 from auto_loop.stop_control import StopError, request_remote_stop
 from auto_loop.history_reconciliation import (
     HistoryReconciliationError,
-    apply_operator_history_reconciliation,
+    run_operator_history_reconciliation,
 )
 from auto_loop.init_cmd import InitError, run_init
-from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 
 app = typer.Typer(
     name="auto-loop",
@@ -214,25 +213,22 @@ def reconcile_history_cmd(
 ) -> None:
     """Record an operator-approved history remap and update lifecycle trust state."""
     source = _resolve_operational(run_config)
-    state = load_lifecycle_state(source.workspace, source.artifact_root)
-    if state is None:
-        typer.echo("No active lifecycle state to reconcile.", err=True)
-        raise typer.Exit(code=int(ExitCode.CONFIG_ERROR))
     try:
-        state = apply_operator_history_reconciliation(
+        state = run_operator_history_reconciliation(
             source.workspace,
             source.config,
-            state,
             approved,
             artifact_root=source.artifact_root,
         )
-        save_lifecycle_state(source.workspace, state, artifact_root=source.artifact_root)
     except HistoryReconciliationError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(exc.exit_code)) from exc
     except GitProtocolError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=int(ExitCode.GIT_PROTOCOL_ERROR)) from exc
+    except ConcurrentRunError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=int(ExitCode.CONCURRENT_RUN)) from exc
     new_sha = state.last_approved_commit or approved
     typer.echo(
         f"History reconciled: approved baseline remapped to {new_sha[:7]} "

@@ -32,7 +32,7 @@ from auto_loop.lifecycle import (
     utc_now,
 )
 from auto_loop.product_state import commit_product_tree_fingerprint, product_excludes
-from auto_loop.runtime import save_lifecycle_state
+from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 
 _ANCESTRY_INVARIANT = (
     "Approved baseline is no longer an ancestor of HEAD (history rewrite detected)"
@@ -59,15 +59,14 @@ def reconcile_approved_history(
     Safe to call again after a crash. A pending record is finished only when its
     candidate is still the unique product-equivalent ancestor of HEAD.
     """
-    old = state.last_approved_commit
-    if not old:
+    if not state.last_approved_commit:
         return state
     excludes = product_excludes(config)
     head = head_commit(repo)
 
     pending = state.history_reconciliation
     if pending is not None and pending.new_sha and not pending.applied and not pending.needs_decision:
-        if _pending_still_unique(repo, pending, excludes=excludes, head=head):
+        if _pending_apply_still_valid(repo, pending, excludes=excludes, head=head):
             return _finish_apply(
                 repo,
                 config,
@@ -75,26 +74,41 @@ def reconcile_approved_history(
                 pending,
                 artifact_root=artifact_root,
             )
-        state.history_reconciliation = None
-        save_lifecycle_state(repo, state, artifact_root=artifact_root)
+        if "operator_approved" not in pending.evidence:
+            state.history_reconciliation = None
+            save_lifecycle_state(repo, state, artifact_root=artifact_root)
+        else:
+            raise GitProtocolError(
+                "Interrupted operator history reconciliation is no longer valid",
+                commits={
+                    "Approved candidate": pending.new_sha or "",
+                    "HEAD": head,
+                },
+            )
 
-    if _approved_is_ancestor(repo, old, head):
+    baseline = state.last_approved_commit
+    pending = state.history_reconciliation
+    if pending is not None and pending.old_sha:
+        if pending.needs_decision or (not pending.applied and pending.new_sha):
+            baseline = pending.old_sha
+
+    if _approved_is_ancestor(repo, baseline, head):
         if state.history_reconciliation is not None and state.history_reconciliation.needs_decision:
             state.history_reconciliation = None
             state.updated_at = utc_now()
             save_lifecycle_state(repo, state, artifact_root=artifact_root)
         return state
 
-    if not commit_exists(repo, old):
+    if not commit_exists(repo, baseline):
         _stop_for_decision(
             repo,
             state,
-            old_sha=old,
+            old_sha=baseline,
             head_sha=head,
             candidates=[],
             evidence=["missing_object"],
             details=(
-                f"Approved commit {old} is not in the repository, so an equivalent "
+                f"Approved commit {baseline} is not in the repository, so an equivalent "
                 "rebased commit cannot be proven.",
                 "Approved baseline was not changed and was not moved to HEAD.",
                 "An explicit operator decision is required.",
@@ -102,13 +116,13 @@ def reconcile_approved_history(
             artifact_root=artifact_root,
         )
 
-    target = commit_product_tree_fingerprint(repo, old, excludes=excludes)
+    target = commit_product_tree_fingerprint(repo, baseline, excludes=excludes)
     matches = _matching_commits(repo, head, target, excludes)
     if len(matches) == 1:
         candidate = matches[0]
-        evidence = _evidence(repo, old, candidate, target)
+        evidence = _evidence(repo, baseline, candidate, target)
         record = HistoryReconciliation(
-            old_sha=old,
+            old_sha=baseline,
             new_sha=candidate,
             head_sha=head,
             evidence=evidence,
@@ -129,7 +143,7 @@ def reconcile_approved_history(
 
     if not matches:
         details = (
-            f"Approved commit {old} is no longer an ancestor of HEAD.",
+            f"Approved commit {baseline} is no longer an ancestor of HEAD.",
             "No commit reachable from HEAD has the same product tree.",
             "Approved baseline was not changed and was not moved to HEAD.",
             "An explicit operator decision is required.",
@@ -138,7 +152,7 @@ def reconcile_approved_history(
     else:
         candidate_lines = tuple(f"  {sha}" for sha in matches)
         details = (
-            f"Approved commit {old} is no longer an ancestor of HEAD.",
+            f"Approved commit {baseline} is no longer an ancestor of HEAD.",
             f"Product-tree mapping is ambiguous ({len(matches)} equivalent commits).",
             "Candidates:",
             *candidate_lines,
@@ -149,10 +163,10 @@ def reconcile_approved_history(
     _stop_for_decision(
         repo,
         state,
-        old_sha=old,
+        old_sha=baseline,
         head_sha=head,
         candidates=matches,
-        evidence=_decision_evidence(repo, old, reason, excludes=excludes),
+        evidence=_decision_evidence(repo, baseline, reason, excludes=excludes),
         details=details,
         artifact_root=artifact_root,
     )
@@ -216,10 +230,96 @@ def apply_operator_history_reconciliation(
     return _finish_apply(repo, config, state, pending, artifact_root=artifact_root)
 
 
+def run_operator_history_reconciliation(
+    repo: Path,
+    config: AutoLoopConfig,
+    approved_ref: str,
+    *,
+    artifact_root: Path | None = None,
+) -> LifecycleState:
+    """Operator reconcile with the same ownership and locking rules as run/resume."""
+    from auto_loop.locking import ConcurrentRunError, acquire_workspace_lock
+    from auto_loop.stop_control import reconcile_stale_runtime
+
+    reconciled = reconcile_stale_runtime(repo, artifact_root)
+    if reconciled.remote_ownership or reconciled.unverified_ownership:
+        raise ConcurrentRunError(
+            reconciled.message or "Workspace ownership is not verified for local reconcile"
+        )
+    state = load_lifecycle_state(repo, artifact_root)
+    if state is None:
+        raise HistoryReconciliationError(
+            "No active lifecycle state to reconcile. Run auto-loop status first."
+        )
+    lock = acquire_workspace_lock(repo, state.lifecycle_id, artifact_root=artifact_root)
+    try:
+        reloaded = load_lifecycle_state(repo, artifact_root)
+        if reloaded is None:
+            raise HistoryReconciliationError(
+                "Lifecycle state disappeared while acquiring the workspace lock."
+            )
+        return apply_operator_history_reconciliation(
+            repo,
+            config,
+            reloaded,
+            approved_ref,
+            artifact_root=artifact_root,
+        )
+    finally:
+        lock.release()
+
+
 def _approved_is_ancestor(repo: Path, approved: str, head: str) -> bool:
     if not commit_exists(repo, approved):
         return False
     return is_ancestor(repo, approved, head)
+
+
+def _pending_apply_still_valid(
+    repo: Path,
+    pending: HistoryReconciliation,
+    *,
+    excludes: tuple[str, ...],
+    head: str,
+) -> bool:
+    if "operator_approved" in pending.evidence:
+        return _operator_pending_still_valid(repo, pending, excludes=excludes, head=head)
+    return _pending_still_unique(repo, pending, excludes=excludes, head=head)
+
+
+def _operator_pending_still_valid(
+    repo: Path,
+    pending: HistoryReconciliation,
+    *,
+    excludes: tuple[str, ...],
+    head: str,
+) -> bool:
+    candidate = pending.new_sha
+    if candidate is None:
+        return False
+    if not commit_exists(repo, candidate) or not is_ancestor(repo, candidate, head):
+        return False
+    if pending.candidates:
+        allowed = {resolve_commit(repo, item) for item in pending.candidates}
+        if candidate not in allowed:
+            return False
+    try:
+        candidate_fp = commit_product_tree_fingerprint(repo, candidate, excludes=excludes)
+    except GitProtocolError:
+        return False
+    stored = _fingerprint_from_evidence(pending.evidence)
+    if stored is not None and stored != candidate_fp:
+        return False
+    if commit_exists(repo, pending.old_sha):
+        try:
+            old_fp = commit_product_tree_fingerprint(repo, pending.old_sha, excludes=excludes)
+        except GitProtocolError:
+            return False
+        if old_fp != candidate_fp:
+            return False
+    elif stored is None:
+        return False
+    return True
 
 
 def _pending_still_unique(
@@ -340,7 +440,22 @@ def _finish_apply(
     new_sha = pending.new_sha
     if new_sha is None:
         raise GitProtocolError("History reconciliation is missing a candidate commit")
-    _retarget_approved_sha(state, pending.old_sha, new_sha)
+    resolved_new = resolve_commit(repo, new_sha)
+    resolved_old = resolve_commit(repo, pending.old_sha)
+    current = state.last_approved_commit
+    if current == resolved_new:
+        pass
+    elif current == resolved_old:
+        _retarget_approved_sha(state, pending.old_sha, resolved_new)
+    else:
+        raise GitProtocolError(
+            "Lifecycle trust state does not match the pending history reconciliation",
+            commits={
+                "Expected old": resolved_old,
+                "Expected new": resolved_new,
+                "Current": current or "",
+            },
+        )
     state.history_reconciliation = pending
     state.updated_at = utc_now()
     save_lifecycle_state(repo, state, artifact_root=artifact_root)
