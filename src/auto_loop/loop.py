@@ -49,6 +49,7 @@ from auto_loop.models import (
 from auto_loop.product_state import (
     assert_clean_product_tree,
     capture_product_working_fingerprint,
+    dirty_product_tree_handoff_reason,
     is_product_tree_clean,
     product_excludes,
     product_working_fingerprints_equal,
@@ -166,7 +167,6 @@ class LifecycleRunner:
         self.options = options
         self.invoker = invoker
         self._initial_lifecycle_id = initial_lifecycle_id
-        self._dirty_batch_attempts = 0
         self._terminal_exit: ExitCode | None = None
         self._terminal_message: str | None = None
         self._terminal_summary_rendered = False
@@ -775,6 +775,22 @@ class LifecycleRunner:
         """Keep the worker session and re-prompt with the rejection reason."""
         self._reopen_provider_turn(state, "worker", repair_reason=str(exc))
 
+    def _reject_dirty_worker_handoff(self, state: LifecycleState) -> bool:
+        """Reject a batch/final review handoff until the product tree is clean.
+
+        Returns False when the worker is reopened for repair. Raises when protocol
+        repair retries are exhausted.
+        """
+        reason = dirty_product_tree_handoff_reason(self.repo, excludes=self._excludes())
+        if not self._protocol_repair_or_fail(state, "worker", repair_reason=reason):
+            raise GitProtocolError(reason)
+        state.worker_no_progress_streak = 0
+        state.last_worker_progress_key = None
+        state.next_session = "worker"
+        state.updated_at = utc_now()
+        self._save_state(state)
+        return False
+
     def _record_approved_evidence(self, state: LifecycleState, review: ActiveReview) -> None:
         for target in review.targets:
             if target.kind == "git_range":
@@ -1059,11 +1075,9 @@ class LifecycleRunner:
         self,
         state: LifecycleState,
         result: WorkerResult,
-        *,
-        from_replay: bool = False,
     ) -> None:
         try:
-            self._apply_worker_result(state, result, from_replay=from_replay)
+            self._apply_worker_result(state, result)
         except ProtocolParseError as exc:
             self._reopen_provider_turn(state, "worker", repair_reason=format_protocol_repair_reason(exc))
             raise
@@ -1080,8 +1094,6 @@ class LifecycleRunner:
         self,
         state: LifecycleState,
         result: WorkerResult,
-        *,
-        from_replay: bool = False,
     ) -> None:
         if result.status == "blocked":
             append_event(
@@ -1113,7 +1125,7 @@ class LifecycleRunner:
         elif result.review.scope == "plan":
             state.active_review = self._make_plan_update_review(state, result)
         elif result.review.scope == "batch":
-            if not self._accept_batch_tree(state, from_replay=from_replay):
+            if not self._accept_batch_tree(state):
                 return
             self._apply_batch_request(state, result)
         else:
@@ -1141,29 +1153,19 @@ class LifecycleRunner:
             return
         self._persist_after_turn(state)
 
-    def _accept_batch_tree(self, state: LifecycleState, *, from_replay: bool) -> bool:
+    def _accept_batch_tree(self, state: LifecycleState) -> bool:
         """Return False when strict mode sends the worker back to clean the tree."""
         if self.config.git.mode != "required":
             return True
-        try:
-            assert_clean_product_tree(self.repo, excludes=self._excludes())
-        except GitProtocolError:
-            if from_replay:
-                raise
-            self._dirty_batch_attempts += 1
-            if self._dirty_batch_attempts > self.config.limits.protocol_retries:
-                raise
-            state.worker_no_progress_streak = 0
-            state.last_worker_progress_key = None
-            state.next_session = "worker"
-            self._persist_after_turn(state)
-            return False
-        return True
+        if is_product_tree_clean(self.repo, excludes=self._excludes()):
+            return True
+        return self._reject_dirty_worker_handoff(state)
 
     def _apply_final_request(self, state: LifecycleState, result: WorkerResult) -> bool:
         assert result.review is not None
         if self.config.git.mode == "required":
-            assert_clean_product_tree(self.repo, excludes=self._excludes())
+            if not is_product_tree_clean(self.repo, excludes=self._excludes()):
+                return self._reject_dirty_worker_handoff(state)
             current_head = head_commit(self.repo)
             if current_head != state.last_approved_commit:
                 state.next_session = "worker"
@@ -1504,7 +1506,6 @@ class LifecycleRunner:
             if active.has_git_target and active.git_head:
                 new_head = active.git_head
                 state.last_approved_commit = new_head
-                self._dirty_batch_attempts = 0
                 append_event(
                     self.repo,
                     self.config,
@@ -1562,11 +1563,7 @@ class LifecycleRunner:
             self._assert_planning_slot_active(state, "planner")
             self._transition_planner(state, PlannerResult.model_validate(done.result))
         elif done.result_kind == "worker":
-            self._transition_worker(
-                state,
-                WorkerResult.model_validate(done.result),
-                from_replay=True,
-            )
+            self._transition_worker(state, WorkerResult.model_validate(done.result))
         else:
             self._replay_reviewer_completed_turn(state, done.session_slot)
 

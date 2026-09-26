@@ -86,6 +86,34 @@ def is_product_tree_clean(
     return not list_product_changes(repo, excludes=excludes)
 
 
+def format_dirty_product_tree_message(
+    changes: list[ProductChange],
+) -> str:
+    paths = ", ".join(change.path for change in changes[:5])
+    extra = "" if len(changes) <= 5 else f" (+{len(changes) - 5} more)"
+    return f"Product working tree is not clean: {paths}{extra}"
+
+
+def dirty_product_tree_handoff_reason(
+    repo: Path,
+    *,
+    excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES,
+) -> str:
+    changes = list_product_changes(repo, excludes=excludes)
+    detail = format_dirty_product_tree_message(changes)
+    return "\n".join(
+        [
+            "Review handoff rejected: product tree is dirty.",
+            detail,
+            "Reconcile the working tree.",
+            (
+                "Commit intended product changes or revert unintended changes, "
+                "then emit a fresh review request."
+            ),
+        ]
+    )
+
+
 def assert_clean_product_tree(
     repo: Path,
     *,
@@ -94,9 +122,7 @@ def assert_clean_product_tree(
     changes = list_product_changes(repo, excludes=excludes)
     if not changes:
         return
-    paths = ", ".join(change.path for change in changes[:5])
-    extra = "" if len(changes) <= 5 else f" (+{len(changes) - 5} more)"
-    raise GitProtocolError(f"Product working tree is not clean: {paths}{extra}")
+    raise GitProtocolError(format_dirty_product_tree_message(changes))
 
 
 def product_path_fingerprint(path: Path) -> str:
