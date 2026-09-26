@@ -14,7 +14,7 @@ This matrix maps **acceptance criteria (§47)**, **architectural decisions (§48
 | F | Dirty batch suppresses reviewer until protocol exhaustion | `test_scenario_F_dirty_batch_suppresses_reviewer_until_exhaustion` |
 | G | History rewrite → `GIT_PROTOCOL_ERROR` | `test_scenario_G_history_rewrite_stops_with_git_protocol_error` |
 | H | Final blocked when HEAD ahead of approved | `test_scenario_H_final_rejected_when_head_ahead_of_approved` |
-| I | Final revise routes through batch before `COMPLETE` | `test_scenario_I_final_revise_routes_through_batch_before_complete` |
+| I | Final `REVISE` opens another final round before `COMPLETE` | `test_scenario_I_final_revise_accepts_second_final_round_before_complete` |
 | J | Reviewer finding outside diff accepted | `test_scenario_J_reviewer_finding_outside_diff_is_accepted` |
 | K | Persistent planner session id | `tests/integration/test_scenarios_k_t.py::test_scenario_K_persistent_planner_session` |
 | L | Persistent plan-reviewer session id | `test_scenario_L_persistent_plan_reviewer_session` |
@@ -73,7 +73,7 @@ Supporting integration coverage: `test_plan_flow.py`, `test_lifecycle_flows.py`,
 | 6–8 | Planner owns initial plan; worker owns plan after handoff; task authoritative; plan before implementation | `loop._planner_turn`, `loop._worker_turn` plan gates, scenarios B, U, Z |
 | 9–12 | Worker batches; commits before review; controller range; cumulative revise | `git.normalize_batch_range`, scenarios C–D |
 | 13–14 | Reviewer widened scope; PASS advances baseline | `prompts.build_reviewer_prompt`, scenario J |
-| 15–18 | Final HEAD check; holistic final; batch before re-final; reviewer `COMPLETE` | `loop._assert_final_complete_valid`, scenarios H–I |
+| 15–18 | Final HEAD check; holistic final; final `REVISE` re-opens final round; reviewer `COMPLETE` | `loop._apply_final_request`, `loop._assert_final_complete_valid`, scenarios H–I |
 | 19–23 | Artifact-root control; no plan parsing; no session rotation; no auto controller commits; simple state machine | `paths.py`, `lifecycle.py`, `loop.py` |
 | 24–27 | Tool protocol; instruction composition; context paths; repository-root AGENTS/skills | `instructions.py`, `templates/protocol/*`, `AGENTS.md`, `.agents/skills/` |
 | 28 | No extra orchestration without invariant need | — (design stance) |

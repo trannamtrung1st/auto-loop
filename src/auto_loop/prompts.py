@@ -217,7 +217,12 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
             [
                 f"- pending review cycle: {pending.cycle_id} round {pending.round}",
                 f"- pending review target: {pending.scope}/{pending.target}",
-                "- prefer amending the unapproved review-fix commit when Git fixes are needed",
+                (
+                    "- after final REVISE fixes, request final review again for the next "
+                    "round; do not route those fixes through batch review first"
+                    if pending.scope == "final"
+                    else "- prefer amending the unapproved review-fix commit when Git fixes are needed"
+                ),
             ]
         )
     lines.extend(

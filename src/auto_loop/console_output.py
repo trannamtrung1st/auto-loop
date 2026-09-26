@@ -343,6 +343,24 @@ class RunConsole:
         value.append(f" · {_single_line(head)[:7]}", style=_META_STYLE)
         self._row("Baseline", value)
 
+    def baseline_reconciled(self, old: str, new: str) -> None:
+        value = Text()
+        value.append("reconciled", style="bold green")
+        value.append(
+            f" · {_single_line(old)[:7]} -> {_single_line(new)[:7]}",
+            style=_META_STYLE,
+        )
+        self._row("Baseline", value)
+
+    def lifecycle_resumed_progress(self, text: str) -> None:
+        """Plain resume identity so RUNNING is distinct from a completed lifecycle."""
+        if not self._enabled("normal"):
+            return
+        self._finish_stream_line()
+        self._blank()
+        for line in text.splitlines():
+            self._rich.print(Text(line))
+
     def lifecycle_completed(self) -> None:
         self._outcome("COMPLETE", "Lifecycle completed successfully", style="bold green")
 

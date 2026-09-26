@@ -250,6 +250,13 @@ def test_phase_next_session_validation():
     assert any("execution phase" in err for err in session_consistency_errors(state))
 
 
+def test_v2_state_without_history_reconciliation_field_loads():
+    data = create_lifecycle("abc").model_dump(mode="json")
+    data.pop("history_reconciliation")
+    state = LifecycleState.model_validate(migrate_lifecycle_data(data))
+    assert state.history_reconciliation is None
+
+
 def test_runtime_round_trip(tmp_path: Path):
     repo = _repo(tmp_path)
     bootstrap_workspace(repo)

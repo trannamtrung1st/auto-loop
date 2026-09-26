@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import subprocess
@@ -122,7 +123,10 @@ def assert_clean_product_tree(
     changes = list_product_changes(repo, excludes=excludes)
     if not changes:
         return
-    raise GitProtocolError(format_dirty_product_tree_message(changes))
+    raise GitProtocolError(
+        format_dirty_product_tree_message(changes),
+        paths=tuple(change.path for change in changes),
+    )
 
 
 def product_path_fingerprint(path: Path) -> str:
@@ -240,3 +244,39 @@ def product_working_fingerprints_equal(
     legacy_before = sorted([row[:2] for row in before])
     legacy_after = sorted([row[:2] for row in after])
     return legacy_before == legacy_after
+
+
+def commit_product_tree_fingerprint(
+    repo: Path,
+    commit: str,
+    *,
+    excludes: tuple[str, ...] = DEFAULT_PRODUCT_EXCLUDES,
+) -> str:
+    """Content fingerprint of product paths stored in ``commit``.
+
+    Control paths are omitted. Two commits match when they record the same
+    product blobs, even if commit metadata or excluded paths differ.
+    """
+    result = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", commit],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise GitProtocolError(stderr or f"git ls-tree {commit} failed")
+    lines: list[str] = []
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        meta, sep, path_b = record.partition(b"\t")
+        if not sep:
+            continue
+        path = path_b.decode("utf-8", errors="surrogateescape")
+        if is_control_path(path, excludes):
+            continue
+        lines.append(meta.decode("ascii", errors="replace") + "\t" + path)
+    lines.sort()
+    payload = "\n".join(lines).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()

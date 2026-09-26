@@ -72,6 +72,22 @@ def _approve_plan_and_batch(repo: Path, provider: ScriptedProvider) -> str:
     return head_commit(repo)
 
 
+def _final_worker_payload(target: str = "whole-task") -> dict:
+    return {
+        "schema_version": 2,
+        "actor": "worker",
+        "status": "review_requested",
+        "review": {
+            "scope": "final",
+            "target": target,
+            "summary": "requesting whole-task acceptance",
+        },
+        "work_summary": "ready for final review",
+        "verification": [],
+        "notes": [],
+    }
+
+
 def test_final_complete_writes_completion_and_exits_zero(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()
@@ -100,10 +116,10 @@ def test_final_complete_writes_completion_and_exits_zero(tmp_path: Path):
     assert record.initial_approved_plan_sha256
 
 
-def test_final_request_with_unreviewed_head_stays_on_worker(tmp_path: Path):
+def test_final_request_with_unreviewed_head_repairs_worker(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()
-    _approve_plan_and_batch(repo, provider)
+    approved = _approve_plan_and_batch(repo, provider)
     (repo / "extra.txt").write_text("unreviewed\n", encoding="utf-8")
     _git(repo, "add", "extra.txt")
     _git(repo, "commit", "-m", "extra")
@@ -117,9 +133,58 @@ def test_final_request_with_unreviewed_head_stays_on_worker(tmp_path: Path):
     assert state.next_actor == "worker"
     assert state.active_review is None
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    assert state.inflight is not None
+    assert state.inflight.repair_reason is not None
+    assert "Final handoff rejected" in state.inflight.repair_reason
+    assert approved[:7] in state.inflight.repair_reason
 
 
-def test_final_revise_requires_batch_before_repeat(tmp_path: Path):
+def test_final_revise_accepts_revised_candidate_without_advancing_baseline(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    approved = _approve_plan_and_batch(repo, provider)
+    provider.set_worker_final_request(head=approved)
+    provider.set_reviewer_revise("final", "whole-task")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    state = load_lifecycle_state(repo)
+    assert state.pending_revision is not None
+    assert state.pending_revision.scope == "final"
+    assert state.pending_revision.round == 2
+    cycle_id = state.pending_revision.cycle_id
+    assert state.last_approved_commit == approved
+
+    (repo / "fix.txt").write_text("fix\n", encoding="utf-8")
+    _git(repo, "add", "fix.txt")
+    _git(repo, "commit", "-m", "fix")
+    revised = head_commit(repo)
+    assert revised != approved
+
+    provider.set_response("worker", _final_worker_payload())
+    provider.set_reviewer_complete(revised)
+    outcome = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=3, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert outcome.exit_code == ExitCode.COMPLETE
+    final_state = load_lifecycle_state(repo)
+    assert final_state.status.value == "completed"
+    assert final_state.last_approved_commit == revised
+    record = load_completion_record(repo)
+    assert record.final_commit == revised
+    assert record.last_approved_commit == revised
+
+    # Reviewer turn should have been round 2 on the same cycle.
+    reviews = sorted((repo / ".ai" / "auto-loop" / "reviews").glob("*.md"))
+    final_review = reviews[-1].read_text(encoding="utf-8")
+    assert f"cycle {cycle_id}" in final_review.lower() or cycle_id in final_review
+
+
+def test_final_round_two_rejects_dirty_tree(tmp_path: Path):
     repo = _repo(tmp_path)
     provider = ScriptedProvider()
     approved = _approve_plan_and_batch(repo, provider)
@@ -133,35 +198,100 @@ def test_final_revise_requires_batch_before_repeat(tmp_path: Path):
     (repo / "fix.txt").write_text("fix\n", encoding="utf-8")
     _git(repo, "add", "fix.txt")
     _git(repo, "commit", "-m", "fix")
-    head = head_commit(repo)
-    provider.set_response(
-        "worker",
-        {
-            "schema_version": 2,
-            "actor": "worker",
-            "status": "review_requested",
-            "review": {
-                "scope": "batch",
-                "target": "W02",
-                "summary": "fix batch",
-                "base_commit": approved,
-                "head_commit": head,
-            },
-            "work_summary": "fixed",
-            "verification": [],
-            "notes": [],
-        },
-    )
-    provider.set_reviewer_pass("batch", "W02")
-    provider.set_worker_final_request(head=head)
-    provider.set_reviewer_complete(head)
+    (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+    provider.set_response("worker", _final_worker_payload())
+    provider.set_response("worker", _final_worker_payload())
     outcome = run_lifecycle(
         repo,
         RunOptions("auto", "auto", max_turns=4, max_runtime_minutes=60, verbose=False, quiet=True),
         provider,
     )
-    assert outcome.exit_code == ExitCode.COMPLETE
-    assert load_completion_record(repo).final_commit == head
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state.last_approved_commit == approved
+    assert state.active_review is None
+
+
+def test_final_round_two_rejects_non_descendant_history(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    approved = _approve_plan_and_batch(repo, provider)
+    provider.set_worker_final_request(head=approved)
+    provider.set_reviewer_revise("final", "whole-task")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    (repo / "fix.txt").write_text("fix\n", encoding="utf-8")
+    _git(repo, "add", "fix.txt")
+    _git(repo, "commit", "-m", "fix")
+    _git(repo, "checkout", "--orphan", "rewritten")
+    _git(repo, "add", "fix.txt")
+    _git(repo, "commit", "-m", "rewritten fix")
+    provider.set_response("worker", _final_worker_payload())
+    outcome = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state.last_approved_commit == approved
+
+
+def test_final_round_two_rejects_wrong_target(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    approved = _approve_plan_and_batch(repo, provider)
+    provider.set_worker_final_request(head=approved)
+    provider.set_reviewer_revise("final", "whole-task")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    (repo / "fix.txt").write_text("fix\n", encoding="utf-8")
+    _git(repo, "add", "fix.txt")
+    _git(repo, "commit", "-m", "fix")
+    provider.set_response("worker", _final_worker_payload(target="other-task"))
+    outcome = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=1, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state.last_approved_commit == approved
+    assert state.inflight is not None
+    assert state.inflight.repair_reason is not None
+    assert "different final target" in state.inflight.repair_reason
+
+
+def test_final_complete_rejects_stale_reviewed_head(tmp_path: Path):
+    repo = _repo(tmp_path)
+    provider = ScriptedProvider()
+    approved = _approve_plan_and_batch(repo, provider)
+    provider.set_worker_final_request(head=approved)
+    provider.set_reviewer_revise("final", "whole-task")
+    run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    (repo / "fix.txt").write_text("fix\n", encoding="utf-8")
+    _git(repo, "add", "fix.txt")
+    _git(repo, "commit", "-m", "fix")
+    provider.set_response("worker", _final_worker_payload())
+    provider.set_reviewer_complete(approved)
+    outcome = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=3, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    state = load_lifecycle_state(repo)
+    assert state.last_approved_commit == approved
 
 
 def test_complete_normal_mode_marks_terminal_summary_rendered(tmp_path: Path):

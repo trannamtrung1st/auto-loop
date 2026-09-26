@@ -110,6 +110,23 @@ class ProtocolRunFailure(BaseModel):
     diagnostic_code: str | None = None
 
 
+class HistoryReconciliation(BaseModel):
+    """Durable approved-baseline remap, including an apply interrupted mid-write.
+
+    ``needs_decision`` means the controller proved the approved commit is gone from
+    HEAD's ancestry and refused to guess a replacement. ``applied`` means
+    ``last_approved_commit`` and ``approved_evidence`` already name ``new_sha``.
+    """
+
+    old_sha: str
+    new_sha: str | None = None
+    head_sha: str
+    evidence: list[str] = Field(default_factory=list)
+    candidates: list[str] = Field(default_factory=list)
+    applied: bool = False
+    needs_decision: bool = False
+
+
 class BlockedResumeContext(BaseModel):
     """One-shot implementer context after consuming a blocked suspension."""
 
@@ -178,6 +195,7 @@ class LifecycleState(BaseModel):
     last_worker_progress_key: str | None = None
     legacy_v1_sessions: dict[str, Any] | None = None
     blocked_resume_context: BlockedResumeContext | None = None
+    history_reconciliation: HistoryReconciliation | None = None
     started_at: datetime
     updated_at: datetime
 
@@ -398,6 +416,7 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
         data = dict(data)
         data.setdefault("blocked_resume_context", None)
         data.setdefault("last_run_failure", None)
+        data.setdefault("history_reconciliation", None)
         return data
     if version != 1:
         raise ValueError(f"Unsupported lifecycle schema_version {version}")

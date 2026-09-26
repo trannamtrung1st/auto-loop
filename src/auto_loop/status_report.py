@@ -72,7 +72,70 @@ def _phase_label(state) -> str:
     return state.phase
 
 
-def _run_label(status: str, *, protocol_interrupted: bool = False) -> str:
+def _resume_scope(state) -> str | None:
+    if state.active_review is not None:
+        return state.active_review.scope
+    if state.pending_revision is not None:
+        return state.pending_revision.scope
+    done = state.completed_provider_turn
+    if done is not None and isinstance(done.result, dict):
+        review = done.result.get("review")
+        if isinstance(review, dict):
+            scope = review.get("scope")
+            if isinstance(scope, str):
+                return scope
+    return None
+
+
+def resume_phase_label(state) -> str:
+    """Operator phase for a resume that is still in progress."""
+    slot = state.inflight.session_slot if state.inflight is not None else state.next_session
+    scope = _resume_scope(state)
+    if scope == "final" and slot == "worker":
+        return "final handoff"
+    if scope == "final":
+        return "final review"
+    if scope == "batch" and slot == "worker":
+        return "batch handoff"
+    if scope == "batch":
+        return "batch review"
+    if scope == "plan" or slot == "plan_reviewer":
+        return "plan review"
+    if state.phase == "planning":
+        return "planning"
+    if slot == "reviewer":
+        return "review"
+    return "execution"
+
+
+def resume_progress_text(state) -> str:
+    """Identity block printed when a resume continues a live lifecycle."""
+    slot = state.inflight.session_slot if state.inflight is not None else state.next_session
+    turn = state.inflight.turn if state.inflight is not None else state.turn
+    return "\n".join(
+        [
+            "Lifecycle resumed",
+            f"Phase: {resume_phase_label(state)}",
+            f"Session: {slot}",
+            f"Turn: {turn}",
+            f"Status: {state.status.value.upper()}",
+        ]
+    )
+
+
+def _needs_history_reconciliation(state) -> bool:
+    record = state.history_reconciliation
+    return bool(record is not None and record.needs_decision and not record.applied)
+
+
+def _run_label(
+    status: str,
+    *,
+    protocol_interrupted: bool = False,
+    needs_history_reconciliation: bool = False,
+) -> str:
+    if needs_history_reconciliation:
+        return "NEEDS HISTORY RECONCILIATION"
     if protocol_interrupted and status == "running":
         return "interrupted · protocol error"
     mapping = {
@@ -163,8 +226,15 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
 
     reviews_display = f"{reviews_rel}/" if not str(reviews_rel).endswith("/") else reviews_rel
     protocol_failure = state.last_run_failure
+    needs_history = _needs_history_reconciliation(state)
+    status_value = "NEEDS HISTORY RECONCILIATION" if needs_history else state.status.value
+    run_label = _run_label(
+        state.status.value,
+        protocol_interrupted=protocol_failure is not None,
+        needs_history_reconciliation=needs_history,
+    )
     lines = [
-        f"Run:        {_run_label(state.status.value, protocol_interrupted=protocol_failure is not None)}",
+        f"Run:        {run_label}",
         f"Phase:      {_phase_label(state)}",
         f"Planner:    {_session_label(state.sessions['planner'].status, state.sessions['planner'].session_id)}",
         f"Worker:     {_session_label(state.sessions['worker'].status, state.sessions['worker'].session_id)}",
@@ -173,7 +243,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         *_task_resource_line(config),
         f"Reviews:    {reviews_display}",
         "",
-        f"status: {state.status.value}",
+        f"status: {status_value}",
         f"lifecycle: {state.lifecycle_id}",
         f"phase: {state.phase}",
         f"turn: {state.turn}",
@@ -217,6 +287,20 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         lines.append(
             f"inflight: {inflight.session_slot} turn {inflight.turn}{suffix} "
             f"since {inflight.started_at.isoformat()}"
+        )
+    if needs_history and state.history_reconciliation is not None:
+        record = state.history_reconciliation
+        short = [sha[:7] for sha in record.candidates]
+        candidate_text = ", ".join(short) if short else "(none proven)"
+        lines.extend(
+            [
+                "",
+                "history reconciliation: approved baseline is not an ancestor of HEAD",
+                f"old approved: {record.old_sha[:7]}",
+                f"HEAD at detection: {record.head_sha[:7]}",
+                f"candidates: {candidate_text}",
+                "approved baseline: unchanged",
+            ]
         )
     if protocol_failure is not None:
         reason_line = _protocol_failure_reason_line(protocol_failure.repair_reason)

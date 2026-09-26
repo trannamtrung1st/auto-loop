@@ -12,6 +12,7 @@ from tests.integration.scenario_harness import run_lifecycle
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.terminal_records import load_completion_record
+
 from tests.integration.scenario_harness import (
     PromptCapturingProvider,
     approve_plan,
@@ -159,6 +160,16 @@ def test_scenario_G_history_rewrite_stops_with_git_protocol_error(tmp_path: Path
     subprocess.run(["git", "reset", "--hard", baseline], cwd=repo, check=True)
     outcome = run_lifecycle(repo, run_opts(1), provider)
     assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert outcome.message is not None
+    assert "Git protocol error" in outcome.message
+    assert "history rewrite" in outcome.message
+    assert "State: preserved" in outcome.message
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.last_approved_commit is not None
+    assert state.last_approved_commit != baseline
+    assert state.last_approved_commit in outcome.message
+    assert baseline in outcome.message
 
 
 def test_scenario_H_final_rejected_when_head_ahead_of_approved(tmp_path: Path):
@@ -180,7 +191,7 @@ def test_scenario_H_final_rejected_when_head_ahead_of_approved(tmp_path: Path):
     assert outcome.exit_code == ExitCode.LIMIT_REACHED
 
 
-def test_scenario_I_final_revise_routes_through_batch_before_complete(tmp_path: Path):
+def test_scenario_I_final_revise_accepts_second_final_round_before_complete(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     approve_plan(repo, provider)
@@ -193,13 +204,13 @@ def test_scenario_I_final_revise_routes_through_batch_before_complete(tmp_path: 
     provider.set_reviewer_revise("final", "whole-task")
     run_lifecycle(repo, run_opts(2), provider)
     head_d = commit_file(repo, "fix.txt", "fix\n", "fix D")
-    provider.set_response("worker", batch_worker_payload("W02"))
-    provider.set_reviewer_pass("batch", "W02")
+    assert load_lifecycle_state(repo).last_approved_commit == approved_c
     provider.set_worker_final_request(head=head_d)
     provider.set_reviewer_complete(head_d)
-    outcome = run_lifecycle(repo, run_opts(4), provider)
+    outcome = run_lifecycle(repo, run_opts(3), provider)
     assert outcome.exit_code == ExitCode.COMPLETE
     assert load_completion_record(repo).final_commit == head_d
+    assert load_lifecycle_state(repo).last_approved_commit == head_d
 
 
 def test_scenario_J_reviewer_finding_outside_diff_is_accepted(tmp_path: Path):

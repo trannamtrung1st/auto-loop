@@ -17,7 +17,9 @@ from auto_loop.git import (
     GitProtocolError,
     ReviewRequestError,
     assert_approved_baseline_ancestry,
+    format_git_protocol_error,
     head_commit,
+    is_ancestor,
     resolve_commit,
 )
 from auto_loop.git_policy import git_usable, repository_required_error
@@ -114,6 +116,8 @@ from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
 from auto_loop.turn_logs import TurnLogWriter, prune_run_history, write_unseen_stream_lines
 from auto_loop.blocked_resume import reconcile_blocked_resume
+from auto_loop.history_reconciliation import reconcile_approved_history
+from auto_loop.status_report import resume_progress_text
 from auto_loop.run_inputs import RunInputs, load_matching_blocked_record, load_matching_completion_record
 from auto_loop.paths import resolved_artifact_root
 from auto_loop.run_prerequisites import RunPreconditionError, ensure_run_prerequisites
@@ -680,6 +684,39 @@ class LifecycleRunner:
             return None
         return head_commit(self.repo)
 
+    def _git_protocol_outcome(self, exc: GitProtocolError) -> RunOutcome:
+        state = self._load_state()
+        approved = state.last_approved_commit if state is not None else None
+        head = None
+        try:
+            head = self._optional_head()
+        except GitProtocolError:
+            head = None
+        return RunOutcome(
+            exit_code=ExitCode.GIT_PROTOCOL_ERROR,
+            state=state,
+            message=format_git_protocol_error(exc, approved=approved, head=head),
+        )
+
+    def _reconcile_approved_history(self, state: LifecycleState) -> LifecycleState:
+        if not (
+            self.config.git.protect_approved_history
+            and self._git_usable()
+            and state.last_approved_commit
+        ):
+            return state
+        before = state.last_approved_commit
+        state = reconcile_approved_history(
+            self.repo,
+            self.config,
+            state,
+            artifact_root=self.artifact_root,
+        )
+        after = state.last_approved_commit
+        if before and after and before != after:
+            self._console.baseline_reconciled(before, after)
+        return state
+
     def _product_snapshot(self) -> tuple[str | None, list[list[str]] | None]:
         head, rows = capture_product_working_fingerprint(
             self.repo, excludes=self._excludes(), config=self.config
@@ -775,6 +812,72 @@ class LifecycleRunner:
         """Keep the worker session and re-prompt with the rejection reason."""
         self._reopen_provider_turn(state, "worker", repair_reason=str(exc))
 
+    def _pending_final_revision(
+        self, state: LifecycleState, target: str
+    ) -> PendingRevision | None:
+        pending = state.pending_revision
+        if pending is None or pending.scope != "final" or pending.target != target:
+            return None
+        return pending
+
+    def _unapproved_final_handoff_reason(
+        self,
+        state: LifecycleState,
+        *,
+        current_head: str,
+        pending: PendingRevision | None,
+        wrong_target: bool = False,
+    ) -> str:
+        approved = state.last_approved_commit or "n/a"
+        lines = ["Final handoff rejected."]
+        if wrong_target and pending is not None:
+            lines.append(
+                f"A final REVISE is pending for {pending.target}, "
+                f"but the worker requested a different final target."
+            )
+        elif pending is not None:
+            lines.append(
+                f"HEAD {current_head[:7]} is not the revised final candidate for "
+                f"pending cycle {pending.cycle_id} round {pending.round}."
+            )
+            lines.append(
+                f"The approved baseline remains {approved[:7]}; commit revision fixes "
+                "on top of that baseline, then request final review again."
+            )
+        else:
+            lines.append(
+                f"HEAD {current_head[:7]} contains production changes not covered by "
+                f"the approved baseline {approved[:7]}."
+            )
+            lines.append(
+                "Submit those changes for batch review before requesting final review."
+            )
+        lines.append("Reconcile Git state, then emit a fresh final review request.")
+        return "\n".join(lines)
+
+    def _reject_ahead_final_handoff(
+        self,
+        state: LifecycleState,
+        *,
+        current_head: str,
+        pending: PendingRevision | None = None,
+        wrong_target: bool = False,
+    ) -> bool:
+        reason = self._unapproved_final_handoff_reason(
+            state,
+            current_head=current_head,
+            pending=pending,
+            wrong_target=wrong_target,
+        )
+        if not self._protocol_repair_or_fail(state, "worker", repair_reason=reason):
+            raise GitProtocolError(reason)
+        state.worker_no_progress_streak = 0
+        state.last_worker_progress_key = None
+        state.next_session = "worker"
+        state.updated_at = utc_now()
+        self._save_state(state)
+        return False
+
     def _reject_dirty_worker_handoff(self, state: LifecycleState) -> bool:
         """Reject a batch/final review handoff until the product tree is clean.
 
@@ -865,9 +968,18 @@ class LifecycleRunner:
                 )
             return
         current_head = head_commit(self.repo)
-        if current_head != state.last_approved_commit:
+        expected_head = active.current_candidate_head or state.last_approved_commit
+        if expected_head is None:
+            raise GitProtocolError("Final COMPLETE requires a Git candidate head")
+        expected_resolved = resolve_commit(self.repo, expected_head)
+        if current_head != expected_resolved:
             raise GitProtocolError(
-                "COMPLETE requires HEAD to equal last_approved_commit"
+                "COMPLETE requires HEAD to equal the active final candidate commit"
+            )
+        approved_base = active.approved_base_commit or state.last_approved_commit
+        if approved_base and not is_ancestor(self.repo, approved_base, current_head):
+            raise GitProtocolError(
+                "COMPLETE final candidate is not a descendant of the approved baseline"
             )
         if result.reviewed_head_commit and resolve_commit(
             self.repo, result.reviewed_head_commit
@@ -1161,23 +1273,71 @@ class LifecycleRunner:
             return True
         return self._reject_dirty_worker_handoff(state)
 
+    def _final_review_cycle(
+        self, state: LifecycleState, target: str
+    ) -> tuple[str, int, PendingRevision | None]:
+        pending = self._pending_final_revision(state, target)
+        if pending is not None:
+            return pending.cycle_id, pending.round, pending
+        return next_cycle_id(state), 1, None
+
     def _apply_final_request(self, state: LifecycleState, result: WorkerResult) -> bool:
         assert result.review is not None
         if self.config.git.mode == "required":
             if not is_product_tree_clean(self.repo, excludes=self._excludes()):
                 return self._reject_dirty_worker_handoff(state)
             current_head = head_commit(self.repo)
-            if current_head != state.last_approved_commit:
-                state.next_session = "worker"
-                self._persist_after_turn(state)
-                return False
+            approved = state.last_approved_commit
+            pending_any = state.pending_revision
+            if pending_any is not None and pending_any.scope == "final":
+                if pending_any.target != result.review.target:
+                    return self._reject_ahead_final_handoff(
+                        state,
+                        current_head=current_head,
+                        pending=pending_any,
+                        wrong_target=True,
+                    )
+                pending = pending_any
+            else:
+                pending = None
+            if pending is None:
+                if approved and current_head != approved:
+                    return self._reject_ahead_final_handoff(
+                        state, current_head=current_head, pending=None
+                    )
+            else:
+                if not approved:
+                    raise GitProtocolError("Final revision requires an approved Git baseline")
+                if not is_ancestor(self.repo, approved, current_head):
+                    raise GitProtocolError(
+                        "Final revision candidate must remain a descendant of the "
+                        "approved baseline (history rewrite detected)"
+                    )
+                if current_head == approved:
+                    return self._reject_ahead_final_handoff(
+                        state, current_head=current_head, pending=pending
+                    )
+            cycle_id, round_no, pending_ctx = self._final_review_cycle(
+                state, result.review.target
+            )
+            if pending_ctx is not None:
+                production_head = (
+                    pending_ctx.production_head_commit
+                    or pending_ctx.last_reviewed_head_commit
+                    or approved
+                    or current_head
+                )
+            else:
+                production_head = current_head
             state.active_review = ActiveReview(
-                cycle_id=next_cycle_id(state),
+                cycle_id=cycle_id,
+                round=round_no,
                 scope="final",
                 target=result.review.target,
                 summary=result.review.summary,
                 session_purpose="reviewer",
-                approved_base_commit=state.last_approved_commit,
+                approved_base_commit=approved,
+                production_head_commit=production_head,
                 current_candidate_head=current_head,
                 worker_summary=result.work_summary,
                 plan_sha256=self._plan_hash(),
@@ -1196,13 +1356,25 @@ class LifecycleRunner:
             raise ReviewRequestError(
                 "Final review requires explicit path, content, or Git targets"
             )
+        cycle_id, round_no, pending_ctx = self._final_review_cycle(
+            state, result.review.target
+        )
+        production_head = self._optional_head()
+        if pending_ctx is not None:
+            production_head = (
+                pending_ctx.production_head_commit
+                or pending_ctx.last_reviewed_head_commit
+                or production_head
+            )
         state.active_review = ActiveReview(
-            cycle_id=next_cycle_id(state),
+            cycle_id=cycle_id,
+            round=round_no,
             scope="final",
             target=result.review.target,
             summary=result.review.summary,
             session_purpose="reviewer",
             approved_base_commit=state.last_approved_commit,
+            production_head_commit=production_head,
             current_candidate_head=self._optional_head(),
             worker_summary=result.work_summary,
             plan_sha256=self._plan_hash(),
@@ -1458,6 +1630,12 @@ class LifecycleRunner:
             self._record_approved_evidence(state, active)
             task_hash, plan_hash = task_and_plan_hashes(self.repo, self.config)
             final_head = self._optional_head()
+            if self.config.git.mode == "required" and active.current_candidate_head:
+                state.last_approved_commit = resolve_commit(
+                    self.repo, active.current_candidate_head
+                )
+                final_head = state.last_approved_commit
+            state.pending_revision = None
             save_completion_record(
                 self.repo,
                 CompletionRecord(
@@ -1578,11 +1756,8 @@ class LifecycleRunner:
     def _run_loop(self) -> RunOutcome:
         try:
             state = self._load_or_create_state()
-        except GitProtocolError:
-            return RunOutcome(
-                exit_code=ExitCode.GIT_PROTOCOL_ERROR,
-                state=self._load_state(),
-            )
+        except GitProtocolError as exc:
+            return self._git_protocol_outcome(exc)
         register_active_run(self.repo, state.lifecycle_id, artifact_root=self.artifact_root)
         if self.options.resuming:
             state = reconcile_blocked_resume(
@@ -1610,6 +1785,12 @@ class LifecycleRunner:
         )
         self._reconcile_stale_inflight(state)
         state = self._load_state() or state
+        try:
+            state = self._reconcile_approved_history(state)
+        except GitProtocolError as exc:
+            return self._git_protocol_outcome(exc)
+        if self.options.resuming:
+            self._console.lifecycle_resumed_progress(resume_progress_text(state))
         if state.inflight is not None:
             append_event(
                 self.repo,
@@ -1639,6 +1820,7 @@ class LifecycleRunner:
                     and self._git_usable()
                     and state.last_approved_commit
                 ):
+                    state = self._reconcile_approved_history(state)
                     assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
                 if state.completed_provider_turn is not None and state.inflight is None:
                     self._replay_completed_turn(state)
@@ -1655,11 +1837,8 @@ class LifecycleRunner:
                 state = self._load_state() or state
                 if self._terminal_exit is not None:
                     break
-        except GitProtocolError:
-            return RunOutcome(
-                exit_code=ExitCode.GIT_PROTOCOL_ERROR,
-                state=self._load_state(),
-            )
+        except GitProtocolError as exc:
+            return self._git_protocol_outcome(exc)
         except SessionError as exc:
             return RunOutcome(
                 exit_code=ExitCode.SESSION_ERROR,

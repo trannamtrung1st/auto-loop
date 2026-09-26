@@ -9,6 +9,7 @@ from auto_loop.git import (
     GitProtocolError,
     ReviewRequestError,
     assert_approved_baseline_ancestry,
+    format_git_protocol_error,
     git_has_commits,
     head_commit,
     head_commit_optional,
@@ -132,6 +133,37 @@ def test_unknown_worker_head_ref_raises_review_request_error(tmp_path: Path):
             require_clean=False,
             allow_empty=True,
         )
+
+
+def test_format_git_protocol_error_names_invariant_shas_and_preserved_state(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    approved = head_commit(repo)
+    (repo / "x.txt").write_text("x", encoding="utf-8")
+    _git(repo, "add", "x.txt")
+    _git(repo, "commit", "-m", "x")
+    _git(repo, "checkout", "--orphan", "rewritten")
+    (repo / "README.md").write_text("rewritten\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "new root")
+    head = head_commit(repo)
+    with pytest.raises(GitProtocolError, match="history rewrite") as caught:
+        assert_approved_baseline_ancestry(repo, approved)
+    text = format_git_protocol_error(caught.value)
+    assert text.splitlines()[0] == "Git protocol error"
+    assert "Invariant: Approved baseline is no longer an ancestor of HEAD" in text
+    assert f"Approved: {approved}" in text
+    assert f"HEAD: {head}" in text
+    assert "State: preserved" in text
+
+
+def test_dirty_tree_protocol_error_names_paths(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    (repo / "dirty.txt").write_text("d", encoding="utf-8")
+    with pytest.raises(GitProtocolError, match="not clean") as caught:
+        assert_clean_product_tree(repo)
+    text = format_git_protocol_error(caught.value)
+    assert "Paths: dirty.txt" in text
+    assert "State: preserved" in text
 
 
 def test_history_rewrite_raises_git_protocol_error(tmp_path: Path):

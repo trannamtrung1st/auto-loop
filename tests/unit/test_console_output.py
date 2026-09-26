@@ -72,6 +72,30 @@ def test_start_banner_mentions_goal_and_tool_managed_state():
     assert "━" in text
 
 
+def test_resume_progress_prints_running_and_stays_quiet():
+    console, stream = _console()
+    console.lifecycle_resumed_progress(
+        "\n".join(
+            [
+                "Lifecycle resumed",
+                "Phase: final handoff",
+                "Session: worker",
+                "Turn: 356",
+                "Status: RUNNING",
+            ]
+        )
+    )
+    text = stream.getvalue()
+    assert "Lifecycle resumed" in text
+    assert "Phase: final handoff" in text
+    assert "Session: worker" in text
+    assert "Turn: 356" in text
+    assert "Status: RUNNING" in text
+    quiet, quiet_stream = _console("quiet")
+    quiet.lifecycle_resumed_progress("Lifecycle resumed\nStatus: RUNNING")
+    assert quiet_stream.getvalue() == ""
+
+
 def test_resume_header_skips_role_table():
     console, stream = _console()
     console.lifecycle_started("lc-9", goal_summary="Keep going", resuming=True)

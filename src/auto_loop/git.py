@@ -18,6 +18,21 @@ class GitProtocolError(GitError):
 
     exit_code = ExitCode.GIT_PROTOCOL_ERROR
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        commits: dict[str, str] | None = None,
+        paths: tuple[str, ...] | list[str] | None = None,
+        details: tuple[str, ...] | list[str] | None = None,
+        state_preserved: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.commits = dict(commits or {})
+        self.paths = tuple(paths or ())
+        self.details = tuple(details or ())
+        self.state_preserved = state_preserved
+
 
 class ReviewRequestError(GitProtocolError):
     """Worker review request the agent can correct on the same session.
@@ -201,13 +216,66 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     raise GitError("git merge-base --is-ancestor failed")
 
 
+def commit_exists(repo: Path, ref: str) -> bool:
+    """True when ``ref`` names a commit object that is still in the database."""
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def list_commit_shas(repo: Path, ref: str = "HEAD") -> list[str]:
+    """Commits reachable from ``ref``, newest first."""
+    text = _run_git(repo, "rev-list", ref)
+    if not text:
+        return []
+    return text.splitlines()
+
+
 def assert_approved_baseline_ancestry(repo: Path, last_approved_commit: str) -> None:
     head = head_commit(repo)
     approved = resolve_commit(repo, last_approved_commit)
     if not is_ancestor(repo, approved, head):
         raise GitProtocolError(
-            "Approved baseline is no longer an ancestor of HEAD (history rewrite detected)"
+            "Approved baseline is no longer an ancestor of HEAD (history rewrite detected)",
+            commits={"Approved": approved, "HEAD": head},
         )
+
+
+def format_git_protocol_error(
+    exc: GitProtocolError,
+    *,
+    approved: str | None = None,
+    head: str | None = None,
+) -> str:
+    """Terminal text for a Git protocol failure: invariant, SHAs/paths, and state."""
+    invariant = str(exc).strip() or "Git protocol invariant failed"
+    lines = ["Git protocol error", f"Invariant: {invariant}"]
+    lines.extend(exc.details)
+    commits = dict(exc.commits)
+    if approved and "Approved" not in commits:
+        commits["Approved"] = approved
+    if head and "HEAD" not in commits:
+        commits["HEAD"] = head
+    ordered: list[tuple[str, str]] = []
+    for label in ("Approved", "HEAD"):
+        if label in commits:
+            ordered.append((label, commits.pop(label)))
+    ordered.extend(commits.items())
+    for label, sha in ordered:
+        lines.append(f"{label}: {sha}")
+    if exc.paths:
+        shown = list(exc.paths[:8])
+        extra = len(exc.paths) - len(shown)
+        path_text = ", ".join(shown)
+        if extra > 0:
+            path_text = f"{path_text} (+{extra} more)"
+        lines.append(f"Paths: {path_text}")
+    lines.append("State: preserved" if exc.state_preserved else "State: not preserved")
+    return "\n".join(lines)
 
 
 def normalize_batch_range(
