@@ -12,6 +12,7 @@ from auto_loop.git_policy import git_usable
 from auto_loop.manifest import RunManifestSource
 from auto_loop.paths import workspace_relative
 from auto_loop.product_state import is_product_tree_clean, product_excludes
+from auto_loop.review_mutation import resume_slot, short_sha
 from auto_loop.runtime import load_lifecycle_state
 from auto_loop.run_inputs import load_matching_blocked_record, load_matching_completion_record
 
@@ -229,6 +230,10 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
     reviews_display = f"{reviews_rel}/" if not str(reviews_rel).endswith("/") else reviews_rel
     protocol_failure = state.last_run_failure
     needs_history = _needs_history_reconciliation(state)
+    recovery = state.review_mutation_recovery
+    next_session = state.next_session
+    if recovery is not None and not recovery.reconciled:
+        next_session = resume_slot(repo, config, state)
     status_value = "NEEDS HISTORY RECONCILIATION" if needs_history else state.status.value
     run_label = _run_label(
         state.status.value,
@@ -249,7 +254,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         f"lifecycle: {state.lifecycle_id}",
         f"phase: {state.phase}",
         f"turn: {state.turn}",
-        f"next session: {state.next_session}",
+        f"next session: {next_session}",
         "",
         f"plan approved: {'yes' if state.plan_approved else 'no'}",
         "",
@@ -271,10 +276,27 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         f"elapsed: {_format_duration(state.started_at, now)}",
         f"last activity: {_format_ago(state.updated_at, now)}",
     ]
-    if state.active_review is not None:
+    hide_active_review = (
+        recovery is not None
+        and not recovery.reconciled
+        and next_session == recovery.implementer_slot
+    )
+    if state.active_review is not None and not hide_active_review:
         review = state.active_review
         lines.append(
             f"active review: {review.scope}/{review.target} cycle {review.cycle_id} round {review.round}"
+        )
+    if recovery is not None:
+        lines.extend(
+            [
+                "",
+                "review mutation recovery:",
+                f"  scope: {recovery.scope}",
+                f"  target: {recovery.target}",
+                f"  expected HEAD: {short_sha(recovery.expected_head)}",
+                f"  observed HEAD: {short_sha(recovery.observed_head)}",
+                f"  next session: {next_session}",
+            ]
         )
     if state.pending_revision is not None:
         pending = state.pending_revision

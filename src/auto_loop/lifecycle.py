@@ -159,6 +159,30 @@ class BlockedResumeContext(BaseModel):
     resume_session: SessionSlot
 
 
+class ReviewMutationRecovery(BaseModel):
+    """Discarded reviewer attempt whose evidence must be reconciled on resume.
+
+    The suspended review is not active approval evidence. Resume either restores
+    it for a fresh reviewer inspection or leaves it discarded for the implementer.
+    """
+
+    reviewer_slot: SessionSlot
+    implementer_slot: SessionSlot
+    scope: ReviewScope
+    target: str
+    cycle_id: str
+    round: int
+    expected_head: str | None = None
+    observed_head: str | None = None
+    review_file: str | None = None
+    detected_at: datetime
+    expected_plan_sha256: str | None = None
+    expected_product_rows: list[list[str]] = Field(default_factory=list)
+    suspended_review: ActiveReview | None = None
+    discarded_verdict: str | None = None
+    reconciled: bool = False
+
+
 class CompletedProviderTurn(BaseModel):
     """Provider output that was parsed, before controller transition succeeds.
 
@@ -219,6 +243,8 @@ class LifecycleState(BaseModel):
     waiting_context: WaitingContext | None = None
     legacy_v1_sessions: dict[str, Any] | None = None
     blocked_resume_context: BlockedResumeContext | None = None
+    review_mutation_recovery: ReviewMutationRecovery | None = None
+    reviewer_retry_after_mutation: bool = False
     history_reconciliation: HistoryReconciliation | None = None
     started_at: datetime
     updated_at: datetime
@@ -439,6 +465,8 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
             data["next_session"] = actor if actor in ("planner", "plan_reviewer", "worker", "reviewer") else "planner"
         data = dict(data)
         data.setdefault("blocked_resume_context", None)
+        data.setdefault("review_mutation_recovery", None)
+        data.setdefault("reviewer_retry_after_mutation", False)
         data.setdefault("last_blocker_fingerprint", None)
         data.setdefault("last_confirmed_wait_fingerprint", None)
         data.setdefault("waiting_context", None)
@@ -512,6 +540,8 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
         migrated["active_review"] = None
 
     migrated.setdefault("blocked_resume_context", None)
+    migrated.setdefault("review_mutation_recovery", None)
+    migrated.setdefault("reviewer_retry_after_mutation", False)
     migrated.setdefault("last_blocker_fingerprint", None)
     migrated.setdefault("last_confirmed_wait_fingerprint", None)
     migrated.setdefault("waiting_context", None)

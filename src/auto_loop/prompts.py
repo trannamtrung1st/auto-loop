@@ -9,8 +9,10 @@ from auto_loop.lifecycle import (
     BlockedResumeContext,
     LifecycleState,
     PendingRevision,
+    ReviewMutationRecovery,
     WaitingContext,
 )
+from auto_loop.review_mutation import short_sha
 from auto_loop.models import (
     FALSE_BLOCKER_ENDGAME,
     FALSE_BLOCKER_ENDGAME_FINDING_ID,
@@ -42,6 +44,8 @@ class TurnContext:
     pending_revision: PendingRevision | None = None
     blocked_resume: BlockedResumeContext | None = None
     waiting: WaitingContext | None = None
+    review_mutation_recovery: ReviewMutationRecovery | None = None
+    review_mutation_retry: bool = False
 
 
 def _append_manifest(body: str, manifest: str) -> str:
@@ -117,6 +121,76 @@ def _controller_repair_lines(ctx: TurnContext) -> list[str]:
         ]
     )
     return lines
+
+
+def _review_mutation_retry_lines(ctx: TurnContext) -> list[str]:
+    if not ctx.review_mutation_retry:
+        return []
+    return [
+        "Your previous review attempt was discarded because the controller detected",
+        "product mutation during the reviewer turn.",
+        "",
+        "Do not reuse or merely re-emit your previous verdict.",
+        "",
+        "Re-inspect the current repository and every required target from scratch.",
+        "The candidate has been mechanically reconciled to the original review state.",
+        "",
+    ]
+
+
+def _review_mutation_recovery_lines(ctx: TurnContext) -> list[str]:
+    recovery = ctx.review_mutation_recovery
+    if recovery is None:
+        return []
+    if recovery.implementer_slot == "planner":
+        return [
+            "The previous plan-reviewer turn was discarded because plan or product state",
+            "changed during review.",
+            "",
+            "Previous review:",
+            f"- scope: {recovery.scope}",
+            f"- target: {recovery.target}",
+            f"- expected candidate HEAD: {short_sha(recovery.expected_head)}",
+            f"- observed HEAD: {short_sha(recovery.observed_head)}",
+            "",
+            "Current repository:",
+            f"- HEAD: {short_sha(ctx.head_commit)}",
+            "",
+            "The controller did not trust or approve that change.",
+            "Inspect and reconcile the current plan and repository evidence.",
+            "If it matches the intended planning evidence, request plan review again.",
+            "If the change was unintended, restore that evidence before requesting review.",
+            "Do not assume the previous plan-review verdict remains valid.",
+            "Do not implement product changes.",
+            "",
+        ]
+    return [
+        "The previous reviewer turn was discarded because product state changed during review.",
+        "",
+        "Previous review:",
+        f"- scope: {recovery.scope}",
+        f"- target: {recovery.target}",
+        f"- expected candidate HEAD: {short_sha(recovery.expected_head)}",
+        f"- observed HEAD: {short_sha(recovery.observed_head)}",
+        "",
+        "Current repository:",
+        f"- HEAD: {short_sha(ctx.head_commit)}",
+        "",
+        "The controller did not trust or approve the HEAD change.",
+        "",
+        "Inspect and reconcile the current repository state.",
+        "",
+        "If the current HEAD is legitimate in-scope work:",
+        "- verify it,",
+        "- ensure it follows normal approval/baseline rules,",
+        "- request a fresh batch/final review as appropriate.",
+        "",
+        "If the change was unintended reviewer mutation:",
+        "- repair or revert it before requesting review.",
+        "",
+        "Do not assume the previous reviewer verdict remains valid.",
+        "",
+    ]
 
 
 def _blocked_resume_lines(ctx: TurnContext) -> list[str]:
@@ -214,6 +288,7 @@ def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
         "",
     ]
     lines.extend(_blocked_resume_lines(ctx))
+    lines.extend(_review_mutation_recovery_lines(ctx))
     lines.extend(_waiting_recheck_lines(ctx))
     if ctx.repair_reason:
         lines.extend(_controller_repair_lines(ctx))
@@ -312,6 +387,7 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
         ]
     )
     lines.extend(_blocked_resume_lines(ctx))
+    lines.extend(_review_mutation_recovery_lines(ctx))
     lines.extend(_waiting_recheck_lines(ctx))
     if ctx.repair_reason:
         lines.extend(_controller_repair_lines(ctx))
@@ -394,8 +470,9 @@ def build_reviewer_prompt(
     review: ActiveReview,
 ) -> str:
     purpose = review.session_purpose
+    retry = _review_mutation_retry_lines(ctx)
     if purpose == "plan_reviewer":
-        lines = [
+        lines = retry + [
             "Review the current initial plan.",
             "",
             "This is the planning-only reviewer session.",
@@ -435,7 +512,7 @@ def build_reviewer_prompt(
         return _append_manifest("\n".join(lines), ctx.resource_manifest)
 
     if ctx.first_execution_turn:
-        header = [
+        header = retry + [
             "This is a fresh implementation-review session.",
             "",
             "The initial planning loop happened in separate sessions.",
@@ -444,7 +521,7 @@ def build_reviewer_prompt(
             "",
         ]
     else:
-        header = ["Continue your reviewer role.", ""]
+        header = retry + ["Continue your reviewer role.", ""]
 
     if review.scope == "final":
         lines = header + [

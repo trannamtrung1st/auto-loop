@@ -10,6 +10,7 @@ from auto_loop.lifecycle import (
     HistoryReconciliation,
     InflightMarker,
     LifecycleStatus,
+    ReviewMutationRecovery,
     create_lifecycle,
 )
 from auto_loop.manifest import load_run_manifest
@@ -97,3 +98,39 @@ def test_status_reports_history_reconciliation_decision(tmp_path: Path):
     assert "approved baseline: unchanged" in report
     assert "bbbbbbb" in report
     assert "reconcile-history" in report
+
+
+def test_status_reports_pending_review_mutation_recovery(tmp_path: Path):
+    repo = _repo(tmp_path)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    state = create_lifecycle(head)
+    state.phase = "execution"
+    state.plan_approved = True
+    state.next_session = "reviewer"
+    state.active_review = ActiveReview(
+        cycle_id="review-0002",
+        scope="final",
+        target="P7.6",
+        summary="final",
+        current_candidate_head="ce0d2e5aaa",
+    )
+    state.review_mutation_recovery = ReviewMutationRecovery(
+        reviewer_slot="reviewer",
+        implementer_slot="worker",
+        scope="final",
+        target="P7.6",
+        cycle_id="review-0002",
+        round=1,
+        expected_head="ce0d2e5aaa",
+        observed_head="76818a9bbb",
+        detected_at=datetime.now(timezone.utc),
+    )
+    save_lifecycle_state(repo, state)
+    report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
+    assert "review mutation recovery:" in report
+    assert "scope: final" in report
+    assert "target: P7.6" in report
+    assert "expected HEAD: ce0d2e5" in report
+    assert "observed HEAD: 76818a9" in report
+    assert "next session: worker" in report
+    assert "active review:" not in report

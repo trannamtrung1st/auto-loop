@@ -9,6 +9,7 @@ import pytest
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
+    ReviewMutationRecovery,
     ActiveReview,
     LifecycleState,
     PendingRevision,
@@ -83,6 +84,37 @@ def test_worker_prompt_surfaces_controller_repair_reason():
     assert "controller rejected it" in prompt.lower()
     assert "Final review requires explicit path" in prompt
     assert "interrupted" not in prompt.lower()
+
+
+def test_worker_prompt_includes_review_mutation_recovery():
+    state = create_lifecycle("abc123def")
+    state.review_mutation_recovery = ReviewMutationRecovery(
+        reviewer_slot="reviewer",
+        implementer_slot="worker",
+        scope="final",
+        target="P7.6",
+        cycle_id="review-0004",
+        round=1,
+        expected_head="ce0d2e5aaa",
+        observed_head="76818a9bbb",
+        detected_at=datetime.now(timezone.utc),
+    )
+    ctx = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="76818a9bbb",
+        product_clean=True,
+        review_mutation_recovery=state.review_mutation_recovery,
+    )
+    prompt = build_worker_prompt(state, ctx)
+    assert "scope: final" in prompt
+    assert "target: P7.6" in prompt
+    assert "expected candidate HEAD: ce0d2e5" in prompt
+    assert "observed HEAD: 76818a9" in prompt
+    assert "HEAD: 76818a9" in prompt
+    assert "Do not assume the previous reviewer verdict remains valid." in prompt
+    assert "request a fresh batch/final review" in prompt
 
 
 def test_worker_prompt_keeps_false_blocker_repair_after_state_roundtrip():
@@ -326,6 +358,15 @@ def test_v2_state_without_history_reconciliation_field_loads():
     data.pop("history_reconciliation")
     state = LifecycleState.model_validate(migrate_lifecycle_data(data))
     assert state.history_reconciliation is None
+
+
+def test_v2_state_without_review_mutation_recovery_field_loads():
+    data = create_lifecycle("abc").model_dump(mode="json")
+    data.pop("review_mutation_recovery")
+    data.pop("reviewer_retry_after_mutation")
+    state = LifecycleState.model_validate(migrate_lifecycle_data(data))
+    assert state.review_mutation_recovery is None
+    assert state.reviewer_retry_after_mutation is False
 
 
 def test_runtime_round_trip(tmp_path: Path):

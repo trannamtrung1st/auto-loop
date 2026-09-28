@@ -34,6 +34,7 @@ from auto_loop.lifecycle import (
     LifecycleStatus,
     PendingRevision,
     ProtocolRunFailure,
+    ReviewMutationRecovery,
     SessionSlot,
     WaitingContext,
     adopt_session_identity,
@@ -88,11 +89,13 @@ from auto_loop.stop_control import (
 from auto_loop.protection import (
     ProtectionViolationError,
     ReviewMutationError,
+    ReviewSnapshot,
     assert_protected_unchanged,
     assert_review_snapshot_unchanged,
     capture_protected_baseline,
     capture_review_snapshot,
 )
+from auto_loop.review_mutation import evidence_restored, format_review_mutation_message
 from auto_loop.providers.base import AgentRequest
 from auto_loop.providers.cursor import (
     CursorStreamParseResult,
@@ -556,6 +559,10 @@ class LifecycleRunner:
             pending_revision=state.pending_revision,
             blocked_resume=state.blocked_resume_context,
             waiting=state.waiting_context if state.waiting_context and state.waiting_context.recheck_pending else None,
+            review_mutation_recovery=state.review_mutation_recovery,
+            review_mutation_retry=(
+                state.reviewer_retry_after_mutation and slot in ("reviewer", "plan_reviewer")
+            ),
         )
 
     def _parse_provider_attempt(
@@ -1551,6 +1558,7 @@ class LifecycleRunner:
             },
         )
         self._console.review_requested(result.review.scope, result.review.target)
+        self._clear_review_mutation_recovery(state, "planner")
         cycle_id, round_no = self._planning_review_cycle(state, result.review.target)
         state.active_review = ActiveReview(
             cycle_id=cycle_id,
@@ -1698,6 +1706,7 @@ class LifecycleRunner:
             },
         )
         self._console.review_requested(result.review.scope, result.review.target)
+        self._clear_review_mutation_recovery(state, "worker")
         state.next_session = "reviewer"
         progress_key = worker_progress_key(
             self.repo, self.config, state, result, self._optional_head() or ""
@@ -1889,6 +1898,158 @@ class LifecycleRunner:
         atomic_write_text(path, markdown)
         return str(path.relative_to(self.repo))
 
+    def _clear_review_mutation_recovery(self, state: LifecycleState, slot: SessionSlot) -> None:
+        recovery = state.review_mutation_recovery
+        if recovery is not None and recovery.implementer_slot == slot:
+            state.review_mutation_recovery = None
+
+    def _discard_stale_reviewer_attempt(self, state: LifecycleState, slot: SessionSlot) -> str | None:
+        """Drop a parsed reviewer verdict or protocol-repair marker from a mutated attempt."""
+        verdict: str | None = None
+        done = state.completed_provider_turn
+        if done is not None and (
+            done.session_slot == slot or done.session_slot in ("reviewer", "plan_reviewer")
+        ):
+            raw = done.result.get("verdict")
+            verdict = str(raw) if raw else None
+            state.completed_provider_turn = None
+        if state.inflight is not None and state.inflight.session_slot in ("reviewer", "plan_reviewer"):
+            state.inflight = None
+        return verdict
+
+    def _record_review_mutation(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        snapshot: ReviewSnapshot,
+        exc: ReviewMutationError,
+    ) -> None:
+        active = state.active_review
+        implementer: SessionSlot = "planner" if slot == "plan_reviewer" else "worker"
+        try:
+            observed = self._optional_head()
+        except GitProtocolError:
+            observed = None
+        expected = snapshot.product.head or None
+        if active is not None and active.current_candidate_head:
+            expected = active.current_candidate_head
+        elif active is not None and active.git_head:
+            expected = active.git_head
+        discarded = self._discard_stale_reviewer_attempt(state, slot)
+        state.reviewer_retry_after_mutation = False
+        state.active_review = None
+        state.next_session = implementer
+        state.review_mutation_recovery = ReviewMutationRecovery(
+            reviewer_slot=slot,
+            implementer_slot=implementer,
+            scope=active.scope if active is not None else "batch",
+            target=active.target if active is not None else "unknown",
+            cycle_id=active.cycle_id if active is not None else "review-unknown",
+            round=active.round if active is not None else 1,
+            expected_head=expected or None,
+            observed_head=observed,
+            review_file=self._latest_review_path(),
+            detected_at=utc_now(),
+            expected_plan_sha256=snapshot.plan_sha256,
+            expected_product_rows=[list(row) for row in snapshot.product.rows],
+            suspended_review=active,
+            discarded_verdict=discarded,
+            reconciled=False,
+        )
+        state.updated_at = utc_now()
+        self._save_state(state)
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "review_mutation_detected",
+                "lifecycle_id": state.lifecycle_id,
+                "reviewer_slot": slot,
+                "implementer_slot": implementer,
+                "scope": state.review_mutation_recovery.scope,
+                "target": state.review_mutation_recovery.target,
+                "cycle_id": state.review_mutation_recovery.cycle_id,
+                "expected_head": expected,
+                "observed_head": observed,
+                "details": exc.details,
+                "discarded_verdict": discarded,
+            },
+        )
+        self._terminal_message = format_review_mutation_message(
+            expected_head=expected,
+            observed_head=observed,
+            details=exc.details,
+            config_rel=self.options.user_config_rel,
+        )
+
+    def _reconcile_review_mutation_recovery(self, state: LifecycleState) -> LifecycleState:
+        """Route resume before reviewer replay: restore a fresh review, or return to the implementer."""
+        recovery = state.review_mutation_recovery
+        if recovery is None or recovery.reconciled:
+            return state
+        discarded = self._discard_stale_reviewer_attempt(state, recovery.reviewer_slot)
+        if discarded and not recovery.discarded_verdict:
+            recovery.discarded_verdict = discarded
+        state.reviewer_retry_after_mutation = False
+        restored = evidence_restored(self.repo, self.config, recovery)
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "review_mutation_recovery_started",
+                "lifecycle_id": state.lifecycle_id,
+                "outcome": "reviewer_retry" if restored else "implementer",
+                "reviewer_slot": recovery.reviewer_slot,
+                "implementer_slot": recovery.implementer_slot,
+                "scope": recovery.scope,
+                "target": recovery.target,
+                "expected_head": recovery.expected_head,
+                "observed_head": recovery.observed_head,
+                "discarded_verdict": recovery.discarded_verdict,
+            },
+        )
+        if restored and recovery.suspended_review is not None:
+            state.active_review = recovery.suspended_review.model_copy(
+                update={"round": recovery.suspended_review.round + 1}
+            )
+            state.next_session = recovery.reviewer_slot
+            state.reviewer_retry_after_mutation = True
+            state.review_mutation_recovery = None
+            state.updated_at = utc_now()
+            self._save_state(state)
+            return state
+        state.active_review = None
+        state.next_session = recovery.implementer_slot
+        recovery.reconciled = True
+        state.review_mutation_recovery = recovery
+        state.updated_at = utc_now()
+        self._save_state(state)
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "review_mutation_review_invalidated",
+                "lifecycle_id": state.lifecycle_id,
+                "scope": recovery.scope,
+                "target": recovery.target,
+                "cycle_id": recovery.cycle_id,
+                "expected_head": recovery.expected_head,
+                "observed_head": recovery.observed_head,
+            },
+        )
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "review_mutation_returned_to_worker",
+                "lifecycle_id": state.lifecycle_id,
+                "session": recovery.implementer_slot,
+                "scope": recovery.scope,
+                "target": recovery.target,
+            },
+        )
+        return state
+
     def _clear_blocked_resume_context(self, state: LifecycleState, slot: SessionSlot) -> bool:
         ctx = state.blocked_resume_context
         if ctx is not None and slot == ctx.resume_session:
@@ -2002,13 +2163,17 @@ class LifecycleRunner:
             )
             final_text = self._invoke_slot(slot, prompt, state)
             assert_protected_unchanged(self.repo, self.config, protected)
-            assert_review_snapshot_unchanged(
-                self.repo,
-                plan_path=self.repo / self.config.plan_file,
-                before=snapshot,
-                targets=state.active_review.targets,
-                config=self.config,
-            )
+            try:
+                assert_review_snapshot_unchanged(
+                    self.repo,
+                    plan_path=self.repo / self.config.plan_file,
+                    before=snapshot,
+                    targets=state.active_review.targets,
+                    config=self.config,
+                )
+            except ReviewMutationError as exc:
+                self._record_review_mutation(state, slot, snapshot, exc)
+                raise
             try:
                 result = parse_reviewer_result(final_text)
             except ProtocolParseError as exc:
@@ -2054,6 +2219,7 @@ class LifecycleRunner:
         result: ReviewerResult,
     ) -> None:
         active = self._validate_reviewer_handoff(state, slot, result)
+        state.reviewer_retry_after_mutation = False
 
         implementer_slot: SessionSlot = "planner" if slot == "plan_reviewer" else "worker"
         review_rel = self._write_review_artifact(
@@ -2327,6 +2493,7 @@ class LifecycleRunner:
             resuming=self.options.resuming,
             artifact_root_rel=self.config.artifacts_root,
         )
+        state = self._reconcile_review_mutation_recovery(state)
         self._reconcile_stale_inflight(state)
         state = self._load_state() or state
         try:
@@ -2369,6 +2536,24 @@ class LifecycleRunner:
                 ):
                     state = self._reconcile_approved_history(state)
                     assert_approved_baseline_ancestry(self.repo, state.last_approved_commit)
+                if (
+                    state.review_mutation_recovery is not None
+                    and not state.review_mutation_recovery.reconciled
+                ):
+                    state = self._reconcile_review_mutation_recovery(state)
+                stale_reviewer_result = (
+                    state.completed_provider_turn is not None
+                    and state.completed_provider_turn.result_kind == "reviewer"
+                    and (
+                        state.review_mutation_recovery is not None
+                        or state.reviewer_retry_after_mutation
+                    )
+                )
+                if stale_reviewer_result:
+                    self._discard_stale_reviewer_attempt(
+                        state, state.completed_provider_turn.session_slot
+                    )
+                    self._save_state(state)
                 if state.completed_provider_turn is not None and state.inflight is None:
                     self._replay_completed_turn(state)
                 else:
@@ -2415,7 +2600,7 @@ class LifecycleRunner:
             return RunOutcome(
                 exit_code=exc.exit_code,
                 state=self._load_state(),
-                message=str(exc),
+                message=self._terminal_message or str(exc),
             )
         except ProtocolParseError as exc:
             return RunOutcome(

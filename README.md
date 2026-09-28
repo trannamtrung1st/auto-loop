@@ -195,7 +195,7 @@ The same template ships inside the package as `auto_loop/templates/run.full.yaml
 | 14 | `CONCURRENT_RUN` | Another lifecycle holds the workspace lock. |
 | 15 | `GIT_PROTOCOL_ERROR` | Review evidence or Git-mode invariant violated. |
 | 16 | `SESSION_ERROR` | Resume returned an unexpected session id (identity is not rotated). |
-| 17 | `REVIEW_MUTATION_ERROR` | Reviewer changed product repository state. |
+| 17 | `REVIEW_MUTATION_ERROR` | Reviewer changed product repository state. The verdict is discarded. `resume` reconciles the repository before another review. |
 | 18 | `INTERNAL_ERROR` | Unexpected controller failure. |
 
 ## Lifecycle and review invariants
@@ -218,6 +218,7 @@ The same template ships inside the package as `auto_loop/templates/run.full.yaml
 - **Protocol repair** re-prompts the same session when terminal output is missing/invalid `AUTO_LOOP_RESULT`, within `run.protocol_retries`. Parse/handoff failures get a minimal output-only repair turn (role rules + canonical example block, not the full role turn); controller rejections after a parsed result keep the richer reconciliation prompt. Markers must appear on their own lines, not inline in prose.
 - **Batch Git review ranges** are controller-owned: for committed product work the worker sends `scope`, `target`, and summary; auto-loop derives `last_approved_commit..HEAD`. Worker `review.targets` are path/content evidence only (legacy `git_range` entries are ignored).
 - **Provider retries** (`run.provider_retries`) retry infrastructure failures without rotating session ids.
+- **Reviewer mutation** — If product, plan, or review-target evidence changes during a reviewer turn, auto-loop exits `REVIEW_MUTATION_ERROR` and does not accept that HEAD or verdict. Session ids and the approved baseline stay as they were. `auto-loop resume` then reconciles: when the repository matches the original review snapshot, the same reviewer inspects it again from scratch; when evidence still differs, the worker (or planner, during planning) must reconcile and request a new review. A changed final candidate is not rebound to the old review. `auto-loop status` lists the pending recovery scope, target, expected HEAD, observed HEAD, and next session until that handoff.
 
 ## Instruction layering
 
@@ -332,7 +333,7 @@ Generate a commented manifest with every public section: `auto-loop init PATH --
 | `CONFIG_ERROR` on `run` | Pass an explicit version 2 YAML; `doctor RUN_CONFIG`; confirm `task.source` exists and is non-empty, and every `task.resources` entry is a readable file inside the workspace. On resume, a missing frozen task resource is also a config error. |
 | `GIT_PROTOCOL_ERROR` | The terminal error names the invariant, the relevant SHAs or paths, and whether state was preserved. Typical causes: a dirty product tree, a missing repository, a review with no evidence, or approved history rewritten without one proven equivalent commit. `auto-loop status` reports `NEEDS HISTORY RECONCILIATION` when a remap needs an explicit decision. |
 | `SESSION_ERROR` | Cursor resume id drift; inspect turn logs; do not hand-edit session ids in `state.json`. |
-| `PROTOCOL_ERROR` | Agent forgot `AUTO_LOOP_RESULT`; increase `run.protocol_retries` only after fixing prompts. |
+| `REVIEW_MUTATION_ERROR` | The reviewer changed repository evidence. State is preserved and the verdict is discarded. Inspect the repo if you want, then `auto-loop resume RUN_CONFIG`. Resume sends the worker or planner to reconcile a changed candidate, or asks the same reviewer to review the original candidate again when that evidence is restored. |
 | `LIMIT_REACHED` | Raise `max_turns` / runtime or reduce revise loops; check `worker_no_progress_streak`. |
 | `CONCURRENT_RUN` | Another live controller holds `<artifacts.root>/runtime/lock.json`. Wait, or run `auto-loop stop`. A dead controller's lock is cleared on the next `run`, `resume`, `stop`, or `doctor`. |
 | Doctor: Cursor not found | Install Cursor CLI or set `provider.cursor.command`. |
