@@ -115,6 +115,7 @@ from auto_loop.events import append_event
 from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
 from auto_loop.turn_logs import TurnLogWriter, prune_run_history, write_unseen_stream_lines
+from auto_loop.blockers import clear_blocker_tracking, compute_blocker_fingerprint
 from auto_loop.blocked_resume import reconcile_blocked_resume
 from auto_loop.history_reconciliation import reconcile_approved_history
 from auto_loop.status_report import resume_progress_text
@@ -1077,32 +1078,109 @@ class LifecycleRunner:
         if self._clear_blocked_resume_context(state, "planner"):
             self._save_state(state)
 
-    def _apply_planner_result(self, state: LifecycleState, result: PlannerResult) -> None:
-        if result.status == "blocked":
+    def _blocker_summary_from_active(self, active: ActiveReview | None) -> str:
+        if active is None:
+            return ""
+        return (active.worker_summary or active.plan_summary or active.summary or "").strip()
+
+    def _route_implementer_blocked(
+        self,
+        state: LifecycleState,
+        *,
+        event_type: str,
+        summary: str,
+        scope: str,
+        session_purpose: SessionSlot,
+        plan_summary: str | None = None,
+        worker_summary: str | None = None,
+        targets: list | None = None,
+    ) -> None:
+        append_event(
+            self.repo,
+            self.config,
+            {"type": event_type, "turn": state.turn, "lifecycle_id": state.lifecycle_id},
+        )
+        head = self._optional_head()
+        fingerprint = compute_blocker_fingerprint(summary=summary, head=head)
+        implementer: SessionSlot = "planner" if session_purpose == "plan_reviewer" else "worker"
+        if state.last_blocker_fingerprint == fingerprint:
             append_event(
                 self.repo,
                 self.config,
-                {"type": "planner_blocked", "turn": state.turn, "lifecycle_id": state.lifecycle_id},
+                {
+                    "type": "blocker_repeat_guard",
+                    "fingerprint": fingerprint,
+                    "head": head,
+                    "lifecycle_id": state.lifecycle_id,
+                },
             )
-            cycle_id, round_no = self._planning_review_cycle(state, "blocked")
-            state.active_review = ActiveReview(
-                cycle_id=cycle_id,
-                round=round_no,
-                scope="plan",
-                target="blocked",
+            self._suspend_lifecycle_blocked(
+                state,
+                summary=summary,
+                implementer_slot=implementer,
+                reviewer_slot=None,
+                review_rel=None,
+                active=None,
+                blocked_by_session=implementer,
+                fingerprint=fingerprint,
+                head=head,
+            )
+            return
+        state.last_blocker_fingerprint = fingerprint
+        if not self.config.limits.require_blocker_review:
+            self._suspend_lifecycle_blocked(
+                state,
+                summary=summary,
+                implementer_slot=implementer,
+                reviewer_slot=None,
+                review_rel=None,
+                active=None,
+                blocked_by_session=implementer,
+                fingerprint=fingerprint,
+                head=head,
+            )
+            return
+        cycle_id, round_no = (
+            self._planning_review_cycle(state, "blocked")
+            if scope == "plan"
+            else (next_cycle_id(state), 1)
+        )
+        review_kwargs: dict = {
+            "cycle_id": cycle_id,
+            "round": round_no,
+            "scope": scope,
+            "target": "blocked",
+            "summary": summary,
+            "session_purpose": session_purpose,
+        }
+        if plan_summary is not None:
+            review_kwargs["plan_summary"] = plan_summary
+            review_kwargs["plan_sha256"] = self._plan_hash()
+        if worker_summary is not None:
+            review_kwargs["worker_summary"] = worker_summary
+        if targets is not None:
+            review_kwargs["targets"] = targets
+        state.active_review = ActiveReview(**review_kwargs)
+        state.next_session = session_purpose
+        self._persist_after_turn(state)
+
+    def _apply_planner_result(self, state: LifecycleState, result: PlannerResult) -> None:
+        if result.status == "blocked":
+            self._route_implementer_blocked(
+                state,
+                event_type="planner_blocked",
                 summary=result.plan_summary,
+                scope="plan",
                 session_purpose="plan_reviewer",
                 plan_summary=result.plan_summary,
-                plan_sha256=self._plan_hash(),
                 targets=[
                     plan_path_target(
                         self.repo, self.config.plan_file, git_mode=self.config.git.mode
                     )
                 ],
             )
-            state.next_session = "plan_reviewer"
-            self._persist_after_turn(state)
             return
+        clear_blocker_tracking(state)
 
         if result.review is None or result.review.scope != "plan":
             raise GitProtocolError("Planner must request plan review")
@@ -1208,22 +1286,17 @@ class LifecycleRunner:
         result: WorkerResult,
     ) -> None:
         if result.status == "blocked":
-            append_event(
-                self.repo,
-                self.config,
-                {"type": "worker_blocked", "turn": state.turn, "lifecycle_id": state.lifecycle_id},
-            )
-            state.active_review = ActiveReview(
-                cycle_id=next_cycle_id(state),
-                scope="batch",
-                target="blocked",
+            self._route_implementer_blocked(
+                state,
+                event_type="worker_blocked",
                 summary=result.work_summary,
+                scope="batch",
                 session_purpose="reviewer",
                 worker_summary=result.work_summary,
             )
-            state.next_session = "reviewer"
-            self._persist_after_turn(state)
             return
+
+        clear_blocker_tracking(state)
 
         if not state.plan_approved:
             raise GitProtocolError("Worker cannot run before initial plan PASS")
@@ -1454,32 +1527,41 @@ class LifecycleRunner:
             return True
         return False
 
-    def _handle_reviewer_blocked(
+    def _suspend_lifecycle_blocked(
         self,
         state: LifecycleState,
-        result: ReviewerResult,
-        review_rel: str,
+        *,
+        summary: str,
         implementer_slot: SessionSlot,
-        reviewer_slot: SessionSlot,
+        reviewer_slot: SessionSlot | None,
+        review_rel: str | None,
+        active: ActiveReview | None,
+        blocked_by_session: SessionSlot,
+        fingerprint: str | None = None,
+        head: str | None = None,
     ) -> None:
-        active = state.active_review
+        head = head if head is not None else self._optional_head()
+        if fingerprint is None and summary:
+            fingerprint = compute_blocker_fingerprint(summary=summary, head=head)
         save_blocked_record(
             self.repo,
             BlockedRecord(
                 blocked_at=datetime.now(timezone.utc),
                 lifecycle_id=state.lifecycle_id,
                 turn=state.turn,
-                worker_session_id=state.sessions[implementer_slot].session_id,
-                reviewer_session_id=state.sessions[reviewer_slot].session_id,
+                worker_session_id=state.sessions["worker"].session_id,
+                reviewer_session_id=state.sessions["reviewer"].session_id,
                 planner_session_id=state.sessions["planner"].session_id,
                 plan_reviewer_session_id=state.sessions["plan_reviewer"].session_id,
-                summary=result.summary,
+                summary=summary,
                 review_file=review_rel,
-                blocked_by_session=reviewer_slot,
+                blocked_by_session=blocked_by_session,
                 resume_session=implementer_slot,
                 phase=state.phase,
-                review_scope=active.scope if active else result.scope,
-                review_target=active.target if active else result.target,
+                review_scope=active.scope if active else None,
+                review_target=active.target if active else None,
+                head_commit=head,
+                blocker_fingerprint=fingerprint,
             ),
             artifact_root=self.artifact_root,
         )
@@ -1498,6 +1580,29 @@ class LifecycleRunner:
         self._console.lifecycle_blocked()
         self._terminal_exit = ExitCode.BLOCKED
         self._note_terminal_summary_rendered()
+
+    def _handle_reviewer_blocked(
+        self,
+        state: LifecycleState,
+        result: ReviewerResult,
+        review_rel: str,
+        implementer_slot: SessionSlot,
+        reviewer_slot: SessionSlot,
+    ) -> None:
+        active = state.active_review
+        self._suspend_lifecycle_blocked(
+            state,
+            summary=result.summary,
+            implementer_slot=implementer_slot,
+            reviewer_slot=reviewer_slot,
+            review_rel=review_rel,
+            active=active,
+            blocked_by_session=reviewer_slot,
+            fingerprint=compute_blocker_fingerprint(
+                summary=self._blocker_summary_from_active(active) or result.summary,
+                head=self._optional_head(),
+            ),
+        )
 
     def _reviewer_slot_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
         if state.active_review is None:
@@ -1577,6 +1682,24 @@ class LifecycleRunner:
 
         if result.verdict == "blocked":
             self._handle_reviewer_blocked(state, result, review_rel, implementer_slot, slot)
+            return
+
+        if active.target == "blocked" and result.verdict == "pass":
+            base_summary = self._blocker_summary_from_active(active)
+            summary = (result.summary or "").strip() or base_summary or "external blocker confirmed"
+            self._suspend_lifecycle_blocked(
+                state,
+                summary=summary,
+                implementer_slot=implementer_slot,
+                reviewer_slot=slot,
+                review_rel=review_rel,
+                active=active,
+                blocked_by_session=slot,
+                fingerprint=compute_blocker_fingerprint(
+                    summary=base_summary or summary,
+                    head=self._optional_head(),
+                ),
+            )
             return
 
         append_event(

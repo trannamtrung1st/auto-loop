@@ -71,7 +71,7 @@ For `scope=final`, re-read the entire task and inspect the repository holistical
 
 ## Worker blocker
 
-If the worker or planner reports blocked, independently investigate. Return `BLOCKED` only when external intervention genuinely prevents progress.
+If the worker or planner reports blocked, independently investigate. Return `BLOCKED` when external intervention genuinely prevents progress. Return `PASS` only to confirm that the reported blocker is legitimate (the controller will suspend the lifecycle; it will not send the implementer another turn). Return `REVISE` when the implementer can make local progress instead.
 
 End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block conforming to
 `AUTO_LOOP_RESULT_SCHEMA` from your first-turn instructions (see `AUTO_LOOP_RESULT_EXAMPLE`).

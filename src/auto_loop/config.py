@@ -98,6 +98,7 @@ class LimitSettings(BaseModel):
     provider_retries: int = Field(default=2, ge=0)
     protocol_retries: int = Field(default=1, ge=0)
     max_consecutive_worker_no_progress: int = Field(default=3, ge=1)
+    require_blocker_review: bool = True
 
 
 class ProtectionSettings(ManifestModel):
@@ -125,6 +126,7 @@ class RunSettings(ManifestModel):
     provider_retries: int = Field(default=2, ge=0)
     protocol_retries: int = Field(default=1, ge=0)
     max_consecutive_worker_no_progress: int = Field(default=3, ge=1)
+    require_blocker_review: bool = True
 
 
 class TaskSettings(ManifestModel):

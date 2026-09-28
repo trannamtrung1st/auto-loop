@@ -16,6 +16,7 @@ from auto_loop.lifecycle import (
     utc_now,
 )
 from auto_loop.models import SessionSlot
+from auto_loop.blockers import clear_blocker_tracking
 from auto_loop.run_inputs import load_matching_blocked_record
 from auto_loop.runtime import save_lifecycle_state
 from auto_loop.terminal_records import BlockedRecord, blocked_path
@@ -58,6 +59,7 @@ def persist_unblock_state(state: LifecycleState, record: BlockedRecord) -> Lifec
     state.status = LifecycleStatus.RUNNING
     state.next_session = resume_session
     state.blocked_resume_context = context
+    clear_blocker_tracking(state)
     state.updated_at = utc_now()
     return state
 

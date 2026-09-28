@@ -67,6 +67,8 @@ class BlockedRecord(BaseModel):
     phase: LifecyclePhase | None = None
     review_scope: ReviewScope | None = None
     review_target: str | None = None
+    head_commit: str | None = None
+    blocker_fingerprint: str | None = None
 
 
 def completion_path(repo: Path, artifact_root: Path | None = None) -> Path:

@@ -193,6 +193,7 @@ class LifecycleState(BaseModel):
     consecutive_protocol_failures: int = 0
     worker_no_progress_streak: int = 0
     last_worker_progress_key: str | None = None
+    last_blocker_fingerprint: str | None = None
     legacy_v1_sessions: dict[str, Any] | None = None
     blocked_resume_context: BlockedResumeContext | None = None
     history_reconciliation: HistoryReconciliation | None = None
@@ -415,6 +416,7 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
             data["next_session"] = actor if actor in ("planner", "plan_reviewer", "worker", "reviewer") else "planner"
         data = dict(data)
         data.setdefault("blocked_resume_context", None)
+        data.setdefault("last_blocker_fingerprint", None)
         data.setdefault("last_run_failure", None)
         data.setdefault("history_reconciliation", None)
         return data
