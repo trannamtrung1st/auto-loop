@@ -252,6 +252,7 @@ class LifecycleState(BaseModel):
     blocked_resume_context: BlockedResumeContext | None = None
     review_mutation_recovery: ReviewMutationRecovery | None = None
     reviewer_retry_after_mutation: bool = False
+    reviewer_fresh_inspection_required: bool = False
     history_reconciliation: HistoryReconciliation | None = None
     started_at: datetime
     updated_at: datetime
@@ -474,6 +475,7 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
         data.setdefault("blocked_resume_context", None)
         data.setdefault("review_mutation_recovery", None)
         data.setdefault("reviewer_retry_after_mutation", False)
+        data.setdefault("reviewer_fresh_inspection_required", False)
         data.setdefault("last_blocker_fingerprint", None)
         data.setdefault("last_confirmed_wait_fingerprint", None)
         data.setdefault("waiting_context", None)
@@ -549,6 +551,7 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
     migrated.setdefault("blocked_resume_context", None)
     migrated.setdefault("review_mutation_recovery", None)
     migrated.setdefault("reviewer_retry_after_mutation", False)
+    migrated.setdefault("reviewer_fresh_inspection_required", False)
     migrated.setdefault("last_blocker_fingerprint", None)
     migrated.setdefault("last_confirmed_wait_fingerprint", None)
     migrated.setdefault("waiting_context", None)

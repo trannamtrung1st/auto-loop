@@ -569,6 +569,10 @@ class LifecycleRunner:
             review_mutation_retry=(
                 state.reviewer_retry_after_mutation and slot in ("reviewer", "plan_reviewer")
             ),
+            reviewer_fresh_inspection_required=(
+                state.reviewer_fresh_inspection_required
+                and slot in ("reviewer", "plan_reviewer")
+            ),
         )
 
     def _parse_provider_attempt(
@@ -877,6 +881,10 @@ class LifecycleRunner:
             and inflight.session_slot == slot
             and inflight.output_only_protocol_repair
             and inflight.repair_reason
+            and not (
+                state.reviewer_fresh_inspection_required
+                and slot in ("reviewer", "plan_reviewer")
+            )
         ):
             return build_protocol_output_repair_prompt(ROLE_FOR_SLOT[slot], inflight.repair_reason)
         role = ROLE_FOR_SLOT[slot]
@@ -2184,6 +2192,64 @@ class LifecycleRunner:
         self._invalidate_stale_active_review(state, slot, state.active_review, mismatch)
         return self._load_state() or state
 
+    def _reviewer_completion_is_untrusted(self, state: LifecycleState) -> bool:
+        done = state.completed_provider_turn
+        if done is None or done.result_kind != "reviewer":
+            return False
+        return bool(done.transition_error)
+
+    def _reconcile_untrusted_reviewer_for_fresh_inspection(
+        self, state: LifecycleState
+    ) -> LifecycleState:
+        """Drop a failed reviewer verdict when review evidence matches again."""
+        active = state.active_review
+        if active is None:
+            return state
+        slot = active.session_purpose
+        if state.next_session != slot:
+            return state
+        if not active_review_evidence_matches(self.repo, self.config, active):
+            return state
+        untrusted = self._reviewer_completion_is_untrusted(state)
+        inflight = state.inflight
+        stale_repair = (
+            untrusted
+            and inflight is not None
+            and inflight.session_slot in ("reviewer", "plan_reviewer")
+            and inflight.output_only_protocol_repair
+            and state.completed_provider_turn is not None
+            and inflight.turn == state.completed_provider_turn.turn
+        )
+        if not untrusted and not stale_repair:
+            return state
+        transition_error = (
+            state.completed_provider_turn.transition_error
+            if state.completed_provider_turn is not None
+            else None
+        )
+        discarded = self._discard_stale_reviewer_attempt(state, slot)
+        self._clear_inflight(state)
+        state.reviewer_fresh_inspection_required = True
+        state.reviewer_retry_after_mutation = False
+        state.next_session = slot
+        state.updated_at = utc_now()
+        self._save_state(state)
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "reviewer_verdict_discarded_for_fresh_inspection",
+                "lifecycle_id": state.lifecycle_id,
+                "reviewer_slot": slot,
+                "scope": active.scope,
+                "target": active.target,
+                "cycle_id": active.cycle_id,
+                "discarded_verdict": discarded,
+                "transition_error": transition_error,
+            },
+        )
+        return self._load_state() or state
+
     def _clear_blocked_resume_context(self, state: LifecycleState, slot: SessionSlot) -> bool:
         ctx = state.blocked_resume_context
         if ctx is not None and slot == ctx.resume_session:
@@ -2321,6 +2387,9 @@ class LifecycleRunner:
             self._adopt_parsed_result(state, slot, "reviewer", result, (None, None))
             try:
                 self._apply_reviewer_result(state, slot, result)
+            except GitProtocolError as exc:
+                self._note_transition_error(state, exc)
+                raise
             except ProtocolParseError as exc:
                 if self._protocol_repair_or_fail(
                     state, slot, parse_error=exc, output_only_repair=False
@@ -2356,6 +2425,7 @@ class LifecycleRunner:
     ) -> None:
         active = self._validate_reviewer_handoff(state, slot, result)
         state.reviewer_retry_after_mutation = False
+        state.reviewer_fresh_inspection_required = False
 
         implementer_slot: SessionSlot = "planner" if slot == "plan_reviewer" else "worker"
         review_rel = self._write_review_artifact(
@@ -2568,6 +2638,9 @@ class LifecycleRunner:
         result = ReviewerResult.model_validate(done.result)
         try:
             self._apply_reviewer_result(state, slot, result)
+        except GitProtocolError as exc:
+            self._note_transition_error(state, exc)
+            raise
         except ProtocolParseError as exc:
             if self._protocol_repair_or_fail(
                 state, slot, parse_error=exc, output_only_repair=False
@@ -2639,6 +2712,7 @@ class LifecycleRunner:
         except GitProtocolError as exc:
             return self._git_protocol_outcome(exc)
         state = self._reconcile_stale_active_review(state)
+        state = self._reconcile_untrusted_reviewer_for_fresh_inspection(state)
         if self.options.resuming:
             self._console.lifecycle_resumed_progress(resume_progress_text(state))
         if state.inflight is not None:
@@ -2694,6 +2768,8 @@ class LifecycleRunner:
                         state, state.completed_provider_turn.session_slot
                     )
                     self._save_state(state)
+                state = self._reconcile_untrusted_reviewer_for_fresh_inspection(state)
+                state = self._load_state() or state
                 if state.completed_provider_turn is not None and state.inflight is None:
                     done = state.completed_provider_turn
                     if done.result_kind == "reviewer" and not self._guard_active_review_before_reviewer(

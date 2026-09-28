@@ -46,6 +46,7 @@ class TurnContext:
     waiting: WaitingContext | None = None
     review_mutation_recovery: ReviewMutationRecovery | None = None
     review_mutation_retry: bool = False
+    reviewer_fresh_inspection_required: bool = False
 
 
 def _append_manifest(body: str, manifest: str) -> str:
@@ -121,6 +122,19 @@ def _controller_repair_lines(ctx: TurnContext) -> list[str]:
         ]
     )
     return lines
+
+
+def _review_fresh_inspection_lines(ctx: TurnContext) -> list[str]:
+    if not ctx.reviewer_fresh_inspection_required:
+        return []
+    return [
+        "Your previous review verdict was discarded and is not trusted.",
+        "",
+        "Do not reuse or merely re-emit your previous verdict.",
+        "",
+        "Re-inspect the current repository and every required target from scratch.",
+        "",
+    ]
 
 
 def _review_mutation_retry_lines(ctx: TurnContext) -> list[str]:
@@ -524,8 +538,9 @@ def build_reviewer_prompt(
 ) -> str:
     purpose = review.session_purpose
     retry = _review_mutation_retry_lines(ctx)
+    fresh = _review_fresh_inspection_lines(ctx)
     if purpose == "plan_reviewer":
-        lines = retry + [
+        lines = retry + fresh + [
             "Review the current initial plan.",
             "",
             "This is the planning-only reviewer session.",
@@ -565,7 +580,7 @@ def build_reviewer_prompt(
         return _append_manifest("\n".join(lines), ctx.resource_manifest)
 
     if ctx.first_execution_turn:
-        header = retry + [
+        header = retry + fresh + [
             "This is a fresh implementation-review session.",
             "",
             "The initial planning loop happened in separate sessions.",
@@ -574,7 +589,7 @@ def build_reviewer_prompt(
             "",
         ]
     else:
-        header = retry + ["Continue your reviewer role.", ""]
+        header = retry + fresh + ["Continue your reviewer role.", ""]
 
     if review.scope == "final":
         lines = header + [
