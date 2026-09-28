@@ -91,3 +91,41 @@ def test_required_mode_dirty_tree_invalidates_matching_head(tmp_path: Path):
     assert mismatch is not None
     assert any("product working tree is not clean" in item for item in mismatch.details)
     assert mismatch.observed_head == head
+
+
+def test_waiting_adjudication_allows_dirty_product_tree(tmp_path: Path):
+    repo = _repo(tmp_path)
+    config = frozen_config(repo)
+    path = repo / "feature.txt"
+    path.write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "feature"], cwd=repo, check=True)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    active = ActiveReview(
+        cycle_id="c1",
+        scope="batch",
+        target="waiting",
+        summary="wait",
+        current_candidate_head=head,
+    )
+    path.write_text("uncommitted change\n", encoding="utf-8")
+    assert active_review_evidence_matches(repo, config, active)
+
+
+def test_blocked_adjudication_allows_dirty_product_tree(tmp_path: Path):
+    repo = _repo(tmp_path)
+    config = frozen_config(repo)
+    path = repo / "feature.txt"
+    path.write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "feature"], cwd=repo, check=True)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    active = ActiveReview(
+        cycle_id="c1",
+        scope="batch",
+        target="blocked",
+        summary="blocked",
+        current_candidate_head=head,
+    )
+    path.write_text("uncommitted change\n", encoding="utf-8")
+    assert active_review_evidence_matches(repo, config, active)

@@ -15,6 +15,15 @@ from auto_loop.review_targets import sha256_file, verify_path_targets_unchanged
 STALE_REVIEW_REASON = "active review evidence changed"
 
 
+def is_evidence_adjudication(active: ActiveReview) -> bool:
+    """True when the reviewer is confirming a BLOCKED/WAITING claim, not approving product work."""
+    return active.target in ("blocked", "waiting")
+
+
+def requires_clean_product_tree_for_review(active: ActiveReview) -> bool:
+    return not is_evidence_adjudication(active)
+
+
 @dataclass(frozen=True)
 class ActiveReviewEvidenceMismatch:
     reason: str
@@ -89,7 +98,10 @@ def assess_active_review_evidence_mismatch(
         ]
         details.extend(git_target_details)
         excludes = product_excludes(config)
-        if not is_product_tree_clean(repo, excludes=excludes):
+        if (
+            requires_clean_product_tree_for_review(active)
+            and not is_product_tree_clean(repo, excludes=excludes)
+        ):
             details.append("product working tree is not clean")
     elif observed_head is not None:
         for target in active.targets:
