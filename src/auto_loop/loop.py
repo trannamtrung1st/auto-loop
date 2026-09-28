@@ -115,7 +115,12 @@ from auto_loop.events import append_event
 from auto_loop.limits import update_worker_no_progress, worker_progress_key
 from auto_loop.run_options import RunOptions
 from auto_loop.turn_logs import TurnLogWriter, prune_run_history, write_unseen_stream_lines
-from auto_loop.blockers import clear_blocker_tracking, compute_blocker_fingerprint
+from auto_loop.blockers import (
+    BlockerFingerprintInput,
+    clear_blocker_tracking,
+    compute_blocker_fingerprint,
+    product_evidence_fingerprint,
+)
 from auto_loop.blocked_resume import reconcile_blocked_resume
 from auto_loop.history_reconciliation import reconcile_approved_history
 from auto_loop.status_report import resume_progress_text
@@ -1083,6 +1088,48 @@ class LifecycleRunner:
             return ""
         return (active.worker_summary or active.plan_summary or active.summary or "").strip()
 
+    def _blocker_fingerprint_input(
+        self,
+        state: LifecycleState,
+        *,
+        summary: str,
+        implementer_slot: SessionSlot,
+    ) -> BlockerFingerprintInput:
+        implementer: str = "planner" if implementer_slot == "planner" else "worker"
+        _head, rows = self._product_snapshot()
+        plan_sha: str | None = None
+        if implementer == "planner":
+            plan_sha = self._plan_hash()
+        return BlockerFingerprintInput(
+            phase=state.phase,
+            implementer_slot=implementer,  # type: ignore[arg-type]
+            summary=summary,
+            git_head=self._optional_head(),
+            plan_sha256=plan_sha,
+            evidence_fingerprint=product_evidence_fingerprint(rows),
+        )
+
+    def _emit_review_result(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        result: ReviewerResult,
+    ) -> None:
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "review_result",
+                "verdict": result.verdict,
+                "scope": result.scope,
+                "session_purpose": slot,
+                "finding_count": len(result.findings),
+                "turn": state.turn,
+                "lifecycle_id": state.lifecycle_id,
+            },
+        )
+        self._console.review_result(result.verdict, result.scope, len(result.findings))
+
     def _route_implementer_blocked(
         self,
         state: LifecycleState,
@@ -1100,9 +1147,12 @@ class LifecycleRunner:
             self.config,
             {"type": event_type, "turn": state.turn, "lifecycle_id": state.lifecycle_id},
         )
-        head = self._optional_head()
-        fingerprint = compute_blocker_fingerprint(summary=summary, head=head)
         implementer: SessionSlot = "planner" if session_purpose == "plan_reviewer" else "worker"
+        fp_input = self._blocker_fingerprint_input(
+            state, summary=summary, implementer_slot=implementer
+        )
+        fingerprint = compute_blocker_fingerprint(fp_input)
+        head = fp_input.git_head
         if state.last_blocker_fingerprint == fingerprint:
             append_event(
                 self.repo,
@@ -1111,6 +1161,7 @@ class LifecycleRunner:
                     "type": "blocker_repeat_guard",
                     "fingerprint": fingerprint,
                     "head": head,
+                    "evidence": fp_input.evidence_fingerprint,
                     "lifecycle_id": state.lifecycle_id,
                 },
             )
@@ -1542,7 +1593,13 @@ class LifecycleRunner:
     ) -> None:
         head = head if head is not None else self._optional_head()
         if fingerprint is None and summary:
-            fingerprint = compute_blocker_fingerprint(summary=summary, head=head)
+            fingerprint = compute_blocker_fingerprint(
+                self._blocker_fingerprint_input(
+                    state,
+                    summary=summary,
+                    implementer_slot=implementer_slot,
+                )
+            )
         save_blocked_record(
             self.repo,
             BlockedRecord(
@@ -1599,8 +1656,11 @@ class LifecycleRunner:
             active=active,
             blocked_by_session=reviewer_slot,
             fingerprint=compute_blocker_fingerprint(
-                summary=self._blocker_summary_from_active(active) or result.summary,
-                head=self._optional_head(),
+                self._blocker_fingerprint_input(
+                    state,
+                    summary=self._blocker_summary_from_active(active) or result.summary,
+                    implementer_slot=implementer_slot,
+                )
             ),
         )
 
@@ -1685,6 +1745,7 @@ class LifecycleRunner:
             return
 
         if active.target == "blocked" and result.verdict == "pass":
+            self._emit_review_result(state, slot, result)
             base_summary = self._blocker_summary_from_active(active)
             summary = (result.summary or "").strip() or base_summary or "external blocker confirmed"
             self._suspend_lifecycle_blocked(
@@ -1696,26 +1757,16 @@ class LifecycleRunner:
                 active=active,
                 blocked_by_session=slot,
                 fingerprint=compute_blocker_fingerprint(
-                    summary=base_summary or summary,
-                    head=self._optional_head(),
+                    self._blocker_fingerprint_input(
+                        state,
+                        summary=base_summary or summary,
+                        implementer_slot=implementer_slot,
+                    )
                 ),
             )
             return
 
-        append_event(
-            self.repo,
-            self.config,
-            {
-                "type": "review_result",
-                "verdict": result.verdict,
-                "scope": result.scope,
-                "session_purpose": slot,
-                "finding_count": len(result.findings),
-                "turn": state.turn,
-                "lifecycle_id": state.lifecycle_id,
-            },
-        )
-        self._console.review_result(result.verdict, result.scope, len(result.findings))
+        self._emit_review_result(state, slot, result)
 
         if slot == "plan_reviewer":
             if result.verdict == "pass":

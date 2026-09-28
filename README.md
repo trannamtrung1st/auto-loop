@@ -298,7 +298,7 @@ Use `auto-loop status RUN_CONFIG` and `auto-loop logs RUN_CONFIG` for operator-f
 - `auto-loop run` and `auto-loop resume` reconcile a dead **local** controller before taking the workspace lock, so a stale lock or a reused PID is not reported as a concurrent run. A PID is signaled or killed only when hostname, PID, and process start time all match the recorded process. Remote ownership (`active_run.json` / `lock.json` from another host) and legacy unverified metadata are left unchanged; `doctor` reports that state instead of mutating it. `run`, `resume`, and `stop` exit with **`CONCURRENT_RUN`** when another host or unverified metadata blocks local control.
 - `auto-loop resume RUN_CONFIG` continues from durable state (same session ids, reconciled inflight). Changing the task entry or task resources does not replace an in-progress run. A missing frozen task resource fails resume instead of reading the live file.
 - After a **terminal** run (`completion.json` or `blocked.json`), `auto-loop run RUN_CONFIG` again archives the prior run’s plan, task snapshot, frozen task resources, reviews, and runtime notes under `<artifacts.root>/runtime/archives/<lifecycle-id>/` using each file’s workspace-relative path. Active (non-terminal) runs must be resumed, not replaced. `auto-loop resume` on a blocked terminal run exits with `BLOCKED` and the saved summary rather than re-entering the loop.
-- Defaults: `run.max_turns`, `run.max_runtime_minutes`, `run.max_consecutive_worker_no_progress` — tune them in the run YAML.
+- Defaults: `run.max_turns`, `run.max_runtime_minutes`, `run.max_consecutive_worker_no_progress`, `run.require_blocker_review` — tune them in the run YAML.
 
 ## Configuration reference (high level)
 

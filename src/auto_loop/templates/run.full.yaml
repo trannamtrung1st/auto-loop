@@ -53,6 +53,8 @@ run:
   provider_retries: 2
   protocol_retries: 1
   max_consecutive_worker_no_progress: 3
+  # When false, worker/planner BLOCKED suspends immediately without a blocker review turn.
+  require_blocker_review: true
 
 provider:
   type: cursor

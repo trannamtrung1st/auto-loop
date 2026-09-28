@@ -121,6 +121,19 @@ class ScriptedProvider:
             },
         )
 
+    def set_planner_blocked(self, summary: str = "blocked on external dependency") -> None:
+        self.set_response(
+            "planner",
+            {
+                "schema_version": 2,
+                "actor": "planner",
+                "status": "blocked",
+                "review": None,
+                "plan_summary": summary,
+                "notes": [],
+            },
+        )
+
     def set_worker_blocked(self, summary: str = "blocked on external dependency") -> None:
         self.set_response(
             "worker",
