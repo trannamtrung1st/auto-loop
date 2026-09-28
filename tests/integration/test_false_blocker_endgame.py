@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from auto_loop.events import load_events
@@ -281,3 +282,108 @@ def test_false_blocker_repair_does_not_skip_unapproved_head(tmp_path: Path):
         "Submit those changes for batch review" in prompt for prompt in provider.worker_prompts
     )
     assert any(event.get("type") == "blocked_handoff_rejected" for event in _events(repo))
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def now(self) -> datetime:
+        return self.moment
+
+    def advance(self, seconds: int) -> None:
+        self.moment += timedelta(seconds=seconds)
+
+    def sleep_until(self, when: datetime, abort):
+        self.moment = when
+        return abort()
+
+
+def _suspend_wait(repo: Path):
+    config = load_run_manifest(repo / ".ai" / "run.yaml").config
+    config.run.wait_mode = "suspend"
+    config.run.wait_default_seconds = 60
+    config.run.wait_max_seconds = 1800
+    return config
+
+
+def _reject_false_blocker(repo: Path, provider: ScriptedProvider) -> None:
+    provider.set_worker_blocked("All task.md requirements are done. Phase 8 is outside this task.")
+    provider.set_response("reviewer", _false_blocker_payload())
+    outcome = run_lifecycle(repo, run_opts(2), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.pending_revision is not None
+    assert state.pending_revision.handoff_repair == "false_blocker_endgame"
+
+
+def test_false_blocker_then_waiting_drops_repair(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    commit_file(repo, "feature.txt", "x\n", "feature")
+    provider.set_response("worker", batch_worker_payload())
+    provider.set_reviewer_pass("batch", "W01")
+    run_lifecycle(repo, run_opts(2), provider)
+    _reject_false_blocker(repo, provider)
+
+    clock = _FakeClock()
+    config = _suspend_wait(repo)
+    reason = "Required hosted CI is already running for the approved SHA"
+    provider.set_worker_waiting(reason)
+    provider.set_reviewer_pass("batch", "waiting")
+    outcome = run_lifecycle(repo, run_opts(4), provider, config=config, clock=clock)
+    assert outcome.exit_code == ExitCode.WAITING
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.status == LifecycleStatus.WAITING
+    assert state.pending_revision is None
+    report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
+    assert "final handoff required" not in report
+    assert "pending revision:" not in report
+
+    clock.advance(60)
+    provider.set_worker_waiting(reason)
+    recheck = run_lifecycle(repo, run_opts(2, resuming=True), provider, config=config, clock=clock)
+    assert recheck.exit_code == ExitCode.WAITING
+    recheck_prompts = [
+        inv.prompt
+        for inv in provider.engine.invocations
+        if inv.role == "worker" and "You previously reported WAITING" in inv.prompt
+    ]
+    assert recheck_prompts
+    assert "rejected the BLOCKED handoff" not in recheck_prompts[-1]
+    assert "request scope=final" not in recheck_prompts[-1]
+    assert "Re-check the external condition now." in recheck_prompts[-1]
+
+
+def test_false_blocker_final_handoff_drops_pending_revision(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = PromptCapturingProvider()
+    approved = _approve_batch(repo, provider)
+    _reject_false_blocker(repo, provider)
+    provider.set_worker_final_request(head=approved)
+    requested = run_lifecycle(repo, run_opts(1), provider)
+    assert requested.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.next_session == "reviewer"
+    assert state.active_review is not None
+    assert state.active_review.scope == "final"
+    assert state.pending_revision is None
+    report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
+    assert "final handoff required" not in report
+    assert "active review: final/" in report
+
+    provider.set_reviewer_revise("final", "whole-task")
+    resumed = run_lifecycle(repo, run_opts(1, resuming=True), provider)
+    assert resumed.exit_code == ExitCode.LIMIT_REACHED
+    resumed_state = load_lifecycle_state(repo)
+    assert resumed_state is not None
+    assert resumed_state.pending_revision is not None
+    assert resumed_state.pending_revision.scope == "final"
+    assert resumed_state.pending_revision.handoff_repair is None
+    resumed_report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
+    assert "final handoff required" not in resumed_report
+    assert all("rejected the BLOCKED handoff" not in prompt for prompt in provider.reviewer_prompts)

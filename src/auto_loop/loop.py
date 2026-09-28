@@ -1217,10 +1217,15 @@ class LifecycleRunner:
         )
 
     def _consume_false_blocker_repair(self, state: LifecycleState) -> None:
+        """Drop a rejected-blocker pending revision once the worker takes another path.
+
+        Clearing only ``handoff_repair`` leaves ``batch/blocked`` pending beside a
+        later WAITING lifecycle or an active final review.
+        """
         pending = state.pending_revision
         if pending is None or pending.handoff_repair != FALSE_BLOCKER_ENDGAME:
             return
-        state.pending_revision = pending.model_copy(update={"handoff_repair": None})
+        state.pending_revision = None
 
     def _route_implementer_blocked(
         self,
@@ -1635,6 +1640,7 @@ class LifecycleRunner:
         result: WorkerResult,
     ) -> None:
         if result.status == "waiting":
+            self._consume_false_blocker_repair(state)
             self._route_implementer_waiting(
                 state,
                 summary=self._wait_summary(result) or result.work_summary,
