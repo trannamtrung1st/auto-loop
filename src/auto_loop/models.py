@@ -11,8 +11,8 @@ PROTOCOL_SCHEMA_VERSION = 2
 Role = Literal["planner", "worker", "reviewer"]
 SessionSlot = Literal["planner", "plan_reviewer", "worker", "reviewer"]
 ReviewScope = Literal["plan", "batch", "final"]
-WorkerStatus = Literal["review_requested", "blocked"]
-PlannerStatus = Literal["review_requested", "blocked"]
+WorkerStatus = Literal["review_requested", "blocked", "waiting"]
+PlannerStatus = Literal["review_requested", "blocked", "waiting"]
 ReviewerVerdict = Literal["pass", "revise", "complete", "blocked"]
 VerificationResult = Literal["pass", "fail", "not_run"]
 PathGitClassification = Literal["tracked", "untracked", "ignored", "control", "none"]
@@ -91,6 +91,19 @@ class VerificationEvidence(BaseModel):
     note: str | None = None
 
 
+class WaitRequest(BaseModel):
+    """Agent claim that an external condition should change without operator action."""
+
+    reason: str
+    retry_after_seconds: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def reason_required(self) -> WaitRequest:
+        if not self.reason.strip():
+            raise ValueError("wait.reason must be non-empty")
+        return self
+
+
 class PlannerResult(BaseModel):
     schema_version: Literal[2]
     actor: Literal["planner"]
@@ -98,6 +111,7 @@ class PlannerResult(BaseModel):
     review: ReviewRequest | None = None
     plan_summary: str
     notes: list[str] = Field(default_factory=list)
+    wait: WaitRequest | None = None
 
     @model_validator(mode="after")
     def planner_constraints(self) -> PlannerResult:
@@ -106,6 +120,9 @@ class PlannerResult(BaseModel):
                 raise ValueError("Planner review_requested requires a review request")
             if self.review.scope != "plan":
                 raise ValueError("Planner may only request scope=plan")
+        if self.status == "waiting":
+            if self.wait is None:
+                raise ValueError("Planner waiting requires a wait request")
         return self
 
 
@@ -114,9 +131,16 @@ class WorkerResult(BaseModel):
     actor: Literal["worker"]
     status: WorkerStatus
     review: ReviewRequest | None = None
+    wait: WaitRequest | None = None
     work_summary: str
     verification: list[VerificationEvidence] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def worker_constraints(self) -> WorkerResult:
+        if self.status == "waiting" and self.wait is None:
+            raise ValueError("Worker waiting requires a wait request")
+        return self
 
 
 class Finding(BaseModel):

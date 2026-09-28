@@ -34,13 +34,14 @@ def run_lifecycle(
     *,
     config: AutoLoopConfig | None = None,
     artifact_root: Path | None = None,
+    clock=None,
 ):
     """Integration helper: prepare from the bootstrapped manifest unless config is supplied."""
     if config is not None:
         from auto_loop.paths import resolved_artifact_root
 
         root = artifact_root or resolved_artifact_root(repo, config.artifacts_root)
-        return _core_run_lifecycle(repo, options, provider, config=config, artifact_root=root)
+        return _core_run_lifecycle(repo, options, provider, config=config, artifact_root=root, clock=clock)
 
     manifest_path = bootstrapped_manifest_path(repo)
     operational = resolve_operational_source(manifest_path)
@@ -52,6 +53,7 @@ def run_lifecycle(
             provider,
             config=frozen,
             artifact_root=operational.artifact_root,
+            clock=clock,
         )
     if has_active_lifecycle(operational.workspace, operational.artifact_root):
         prepared = prepare_repo_for_run(operational, resume=True)
@@ -64,6 +66,7 @@ def run_lifecycle(
             provider,
             config=operational.config,
             artifact_root=operational.artifact_root,
+            clock=clock,
         )
     else:
         prepared = prepare_repo_for_run(operational, resume=True)
@@ -76,6 +79,7 @@ def run_lifecycle(
         provider,
         config=prepared.config,
         artifact_root=prepared.artifact_root,
+        clock=clock,
     )
 
 

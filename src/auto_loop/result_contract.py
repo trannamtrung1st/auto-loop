@@ -23,12 +23,15 @@ _RESULT_RULES: dict[Role, str] = {
 - Every serialized result must include schema_version=2 and actor=planner.
 - status=review_requested requires a non-null review with scope=plan.
 - status=blocked may omit review; explain the blocker in plan_summary and notes.
+- status=waiting requires wait.reason. retry_after_seconds is a hint the controller may clamp.
+- Use waiting only when an external condition should change without operator action.
 - Never emit reviewer verdict fields or worker-style whole-task completion.""",
     "worker": """\
 - Every serialized result must include schema_version=2 and actor=worker.
-- `status` is a controller handoff action, not implementation progress. It has exactly two values:
+- `status` is a controller handoff action, not implementation progress. It has exactly three values:
   - `review_requested`: work/evidence is ready for review (even when more batches remain).
-  - `blocked`: work cannot proceed because of a blocker.
+  - `blocked`: progress requires operator or other intervention that will not happen by waiting.
+  - `waiting`: external work is already in progress and should change without operator action. Include wait.reason.
 - Never use progress states such as `implementing`, `in_progress`, `continued`, `done`, or `complete`.
 - status=review_requested should include review describing scope, target, summary, and verification.
 - For committed Git changes, do not add a git_range target and do not set base_commit or head_commit.

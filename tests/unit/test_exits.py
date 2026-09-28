@@ -8,6 +8,7 @@ def test_exit_code_values_match_proposal():
     assert int(ExitCode.BLOCKED) == 2
     assert int(ExitCode.LIMIT_REACHED) == 3
     assert int(ExitCode.STOPPED) == 4
+    assert int(ExitCode.WAITING) == 5
     assert int(ExitCode.CONFIG_ERROR) == 10
     assert int(ExitCode.PROVIDER_ERROR) == 11
     assert int(ExitCode.PROTOCOL_ERROR) == 12

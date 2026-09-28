@@ -72,7 +72,11 @@ Request `scope=final` only when scoped batches have passed review and verificati
 
 ## Blocked work
 
-If blocked, explain the blocker and emit worker `status=blocked` for independent reviewer assessment.
+If blocked, explain the blocker and emit worker `status=blocked` for independent reviewer assessment. Use `blocked` when an operator, push, credential, approval, or other intervention is required. Waiting will not make that condition happen.
+
+## Waiting
+
+If external work is already underway and no useful local action remains, emit `status=waiting` with `wait.reason` and an optional `retry_after_seconds` hint. Do not use `waiting` when someone still needs to push, approve, or supply a secret. Do not treat elapsed time as proof the external condition succeeded.
 
 End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block conforming to
 `AUTO_LOOP_RESULT_SCHEMA` from your first-turn instructions (see `AUTO_LOOP_RESULT_EXAMPLE`).

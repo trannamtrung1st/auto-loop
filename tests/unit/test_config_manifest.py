@@ -68,6 +68,8 @@ def test_packaged_full_template_parses():
     cfg = parse_config_dict(yaml.safe_load(text))
     assert cfg.run.protocol_retries == 1
     assert cfg.run.require_blocker_review is True
+    assert cfg.run.wait_mode == "auto"
+    assert cfg.run.wait_default_seconds == 60
     assert cfg.provider.cursor.reviewer_extra_args == ["--force"]
     assert cfg.agents["reviewer"].mode == "agent"
     assert cfg.context.version == 1

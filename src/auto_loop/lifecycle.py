@@ -29,6 +29,7 @@ class LifecycleStatus(StrEnum):
     STOPPED = "stopped"
     COMPLETED = "completed"
     BLOCKED = "blocked"
+    WAITING = "waiting"
     LIMIT_REACHED = "limit_reached"
     ERROR = "error"
 
@@ -54,6 +55,7 @@ class ActiveReview(BaseModel):
     plan_summary: str | None = None
     plan_sha256: str | None = None
     targets: list[ActiveReviewTarget] = Field(default_factory=list)
+    wait_retry_after_seconds: int | None = None
 
     @property
     def has_git_target(self) -> bool:
@@ -127,6 +129,22 @@ class HistoryReconciliation(BaseModel):
     needs_decision: bool = False
 
 
+class WaitingContext(BaseModel):
+    """Durable schedule for a reviewer-confirmed passive external wait."""
+
+    reason: str
+    implementer_slot: SessionSlot
+    first_waited_at: datetime
+    next_check_at: datetime
+    deadline_at: datetime
+    retry_after_seconds: int
+    fingerprint: str
+    confirmed_review_file: str | None = None
+    review_scope: ReviewScope | None = None
+    review_target: str | None = None
+    recheck_pending: bool = False
+
+
 class BlockedResumeContext(BaseModel):
     """One-shot implementer context after consuming a blocked suspension."""
 
@@ -194,6 +212,8 @@ class LifecycleState(BaseModel):
     worker_no_progress_streak: int = 0
     last_worker_progress_key: str | None = None
     last_blocker_fingerprint: str | None = None
+    last_confirmed_wait_fingerprint: str | None = None
+    waiting_context: WaitingContext | None = None
     legacy_v1_sessions: dict[str, Any] | None = None
     blocked_resume_context: BlockedResumeContext | None = None
     history_reconciliation: HistoryReconciliation | None = None
@@ -417,6 +437,8 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
         data = dict(data)
         data.setdefault("blocked_resume_context", None)
         data.setdefault("last_blocker_fingerprint", None)
+        data.setdefault("last_confirmed_wait_fingerprint", None)
+        data.setdefault("waiting_context", None)
         data.setdefault("last_run_failure", None)
         data.setdefault("history_reconciliation", None)
         return data
@@ -486,6 +508,10 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
         migrated["legacy_v1_sessions"] = old_sessions
         migrated["active_review"] = None
 
+    migrated.setdefault("blocked_resume_context", None)
+    migrated.setdefault("last_blocker_fingerprint", None)
+    migrated.setdefault("last_confirmed_wait_fingerprint", None)
+    migrated.setdefault("waiting_context", None)
     return migrated
 
 

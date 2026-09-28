@@ -143,6 +143,7 @@ def _run_label(
         "completed": "complete",
         "stopped": "interrupted",
         "blocked": "blocked",
+        "waiting": "waiting",
         "limit_reached": "limit reached",
         "error": "error",
     }
@@ -311,6 +312,18 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
                 f"protocol error: {protocol_failure.session} turn {protocol_failure.turn} · repair exhausted",
                 f"resume: auto-loop resume {config_rel}",
                 f"reason: {reason_line}",
+            ]
+        )
+    if state.waiting_context is not None and state.status.value == "waiting":
+        waiting = state.waiting_context
+        lines.extend(
+            [
+                "",
+                "Status: WAITING",
+                f"Waiting for: {waiting.reason}",
+                f"Resume session: {waiting.implementer_slot}",
+                f"Next check: {waiting.next_check_at.isoformat()}",
+                f"Wait deadline: {waiting.deadline_at.isoformat()}",
             ]
         )
     if blocked is not None:

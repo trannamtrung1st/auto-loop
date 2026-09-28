@@ -55,6 +55,10 @@ run:
   max_consecutive_worker_no_progress: 3
   # When false, worker/planner BLOCKED suspends immediately without a blocker review turn.
   require_blocker_review: true
+  # auto: stay alive until the next wait re-check. suspend: persist WAITING and exit 5.
+  wait_mode: auto
+  wait_default_seconds: 60
+  wait_max_seconds: 1800
 
 provider:
   type: cursor

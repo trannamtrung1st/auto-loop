@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -35,6 +35,7 @@ from auto_loop.lifecycle import (
     PendingRevision,
     ProtocolRunFailure,
     SessionSlot,
+    WaitingContext,
     adopt_session_identity,
     create_lifecycle,
     next_cycle_id,
@@ -121,6 +122,14 @@ from auto_loop.blockers import (
     compute_blocker_fingerprint,
     product_evidence_fingerprint,
 )
+from auto_loop.waiting import (
+    Clock,
+    SystemClock,
+    clamp_retry_seconds,
+    compute_wait_fingerprint,
+    deadline_from,
+    ensure_utc,
+)
 from auto_loop.blocked_resume import reconcile_blocked_resume
 from auto_loop.history_reconciliation import reconcile_approved_history
 from auto_loop.status_report import resume_progress_text
@@ -170,6 +179,7 @@ class LifecycleRunner:
         invoker: ProviderInvoker,
         *,
         initial_lifecycle_id: str | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self.repo = repo
         self.config = config
@@ -188,7 +198,69 @@ class LifecycleRunner:
         self._console = RunConsole(console_level)
         self._run_started_mono = time.monotonic()
         self._stop = RunStopController(repo, artifact_root=self.artifact_root)
+        self._clock = clock or SystemClock()
+        bind = getattr(self._clock, "bind_runner", None)
+        if callable(bind):
+            bind(self)
         self._limit_reason: str | None = None
+
+    def _abort_wait(self) -> str | None:
+        if self._stop.requested:
+            return "stop"
+        if self._runtime_exceeded():
+            return "runtime"
+        return None
+
+    def _await_waiting(self, state: LifecycleState) -> bool:
+        """Sleep or arm a re-check. Return False when the loop should stop."""
+        if self._terminal_exit is not None:
+            return False
+        if state.status != LifecycleStatus.WAITING or state.waiting_context is None:
+            return True
+        ctx = state.waiting_context
+        now = ensure_utc(self._clock.now())
+        if now >= ensure_utc(ctx.deadline_at):
+            self._timeout_waiting(state, reason=ctx.reason, implementer=ctx.implementer_slot)
+            return False
+        if now < ensure_utc(ctx.next_check_at):
+            if self.config.run.wait_mode == "suspend":
+                self._terminal_exit = ExitCode.WAITING
+                self._terminal_message = ctx.reason
+                return False
+            abort = self._clock.sleep_until(ensure_utc(ctx.next_check_at), self._abort_wait)
+            if abort == "stop" or self._stop.requested:
+                self._handle_stop_requested(self._load_state() or state)
+                return False
+            if abort == "runtime" or self._runtime_exceeded():
+                self._mark_limit_reached(self._load_state() or state, "max_runtime_minutes")
+                return False
+            state = self._load_state() or state
+            ctx = state.waiting_context
+            if ctx is None or state.status != LifecycleStatus.WAITING:
+                return self._terminal_exit is None
+            if ensure_utc(self._clock.now()) >= ensure_utc(ctx.deadline_at):
+                self._timeout_waiting(state, reason=ctx.reason, implementer=ctx.implementer_slot)
+                return False
+        state = self._load_state() or state
+        ctx = state.waiting_context
+        if ctx is None:
+            return True
+        ctx.recheck_pending = True
+        state.waiting_context = ctx
+        state.status = LifecycleStatus.RUNNING
+        state.next_session = ctx.implementer_slot
+        state.updated_at = utc_now()
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "waiting_recheck",
+                "lifecycle_id": state.lifecycle_id,
+                "session": ctx.implementer_slot,
+            },
+        )
+        self._save_state(state)
+        return True
 
     def _excludes(self) -> tuple[str, ...]:
         return product_excludes(self.config)
@@ -475,6 +547,7 @@ class LifecycleRunner:
             first_execution_turn=first_execution,
             pending_revision=state.pending_revision,
             blocked_resume=state.blocked_resume_context,
+            waiting=state.waiting_context if state.waiting_context and state.waiting_context.recheck_pending else None,
         )
 
     def _parse_provider_attempt(
@@ -1212,7 +1285,197 @@ class LifecycleRunner:
         state.next_session = session_purpose
         self._persist_after_turn(state)
 
+    def _wait_summary(self, result: PlannerResult | WorkerResult) -> str:
+        if result.wait is None:
+            return ""
+        return result.wait.reason.strip()
+
+    def _clear_waiting(self, state: LifecycleState) -> None:
+        state.waiting_context = None
+        state.last_confirmed_wait_fingerprint = None
+
+    def _schedule_wait(
+        self,
+        state: LifecycleState,
+        *,
+        reason: str,
+        implementer: SessionSlot,
+        fingerprint: str,
+        retry_hint: int | None,
+        review_rel: str | None,
+        scope: str | None,
+        target: str | None,
+        event_type: str,
+    ) -> None:
+        now = ensure_utc(self._clock.now())
+        existing = state.waiting_context
+        if existing is None:
+            first = now
+            deadline = deadline_from(first, self.config.run.wait_max_seconds)
+        else:
+            first = ensure_utc(existing.first_waited_at)
+            deadline = ensure_utc(existing.deadline_at)
+        remaining = int((deadline - now).total_seconds())
+        if remaining <= 0:
+            self._timeout_waiting(state, reason=reason, implementer=implementer)
+            return
+        delay = clamp_retry_seconds(
+            retry_hint,
+            default_seconds=self.config.run.wait_default_seconds,
+            max_seconds=self.config.run.wait_max_seconds,
+            remaining_seconds=remaining,
+        )
+        next_check = now + timedelta(seconds=delay)
+        if next_check > deadline:
+            next_check = deadline
+        state.waiting_context = WaitingContext(
+            reason=reason,
+            implementer_slot=implementer,
+            first_waited_at=first,
+            next_check_at=next_check,
+            deadline_at=deadline,
+            retry_after_seconds=delay,
+            fingerprint=fingerprint,
+            confirmed_review_file=review_rel
+            if review_rel is not None
+            else (existing.confirmed_review_file if existing else None),
+            review_scope=scope or (existing.review_scope if existing else None),
+            review_target=target or (existing.review_target if existing else None),
+            recheck_pending=False,
+        )
+        state.last_confirmed_wait_fingerprint = fingerprint
+        state.status = LifecycleStatus.WAITING
+        state.next_session = implementer
+        state.active_review = None
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": event_type,
+                "reason": reason,
+                "next_check_at": next_check.isoformat(),
+                "deadline_at": deadline.isoformat(),
+                "lifecycle_id": state.lifecycle_id,
+            },
+        )
+        self._persist_after_turn(state)
+        if self.config.run.wait_mode == "suspend":
+            self._terminal_exit = ExitCode.WAITING
+            self._terminal_message = reason
+
+    def _timeout_waiting(
+        self,
+        state: LifecycleState,
+        *,
+        reason: str,
+        implementer: SessionSlot,
+    ) -> None:
+        ctx = state.waiting_context
+        waited = ""
+        if ctx is not None:
+            delta = ensure_utc(ctx.deadline_at) - ensure_utc(ctx.first_waited_at)
+            minutes = max(1, int(delta.total_seconds() // 60))
+            waited = f"{minutes} minutes"
+        summary = "\n".join(
+            [
+                "External wait deadline exceeded.",
+                "",
+                "Waiting for:",
+                reason,
+                "",
+                "Waited:",
+                waited or "the configured wait window",
+                "",
+                "Last observed result:",
+                "Still pending",
+                "",
+                "Resume after the external condition changes with auto-loop resume.",
+            ]
+        )
+        append_event(
+            self.repo,
+            self.config,
+            {"type": "waiting_timeout", "lifecycle_id": state.lifecycle_id},
+        )
+        self._clear_waiting(state)
+        self._suspend_lifecycle_blocked(
+            state,
+            summary=summary,
+            implementer_slot=implementer,
+            reviewer_slot=None,
+            review_rel=ctx.confirmed_review_file if ctx else None,
+            active=None,
+            blocked_by_session=implementer,
+        )
+
+    def _route_implementer_waiting(
+        self,
+        state: LifecycleState,
+        *,
+        summary: str,
+        scope: str,
+        session_purpose: SessionSlot,
+        retry_hint: int | None,
+        plan_summary: str | None = None,
+        worker_summary: str | None = None,
+    ) -> None:
+        implementer: SessionSlot = "planner" if session_purpose == "plan_reviewer" else "worker"
+        fp_input = self._blocker_fingerprint_input(
+            state, summary=summary, implementer_slot=implementer
+        )
+        fingerprint = compute_wait_fingerprint(fp_input)
+        if (
+            state.last_confirmed_wait_fingerprint == fingerprint
+            and state.waiting_context is not None
+        ):
+            self._schedule_wait(
+                state,
+                reason=summary,
+                implementer=implementer,
+                fingerprint=fingerprint,
+                retry_hint=retry_hint,
+                review_rel=None,
+                scope=state.waiting_context.review_scope,
+                target=state.waiting_context.review_target,
+                event_type="waiting_rescheduled",
+            )
+            return
+        append_event(
+            self.repo,
+            self.config,
+            {"type": "implementer_waiting", "turn": state.turn, "lifecycle_id": state.lifecycle_id},
+        )
+        cycle_id, round_no = (
+            self._planning_review_cycle(state, "waiting")
+            if scope == "plan"
+            else (next_cycle_id(state), 1)
+        )
+        state.active_review = ActiveReview(
+            cycle_id=cycle_id,
+            round=round_no,
+            scope=scope,  # type: ignore[arg-type]
+            target="waiting",
+            summary=summary,
+            session_purpose=session_purpose,
+            plan_summary=plan_summary,
+            worker_summary=worker_summary,
+            plan_sha256=self._plan_hash() if plan_summary is not None else None,
+            wait_retry_after_seconds=retry_hint,
+        )
+        state.next_session = session_purpose
+        self._persist_after_turn(state)
+
     def _apply_planner_result(self, state: LifecycleState, result: PlannerResult) -> None:
+        if result.status == "waiting":
+            self._route_implementer_waiting(
+                state,
+                summary=self._wait_summary(result) or result.plan_summary,
+                scope="plan",
+                session_purpose="plan_reviewer",
+                retry_hint=result.wait.retry_after_seconds if result.wait else None,
+                plan_summary=result.plan_summary,
+            )
+            return
         if result.status == "blocked":
             self._route_implementer_blocked(
                 state,
@@ -1229,6 +1492,13 @@ class LifecycleRunner:
             )
             return
         clear_blocker_tracking(state)
+        if state.waiting_context is not None:
+            append_event(
+                self.repo,
+                self.config,
+                {"type": "waiting_resolved", "lifecycle_id": state.lifecycle_id},
+            )
+        self._clear_waiting(state)
 
         if result.review is None or result.review.scope != "plan":
             raise GitProtocolError("Planner must request plan review")
@@ -1333,6 +1603,17 @@ class LifecycleRunner:
         state: LifecycleState,
         result: WorkerResult,
     ) -> None:
+        if result.status == "waiting":
+            self._route_implementer_waiting(
+                state,
+                summary=self._wait_summary(result) or result.work_summary,
+                scope="batch",
+                session_purpose="reviewer",
+                retry_hint=result.wait.retry_after_seconds if result.wait else None,
+                worker_summary=result.work_summary,
+            )
+            return
+
         if result.status == "blocked":
             self._route_implementer_blocked(
                 state,
@@ -1345,6 +1626,13 @@ class LifecycleRunner:
             return
 
         clear_blocker_tracking(state)
+        if state.waiting_context is not None:
+            append_event(
+                self.repo,
+                self.config,
+                {"type": "waiting_resolved", "lifecycle_id": state.lifecycle_id},
+            )
+        self._clear_waiting(state)
 
         if not state.plan_approved:
             raise GitProtocolError("Worker cannot run before initial plan PASS")
@@ -1741,6 +2029,28 @@ class LifecycleRunner:
             self._handle_reviewer_blocked(state, result, review_rel, implementer_slot, slot)
             return
 
+        if active.target == "waiting" and result.verdict == "pass":
+            self._emit_review_result(state, slot, result)
+            base_summary = self._blocker_summary_from_active(active)
+            summary = base_summary or (result.summary or "").strip() or "external wait confirmed"
+            fingerprint = compute_wait_fingerprint(
+                self._blocker_fingerprint_input(
+                    state, summary=summary, implementer_slot=implementer_slot
+                )
+            )
+            self._schedule_wait(
+                state,
+                reason=summary,
+                implementer=implementer_slot,
+                fingerprint=fingerprint,
+                retry_hint=active.wait_retry_after_seconds,
+                review_rel=review_rel,
+                scope=active.scope,
+                target=active.target,
+                event_type="lifecycle_waiting",
+            )
+            return
+
         if active.target == "blocked" and result.verdict == "pass":
             self._emit_review_result(state, slot, result)
             base_summary = self._blocker_summary_from_active(active)
@@ -1934,7 +2244,10 @@ class LifecycleRunner:
                 artifact_root=self.artifact_root,
             )
         if state.status in (LifecycleStatus.STOPPED, LifecycleStatus.LIMIT_REACHED):
-            state.status = LifecycleStatus.RUNNING
+            if state.status == LifecycleStatus.STOPPED and state.waiting_context is not None:
+                state.status = LifecycleStatus.WAITING
+            else:
+                state.status = LifecycleStatus.RUNNING
             state.updated_at = utc_now()
             self._save_state(state)
         prune_run_history(self.repo, self.config, state.lifecycle_id)
@@ -1981,6 +2294,9 @@ class LifecycleRunner:
                 if self._runtime_exceeded():
                     self._mark_limit_reached(state, "max_runtime_minutes")
                     break
+                if not self._await_waiting(state):
+                    break
+                state = self._load_state() or state
                 turns += 1
                 if (
                     self.config.git.protect_approved_history
@@ -2045,6 +2361,11 @@ class LifecycleRunner:
             )
         if self._terminal_exit is not None:
             return self._terminal_run_outcome(self._terminal_exit, state)
+        state = self._load_state() or state
+        if state.status == LifecycleStatus.WAITING:
+            reason = state.waiting_context.reason if state.waiting_context else None
+            self._terminal_message = reason
+            return self._terminal_run_outcome(ExitCode.WAITING, state)
         if state.status != LifecycleStatus.LIMIT_REACHED:
             self._mark_limit_reached(state, "max_turns")
         return self._terminal_run_outcome(ExitCode.LIMIT_REACHED, state)
@@ -2089,6 +2410,7 @@ def run_lifecycle(
     config: AutoLoopConfig,
     artifact_root: Path,
     inputs: RunInputs | None = None,
+    clock: Clock | None = None,
 ) -> RunOutcome:
     from auto_loop.locking import ConcurrentRunError, acquire_workspace_lock
 
@@ -2114,6 +2436,7 @@ def run_lifecycle(
             options,
             invoker,
             initial_lifecycle_id=lifecycle_id if existing is None else None,
+            clock=clock,
         )
         return runner.run()
     finally:

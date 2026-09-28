@@ -99,6 +99,9 @@ class LimitSettings(BaseModel):
     protocol_retries: int = Field(default=1, ge=0)
     max_consecutive_worker_no_progress: int = Field(default=3, ge=1)
     require_blocker_review: bool = True
+    wait_mode: Literal["auto", "suspend"] = "auto"
+    wait_default_seconds: int = Field(default=60, ge=1)
+    wait_max_seconds: int = Field(default=1800, ge=1)
 
 
 class ProtectionSettings(ManifestModel):
@@ -127,6 +130,9 @@ class RunSettings(ManifestModel):
     protocol_retries: int = Field(default=1, ge=0)
     max_consecutive_worker_no_progress: int = Field(default=3, ge=1)
     require_blocker_review: bool = True
+    wait_mode: Literal["auto", "suspend"] = "auto"
+    wait_default_seconds: int = Field(default=60, ge=1)
+    wait_max_seconds: int = Field(default=1800, ge=1)
 
 
 class TaskSettings(ManifestModel):

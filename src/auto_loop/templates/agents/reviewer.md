@@ -73,5 +73,7 @@ For `scope=final`, re-read the entire task and inspect the repository holistical
 
 If the worker or planner reports blocked, independently investigate. Return `BLOCKED` when external intervention genuinely prevents progress. Return `PASS` only to confirm that the reported blocker is legitimate (the controller will suspend the lifecycle; it will not send the implementer another turn). Return `REVISE` when the implementer can make local progress instead.
 
+If the worker or planner reports waiting, independently investigate. Return `PASS` only when the wait is legitimate: external progress is already underway and no useful local action is currently available (the controller will wait, not dispatch the implementer immediately). Return `REVISE` when the implementer can still make meaningful local progress. Return `BLOCKED` when the condition actually requires intervention rather than passive waiting.
+
 End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block conforming to
 `AUTO_LOOP_RESULT_SCHEMA` from your first-turn instructions (see `AUTO_LOOP_RESULT_EXAMPLE`).

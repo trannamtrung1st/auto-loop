@@ -42,6 +42,10 @@ When plan reviewer returns findings:
 - provide evidence when a finding is not applicable;
 - request plan review again.
 
+## Blocked and waiting
+
+Emit `status=blocked` when planning cannot continue without operator intervention. Emit `status=waiting` with `wait.reason` only when an external condition is already in progress and should change without operator action. `retry_after_seconds` is a hint.
+
 ## End of role
 
 When plan review passes, your planning role is finished for this lifecycle.

@@ -8,6 +8,7 @@ class ExitCode(IntEnum):
     BLOCKED = 2
     LIMIT_REACHED = 3
     STOPPED = 4
+    WAITING = 5
 
     CONFIG_ERROR = 10
     PROVIDER_ERROR = 11

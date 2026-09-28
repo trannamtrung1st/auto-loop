@@ -134,6 +134,45 @@ class ScriptedProvider:
             },
         )
 
+    def set_worker_waiting(
+        self,
+        reason: str = "external work is already running",
+        *,
+        retry_after_seconds: int = 60,
+    ) -> None:
+        self.set_response(
+            "worker",
+            {
+                "schema_version": 2,
+                "actor": "worker",
+                "status": "waiting",
+                "review": None,
+                "wait": {"reason": reason, "retry_after_seconds": retry_after_seconds},
+                "work_summary": reason,
+                "verification": [],
+                "notes": [],
+            },
+        )
+
+    def set_planner_waiting(
+        self,
+        reason: str = "external planning input is already in progress",
+        *,
+        retry_after_seconds: int = 60,
+    ) -> None:
+        self.set_response(
+            "planner",
+            {
+                "schema_version": 2,
+                "actor": "planner",
+                "status": "waiting",
+                "review": None,
+                "wait": {"reason": reason, "retry_after_seconds": retry_after_seconds},
+                "plan_summary": reason,
+                "notes": [],
+            },
+        )
+
     def set_worker_blocked(self, summary: str = "blocked on external dependency") -> None:
         self.set_response(
             "worker",

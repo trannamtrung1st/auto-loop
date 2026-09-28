@@ -297,7 +297,7 @@ def _reject_implementer_forbidden_fields(data: dict[str, Any], actor: str) -> No
         raise ProtocolParseError(
             ProtocolDiagnostic(
                 code=ProtocolDiagnosticCode.WORKER_FORBIDDEN_VERDICT,
-                message=f"{actor.capitalize()} status must be review_requested or blocked",
+                message=f"{actor.capitalize()} status must be review_requested, blocked, or waiting",
                 detail=f"status={data.get('status')!r}",
             )
         )

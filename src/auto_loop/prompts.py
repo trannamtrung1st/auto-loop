@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from auto_loop.lifecycle import ActiveReview, BlockedResumeContext, LifecycleState, PendingRevision
+from auto_loop.lifecycle import (
+    ActiveReview,
+    BlockedResumeContext,
+    LifecycleState,
+    PendingRevision,
+    WaitingContext,
+)
 from auto_loop.models import Role, SessionSlot
 from auto_loop.protocol import protocol_repair_diagnostic_lines
 from auto_loop.result_contract import format_output_repair_protocol_contract
@@ -30,6 +36,7 @@ class TurnContext:
     first_execution_turn: bool = False
     pending_revision: PendingRevision | None = None
     blocked_resume: BlockedResumeContext | None = None
+    waiting: WaitingContext | None = None
 
 
 def _append_manifest(body: str, manifest: str) -> str:
@@ -130,6 +137,24 @@ def _blocked_resume_lines(ctx: TurnContext) -> list[str]:
     return lines
 
 
+def _waiting_recheck_lines(ctx: TurnContext) -> list[str]:
+    waiting = ctx.waiting
+    if waiting is None:
+        return []
+    return [
+        "You previously reported WAITING because:",
+        waiting.reason,
+        "",
+        "The configured wait interval has elapsed.",
+        "Re-check the external condition now.",
+        "If it is still passively pending, return WAITING again.",
+        "If operator intervention is required, return BLOCKED.",
+        "If progress is now possible, continue normally.",
+        "Do not assume the external event succeeded merely because time elapsed.",
+        "",
+    ]
+
+
 def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
     lines = [
         "Continue your planner role for the planning phase.",
@@ -147,6 +172,7 @@ def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
         "",
     ]
     lines.extend(_blocked_resume_lines(ctx))
+    lines.extend(_waiting_recheck_lines(ctx))
     if ctx.repair_reason:
         lines.extend(_controller_repair_lines(ctx))
     elif ctx.interrupted:
@@ -235,6 +261,7 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
         ]
     )
     lines.extend(_blocked_resume_lines(ctx))
+    lines.extend(_waiting_recheck_lines(ctx))
     if ctx.repair_reason:
         lines.extend(_controller_repair_lines(ctx))
     elif ctx.interrupted:
