@@ -159,13 +159,20 @@ class BlockedResumeContext(BaseModel):
     resume_session: SessionSlot
 
 
+ReviewRecoveryOrigin = Literal["reviewer_mutation", "stale_evidence"]
+
+
 class ReviewMutationRecovery(BaseModel):
     """Discarded reviewer attempt whose evidence must be reconciled on resume.
 
     The suspended review is not active approval evidence. Resume either restores
     it for a fresh reviewer inspection or leaves it discarded for the implementer.
+
+    ``origin`` distinguishes reviewer-turn mutation from stale persisted review
+    evidence discovered before dispatch (for example legacy lifecycle state).
     """
 
+    origin: ReviewRecoveryOrigin = "reviewer_mutation"
     reviewer_slot: SessionSlot
     implementer_slot: SessionSlot
     scope: ReviewScope

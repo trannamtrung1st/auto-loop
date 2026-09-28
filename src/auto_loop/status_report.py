@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from auto_loop.active_review_evidence import STALE_REVIEW_REASON
 from auto_loop.config import AutoLoopConfig, load_resolved_config_optional
 from auto_loop.models import FALSE_BLOCKER_ENDGAME
 from auto_loop.git import head_commit
@@ -278,8 +279,10 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
     ]
     hide_active_review = (
         recovery is not None
-        and not recovery.reconciled
-        and next_session == recovery.implementer_slot
+        and (
+            (not recovery.reconciled and next_session == recovery.implementer_slot)
+            or (recovery.reconciled and recovery.origin == "stale_evidence")
+        )
     )
     if state.active_review is not None and not hide_active_review:
         review = state.active_review
@@ -287,17 +290,31 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
             f"active review: {review.scope}/{review.target} cycle {review.cycle_id} round {review.round}"
         )
     if recovery is not None:
-        lines.extend(
-            [
-                "",
-                "review mutation recovery:",
-                f"  scope: {recovery.scope}",
-                f"  target: {recovery.target}",
-                f"  expected HEAD: {short_sha(recovery.expected_head)}",
-                f"  observed HEAD: {short_sha(recovery.observed_head)}",
-                f"  next session: {next_session}",
-            ]
-        )
+        if recovery.origin == "stale_evidence":
+            lines.extend(
+                [
+                    "",
+                    "review reconciliation:",
+                    f"  reason: {STALE_REVIEW_REASON}",
+                    f"  scope: {recovery.scope}",
+                    f"  target: {recovery.target}",
+                    f"  expected HEAD: {short_sha(recovery.expected_head)}",
+                    f"  current HEAD: {short_sha(recovery.observed_head)}",
+                    f"  next session: {next_session}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "review mutation recovery:",
+                    f"  scope: {recovery.scope}",
+                    f"  target: {recovery.target}",
+                    f"  expected HEAD: {short_sha(recovery.expected_head)}",
+                    f"  observed HEAD: {short_sha(recovery.observed_head)}",
+                    f"  next session: {next_session}",
+                ]
+            )
     if state.pending_revision is not None:
         pending = state.pending_revision
         pending_line = (

@@ -9,6 +9,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Protocol
 
+from auto_loop.active_review_evidence import (
+    ActiveReviewEvidenceMismatch,
+    assess_active_review_evidence_mismatch,
+    active_review_evidence_matches,
+)
 from auto_loop.config import AutoLoopConfig
 from auto_loop.context_manifest import validate_context
 from auto_loop.task_resources import compose_turn_resource_manifest
@@ -92,6 +97,7 @@ from auto_loop.protection import (
     ReviewSnapshot,
     assert_protected_unchanged,
     assert_review_snapshot_unchanged,
+    capture_product_fingerprint,
     capture_protected_baseline,
     capture_review_snapshot,
 )
@@ -2055,6 +2061,129 @@ class LifecycleRunner:
         )
         return state
 
+    def _reviewer_evidence_stale(self, state: LifecycleState) -> bool:
+        active = state.active_review
+        if active is None:
+            return False
+        return not active_review_evidence_matches(self.repo, self.config, active)
+
+    def _guard_active_review_before_reviewer(
+        self, state: LifecycleState, slot: SessionSlot
+    ) -> bool:
+        """Return False when stale review evidence was reconciled instead of dispatching."""
+        active = state.active_review
+        if active is None:
+            raise GitProtocolError("Reviewer invoked without active review")
+        mismatch = assess_active_review_evidence_mismatch(self.repo, self.config, active)
+        if mismatch is None:
+            return True
+        self._invalidate_stale_active_review(state, slot, active, mismatch)
+        return False
+
+    def _invalidate_stale_active_review(
+        self,
+        state: LifecycleState,
+        slot: SessionSlot,
+        active: ActiveReview,
+        mismatch: ActiveReviewEvidenceMismatch,
+    ) -> None:
+        if (
+            state.review_mutation_recovery is not None
+            and not state.review_mutation_recovery.reconciled
+        ):
+            return
+        implementer: SessionSlot = "planner" if slot == "plan_reviewer" else "worker"
+        expected = mismatch.expected_head or active.current_candidate_head or active.git_head
+        observed = mismatch.observed_head
+        if observed is None:
+            try:
+                observed = self._optional_head()
+            except GitProtocolError:
+                observed = None
+        product = capture_product_fingerprint(
+            self.repo, excludes=self._excludes(), config=self.config
+        )
+        plan_path = self.repo / self.config.plan_file
+        plan_hash = sha256_file(plan_path) if plan_path.is_file() else None
+        discarded = self._discard_stale_reviewer_attempt(state, slot)
+        state.reviewer_retry_after_mutation = False
+        state.active_review = None
+        state.next_session = implementer
+        state.review_mutation_recovery = ReviewMutationRecovery(
+            origin="stale_evidence",
+            reviewer_slot=slot,
+            implementer_slot=implementer,
+            scope=active.scope,
+            target=active.target,
+            cycle_id=active.cycle_id,
+            round=active.round,
+            expected_head=expected or None,
+            observed_head=observed,
+            review_file=self._latest_review_path(),
+            detected_at=utc_now(),
+            expected_plan_sha256=active.plan_sha256 or plan_hash,
+            expected_product_rows=[list(row) for row in product.rows],
+            suspended_review=active,
+            discarded_verdict=discarded,
+            reconciled=True,
+        )
+        state.updated_at = utc_now()
+        self._save_state(state)
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "active_review_stale",
+                "lifecycle_id": state.lifecycle_id,
+                "reason": mismatch.reason,
+                "reviewer_slot": slot,
+                "implementer_slot": implementer,
+                "scope": active.scope,
+                "target": active.target,
+                "cycle_id": active.cycle_id,
+                "expected_head": expected,
+                "observed_head": observed,
+                "details": list(mismatch.details),
+                "discarded_verdict": discarded,
+            },
+        )
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "active_review_invalidated",
+                "lifecycle_id": state.lifecycle_id,
+                "scope": active.scope,
+                "target": active.target,
+                "cycle_id": active.cycle_id,
+                "expected_head": expected,
+                "observed_head": observed,
+                "implementer_slot": implementer,
+            },
+        )
+
+    def _reconcile_stale_active_review(self, state: LifecycleState) -> LifecycleState:
+        """Invalidate persisted active reviews whose evidence no longer matches the repo."""
+        if state.active_review is None:
+            return state
+        if (
+            state.review_mutation_recovery is not None
+            and not state.review_mutation_recovery.reconciled
+        ):
+            return state
+        slot = state.active_review.session_purpose
+        if state.next_session not in (slot,):
+            return state
+        if not self._reviewer_evidence_stale(state):
+            return state
+        mismatch = assess_active_review_evidence_mismatch(
+            self.repo, self.config, state.active_review
+        )
+        if mismatch is None:
+            return state
+        self._invalidate_stale_active_review(state, slot, state.active_review, mismatch)
+        return self._load_state() or state
+
     def _clear_blocked_resume_context(self, state: LifecycleState, slot: SessionSlot) -> bool:
         ctx = state.blocked_resume_context
         if ctx is not None and slot == ctx.resume_session:
@@ -2153,6 +2282,8 @@ class LifecycleRunner:
     def _reviewer_slot_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
         if state.active_review is None:
             raise GitProtocolError("Reviewer invoked without active review")
+        if not self._guard_active_review_before_reviewer(state, slot):
+            return
         if slot == "plan_reviewer":
             self._assert_planning_slot_active(state, "plan_reviewer")
         while True:
@@ -2429,6 +2560,8 @@ class LifecycleRunner:
     def _replay_reviewer_completed_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
         if slot == "plan_reviewer":
             self._assert_planning_slot_active(state, "plan_reviewer")
+        if not self._guard_active_review_before_reviewer(state, slot):
+            return
         done = state.completed_provider_turn
         if done is None:
             return
@@ -2505,6 +2638,7 @@ class LifecycleRunner:
             state = self._reconcile_approved_history(state)
         except GitProtocolError as exc:
             return self._git_protocol_outcome(exc)
+        state = self._reconcile_stale_active_review(state)
         if self.options.resuming:
             self._console.lifecycle_resumed_progress(resume_progress_text(state))
         if state.inflight is not None:
@@ -2552,6 +2686,7 @@ class LifecycleRunner:
                     and (
                         state.review_mutation_recovery is not None
                         or state.reviewer_retry_after_mutation
+                        or self._reviewer_evidence_stale(state)
                     )
                 )
                 if stale_reviewer_result:
@@ -2560,9 +2695,20 @@ class LifecycleRunner:
                     )
                     self._save_state(state)
                 if state.completed_provider_turn is not None and state.inflight is None:
+                    done = state.completed_provider_turn
+                    if done.result_kind == "reviewer" and not self._guard_active_review_before_reviewer(
+                        state, done.session_slot
+                    ):
+                        state = self._load_state() or state
+                        continue
                     self._replay_completed_turn(state)
                 else:
                     slot = state.next_session
+                    if slot in ("reviewer", "plan_reviewer") and not self._guard_active_review_before_reviewer(
+                        state, slot
+                    ):
+                        state = self._load_state() or state
+                        continue
                     if slot == "planner":
                         self._planner_turn(state)
                     elif slot == "plan_reviewer":

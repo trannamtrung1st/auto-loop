@@ -142,6 +142,8 @@ def _review_mutation_recovery_lines(ctx: TurnContext) -> list[str]:
     recovery = ctx.review_mutation_recovery
     if recovery is None:
         return []
+    if recovery.origin == "stale_evidence":
+        return _stale_review_recovery_lines(ctx, recovery)
     if recovery.implementer_slot == "planner":
         return [
             "The previous plan-reviewer turn was discarded because plan or product state",
@@ -189,6 +191,57 @@ def _review_mutation_recovery_lines(ctx: TurnContext) -> list[str]:
         "- repair or revert it before requesting review.",
         "",
         "Do not assume the previous reviewer verdict remains valid.",
+        "",
+    ]
+
+
+def _stale_review_recovery_lines(ctx: TurnContext, recovery: ReviewMutationRecovery) -> list[str]:
+    if recovery.implementer_slot == "planner":
+        return [
+            "The persisted plan review is no longer valid because repository evidence changed",
+            "after that review request was created.",
+            "",
+            "Previous review:",
+            f"- scope: {recovery.scope}",
+            f"- target: {recovery.target}",
+            f"- expected plan evidence hash: {short_sha(recovery.expected_plan_sha256)}",
+            "",
+            "Current repository:",
+            f"- HEAD: {short_sha(ctx.head_commit)}",
+            "",
+            "The previous plan-reviewer result, if any, is not trusted.",
+            "Inspect and reconcile the current plan and repository evidence.",
+            "If the current state is legitimate in-scope planning work, request plan review again.",
+            "If the change was unintended, repair or revert it before requesting review.",
+            "Do not assume the previous plan review remains valid.",
+            "Do not implement product changes.",
+            "",
+        ]
+    return [
+        "The persisted review is no longer valid because repository evidence changed",
+        "after that review request was created.",
+        "",
+        "Previous review:",
+        f"- scope: {recovery.scope}",
+        f"- target: {recovery.target}",
+        f"- expected candidate HEAD: {short_sha(recovery.expected_head)}",
+        "",
+        "Current repository:",
+        f"- HEAD: {short_sha(ctx.head_commit)}",
+        "",
+        "The previous reviewer result, if any, is not trusted.",
+        "",
+        "Inspect and reconcile the current repository state.",
+        "",
+        "If the current state is legitimate in-scope work:",
+        "- verify it;",
+        "- submit any unapproved changes through normal batch review if required;",
+        "- request a fresh final review only when final-review invariants are satisfied.",
+        "",
+        "If the change is unintended:",
+        "- repair/revert it before requesting review.",
+        "",
+        "Do not assume the previous review remains valid.",
         "",
     ]
 
