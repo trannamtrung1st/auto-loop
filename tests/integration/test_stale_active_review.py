@@ -65,6 +65,32 @@ def _inject_legacy_stale_final(
     save_lifecycle_state(repo, state)
 
 
+def _inject_active_batch_review(repo: Path, *, candidate: str) -> None:
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    from auto_loop.review_targets import sha256_file
+
+    plan_path = repo / ".ai" / "auto-loop" / "plan.md"
+    plan_hash = sha256_file(plan_path) if plan_path.is_file() else None
+    state.active_review = ActiveReview(
+        cycle_id="review-batch-001",
+        round=1,
+        scope="batch",
+        target="W01",
+        summary="batch",
+        session_purpose="reviewer",
+        approved_base_commit=state.last_approved_commit,
+        production_head_commit=candidate,
+        current_candidate_head=candidate,
+        plan_sha256=plan_hash,
+    )
+    state.next_session = "reviewer"
+    state.review_mutation_recovery = None
+    state.completed_provider_turn = None
+    state.inflight = None
+    save_lifecycle_state(repo, state)
+
+
 def _prepare_batch_approved(repo: Path, provider: ScriptedProvider) -> str:
     approve_plan(repo, provider)
     commit_file(repo, "feature.txt", "x\n", "feature")
@@ -276,3 +302,61 @@ def test_session_ids_unchanged_after_stale_invalidation(tmp_path: Path):
         for slot in load_lifecycle_state(repo).sessions
     }
     assert before == after
+
+
+def test_dirty_product_tree_invalidates_active_review_at_same_head(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approved = _prepare_batch_approved(repo, provider)
+    evidence_before = load_lifecycle_state(repo).last_approved_commit
+    _inject_active_batch_review(repo, candidate=approved)
+    assert head_commit(repo) == approved
+    (repo / "feature.txt").write_text("uncommitted product change\n", encoding="utf-8")
+
+    start = execution_reviewer_invocation_count(provider)
+    run_lifecycle(repo, run_opts(0, resuming=True), provider)
+    assert execution_reviewer_invocation_count(provider) == start
+
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.next_session == "worker"
+    assert state.active_review is None
+    assert state.last_approved_commit == evidence_before
+    recovery = state.review_mutation_recovery
+    assert recovery is not None
+    assert recovery.origin == "stale_evidence"
+    assert recovery.scope == "batch"
+
+
+def test_dirty_tree_routes_worker_not_fresh_reviewer_after_failed_complete(
+    tmp_path: Path,
+):
+    from tests.integration.test_untrusted_reviewer_replay import (
+        _inject_failed_final_complete,
+    )
+
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approved = _prepare_batch_approved(repo, provider)
+    reviewer_session = load_lifecycle_state(repo).sessions["reviewer"].session_id or "rev-1"
+    _inject_failed_final_complete(
+        repo,
+        candidate=approved,
+        reviewer_session=reviewer_session,
+        with_repair_inflight=False,
+    )
+    assert head_commit(repo) == approved
+    (repo / "feature.txt").write_text("uncommitted product change\n", encoding="utf-8")
+
+    start = execution_reviewer_invocation_count(provider)
+    run_lifecycle(repo, run_opts(0, resuming=True), provider)
+    assert execution_reviewer_invocation_count(provider) == start
+
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.next_session == "worker"
+    assert state.reviewer_fresh_inspection_required is False
+    assert state.active_review is None
+    assert state.completed_provider_turn is None
+    assert state.review_mutation_recovery is not None
+    assert state.review_mutation_recovery.origin == "stale_evidence"

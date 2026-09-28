@@ -66,3 +66,28 @@ def test_plan_hash_mismatch(tmp_path: Path):
     assert active_review_evidence_matches(repo, config, active)
     plan_path.write_text("# changed\n", encoding="utf-8")
     assert not active_review_evidence_matches(repo, config, active)
+
+
+def test_required_mode_dirty_tree_invalidates_matching_head(tmp_path: Path):
+    repo = _repo(tmp_path)
+    config = frozen_config(repo)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    path = repo / "feature.txt"
+    path.write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "feature"], cwd=repo, check=True)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    active = ActiveReview(
+        cycle_id="c1",
+        scope="batch",
+        target="W01",
+        summary="s",
+        current_candidate_head=head,
+        approved_base_commit=head,
+    )
+    assert active_review_evidence_matches(repo, config, active)
+    path.write_text("uncommitted change\n", encoding="utf-8")
+    mismatch = assess_active_review_evidence_mismatch(repo, config, active)
+    assert mismatch is not None
+    assert any("product working tree is not clean" in item for item in mismatch.details)
+    assert mismatch.observed_head == head

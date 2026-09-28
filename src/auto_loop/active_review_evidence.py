@@ -9,6 +9,7 @@ from auto_loop.config import AutoLoopConfig
 from auto_loop.git import GitProtocolError, head_commit, resolve_commit
 from auto_loop.git_policy import git_usable
 from auto_loop.lifecycle import ActiveReview
+from auto_loop.product_state import is_product_tree_clean, product_excludes
 from auto_loop.review_targets import sha256_file, verify_path_targets_unchanged
 
 STALE_REVIEW_REASON = "active review evidence changed"
@@ -87,6 +88,9 @@ def assess_active_review_evidence_mismatch(
             if item.startswith("HEAD changed")
         ]
         details.extend(git_target_details)
+        excludes = product_excludes(config)
+        if not is_product_tree_clean(repo, excludes=excludes):
+            details.append("product working tree is not clean")
     elif observed_head is not None:
         for target in active.targets:
             if target.kind != "git_range":
