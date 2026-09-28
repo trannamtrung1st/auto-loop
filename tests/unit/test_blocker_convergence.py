@@ -14,6 +14,8 @@ from auto_loop.blockers import (
 )
 from auto_loop.events import load_events
 from auto_loop.exits import ExitCode
+from auto_loop.git import head_commit
+from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import LifecycleStatus
 from auto_loop.manifest import load_run_manifest
 from auto_loop.runtime import load_lifecycle_state
@@ -21,8 +23,8 @@ from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.terminal_records import load_blocked_record
 from tests.integration.scenario_harness import (
     approve_plan,
-    commit_file,
     execution_reviewer_invocation_count,
+    git,
     make_repo,
     run_lifecycle,
     run_opts,
@@ -64,6 +66,19 @@ def test_blocker_fingerprint_includes_plan_hash_for_planner():
         phase="planning",
         implementer_slot="planner",
         summary="need approval",
+        git_head="abc",
+        plan_sha256="plan-a",
+        evidence_fingerprint="ev1",
+    )
+    other_plan = replace(base, plan_sha256="plan-b")
+    assert compute_blocker_fingerprint(base) != compute_blocker_fingerprint(other_plan)
+
+
+def test_blocker_fingerprint_includes_plan_hash_for_worker():
+    base = BlockerFingerprintInput(
+        phase="execution",
+        implementer_slot="worker",
+        summary="external gate",
         git_head="abc",
         plan_sha256="plan-a",
         evidence_fingerprint="ev1",
@@ -121,21 +136,85 @@ def test_repeated_identical_worker_blocker_skips_extra_loop(tmp_path: Path):
     assert blocked["summary"] == summary
 
 
-def test_same_blocker_after_evidence_change_still_gets_reviewer(tmp_path: Path):
+def test_same_blocker_after_uncommitted_evidence_change_still_gets_reviewer(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     approve_plan(repo, provider)
     summary = "hosted synthetic CI has not run for HEAD"
+    head_at_start = head_commit(repo)
     provider.set_worker_blocked(summary)
     provider.set_reviewer_revise("batch", "blocked")
     run_lifecycle(repo, run_opts(2), provider)
     assert load_lifecycle_state(repo).next_session == "worker"
-    commit_file(repo, "work.txt", "more local evidence", "local work")
+    assert head_commit(repo) == head_at_start
+    (repo / "draft-work.txt").write_text("uncommitted product evidence\n", encoding="utf-8")
+    provider.set_worker_blocked(summary)
+    provider.set_reviewer_pass("batch", "blocked")
+    outcome = run_lifecycle(repo, run_opts(4), provider)
+    assert outcome.exit_code == ExitCode.BLOCKED
+    assert head_commit(repo) == head_at_start
+    assert execution_reviewer_invocation_count(provider) == 2
+
+
+def test_same_blocker_after_evidence_change_git_mode_off(tmp_path: Path):
+    repo = tmp_path / "plain"
+    repo.mkdir()
+    bootstrap_workspace(repo, git_mode="off")
+    provider = ScriptedProvider()
+    provider.set_planner_review_request()
+    provider.set_plan_reviewer_pass()
+    run_lifecycle(repo, run_opts(2), provider)
+    summary = "vendor credential missing"
+    provider.set_worker_blocked(summary)
+    provider.set_reviewer_revise("batch", "blocked")
+    run_lifecycle(repo, run_opts(2), provider)
+    assert load_lifecycle_state(repo).next_session == "worker"
+    (repo / "output.txt").write_text("filesystem evidence\n", encoding="utf-8")
     provider.set_worker_blocked(summary)
     provider.set_reviewer_pass("batch", "blocked")
     outcome = run_lifecycle(repo, run_opts(4), provider)
     assert outcome.exit_code == ExitCode.BLOCKED
     assert execution_reviewer_invocation_count(provider) == 2
+
+
+def test_worker_plan_update_before_repeat_blocker_gets_reviewer(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    summary = "hosted synthetic CI has not run for HEAD"
+    head_at_start = head_commit(repo)
+    provider.set_worker_blocked(summary)
+    provider.set_reviewer_revise("batch", "blocked")
+    run_lifecycle(repo, run_opts(2), provider)
+    plan_path = repo / ".ai/auto-loop/plan.md"
+    plan_path.write_text(plan_path.read_text(encoding="utf-8") + "\n## Worker plan tweak\n", encoding="utf-8")
+    provider.set_worker_blocked(summary)
+    provider.set_reviewer_pass("batch", "blocked")
+    outcome = run_lifecycle(repo, run_opts(4), provider)
+    assert outcome.exit_code == ExitCode.BLOCKED
+    assert head_commit(repo) == head_at_start
+    assert execution_reviewer_invocation_count(provider) == 2
+
+
+def test_ignored_product_file_change_does_not_reset_blocker_repeat_guard(tmp_path: Path):
+    """Git-ignored product edits are invisible to blocker evidence (documented)."""
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text("vendor-out/\n", encoding="utf-8")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-m", "ignore vendor output")
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    summary = "external CI gate"
+    provider.set_worker_blocked(summary)
+    provider.set_reviewer_revise("batch", "blocked")
+    run_lifecycle(repo, run_opts(2), provider)
+    (repo / "vendor-out").mkdir(exist_ok=True)
+    (repo / "vendor-out" / "result.txt").write_text("ignored artifact\n", encoding="utf-8")
+    provider.set_worker_blocked(summary)
+    provider.set_reviewer_pass("batch", "blocked")
+    outcome = run_lifecycle(repo, run_opts(4), provider)
+    assert outcome.exit_code == ExitCode.BLOCKED
+    assert execution_reviewer_invocation_count(provider) == 1
 
 
 def test_same_planner_blocker_after_plan_change_still_gets_reviewer(tmp_path: Path):

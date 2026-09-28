@@ -1,4 +1,13 @@
-"""External blocker fingerprints for controller convergence."""
+"""External blocker fingerprints for controller convergence.
+
+Blocker evidence uses the same product working-tree snapshot as planner mutation
+checks (`capture_product_working_fingerprint`): Git modes use ``git status -uall``
+rows with per-path content digests; ``git.mode: off`` uses filesystem product
+files. Git-ignored product paths are omitted from that snapshot even when Auto Loop
+can review them via explicit path targets, so changing only an ignored product
+file does not reset the repeat guard. Plan document hash is always included so
+worker updates to ``plan.md`` count as progress.
+"""
 
 from __future__ import annotations
 

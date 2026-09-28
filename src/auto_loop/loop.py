@@ -1097,15 +1097,12 @@ class LifecycleRunner:
     ) -> BlockerFingerprintInput:
         implementer: str = "planner" if implementer_slot == "planner" else "worker"
         _head, rows = self._product_snapshot()
-        plan_sha: str | None = None
-        if implementer == "planner":
-            plan_sha = self._plan_hash()
         return BlockerFingerprintInput(
             phase=state.phase,
             implementer_slot=implementer,  # type: ignore[arg-type]
             summary=summary,
             git_head=self._optional_head(),
-            plan_sha256=plan_sha,
+            plan_sha256=self._plan_hash(),
             evidence_fingerprint=product_evidence_fingerprint(rows),
         )
 
