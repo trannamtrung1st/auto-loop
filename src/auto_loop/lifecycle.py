@@ -143,6 +143,7 @@ class WaitingContext(BaseModel):
     review_scope: ReviewScope | None = None
     review_target: str | None = None
     recheck_pending: bool = False
+    final_recheck_only: bool = False
 
 
 class BlockedResumeContext(BaseModel):

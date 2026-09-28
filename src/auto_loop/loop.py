@@ -220,8 +220,7 @@ class LifecycleRunner:
         ctx = state.waiting_context
         now = ensure_utc(self._clock.now())
         if now >= ensure_utc(ctx.deadline_at):
-            self._timeout_waiting(state, reason=ctx.reason, implementer=ctx.implementer_slot)
-            return False
+            return self._arm_wait_recheck(state, ctx, final=True)
         if now < ensure_utc(ctx.next_check_at):
             if self.config.run.wait_mode == "suspend":
                 self._terminal_exit = ExitCode.WAITING
@@ -239,12 +238,16 @@ class LifecycleRunner:
             if ctx is None or state.status != LifecycleStatus.WAITING:
                 return self._terminal_exit is None
             if ensure_utc(self._clock.now()) >= ensure_utc(ctx.deadline_at):
-                self._timeout_waiting(state, reason=ctx.reason, implementer=ctx.implementer_slot)
-                return False
+                return self._arm_wait_recheck(state, ctx, final=True)
         state = self._load_state() or state
         ctx = state.waiting_context
         if ctx is None:
             return True
+        return self._arm_wait_recheck(state, ctx, final=False)
+
+    def _arm_wait_recheck(self, state: LifecycleState, ctx, *, final: bool) -> bool:
+        """Dispatch one implementer re-check. ``final`` forbids another passive wait."""
+        ctx.final_recheck_only = final or ctx.final_recheck_only
         ctx.recheck_pending = True
         state.waiting_context = ctx
         state.status = LifecycleStatus.RUNNING
@@ -257,6 +260,7 @@ class LifecycleRunner:
                 "type": "waiting_recheck",
                 "lifecycle_id": state.lifecycle_id,
                 "session": ctx.implementer_slot,
+                "final": ctx.final_recheck_only,
             },
         )
         self._save_state(state)
@@ -1290,7 +1294,16 @@ class LifecycleRunner:
             return ""
         return result.wait.reason.strip()
 
-    def _clear_waiting(self, state: LifecycleState) -> None:
+    def _revoke_waiting(self, state: LifecycleState, *, resolved: bool = False) -> None:
+        """Drop a confirmed wait when the lifecycle leaves the passive-wait path."""
+        if state.waiting_context is None and state.last_confirmed_wait_fingerprint is None:
+            return
+        if resolved and state.waiting_context is not None:
+            append_event(
+                self.repo,
+                self.config,
+                {"type": "waiting_resolved", "lifecycle_id": state.lifecycle_id},
+            )
         state.waiting_context = None
         state.last_confirmed_wait_fingerprint = None
 
@@ -1309,6 +1322,11 @@ class LifecycleRunner:
     ) -> None:
         now = ensure_utc(self._clock.now())
         existing = state.waiting_context
+        if existing is not None and (
+            existing.final_recheck_only or now >= ensure_utc(existing.deadline_at)
+        ):
+            self._timeout_waiting(state, reason=reason, implementer=implementer)
+            return
         if existing is None:
             first = now
             deadline = deadline_from(first, self.config.run.wait_max_seconds)
@@ -1397,7 +1415,6 @@ class LifecycleRunner:
             self.config,
             {"type": "waiting_timeout", "lifecycle_id": state.lifecycle_id},
         )
-        self._clear_waiting(state)
         self._suspend_lifecycle_blocked(
             state,
             summary=summary,
@@ -1477,6 +1494,7 @@ class LifecycleRunner:
             )
             return
         if result.status == "blocked":
+            self._revoke_waiting(state)
             self._route_implementer_blocked(
                 state,
                 event_type="planner_blocked",
@@ -1492,13 +1510,7 @@ class LifecycleRunner:
             )
             return
         clear_blocker_tracking(state)
-        if state.waiting_context is not None:
-            append_event(
-                self.repo,
-                self.config,
-                {"type": "waiting_resolved", "lifecycle_id": state.lifecycle_id},
-            )
-        self._clear_waiting(state)
+        self._revoke_waiting(state, resolved=True)
 
         if result.review is None or result.review.scope != "plan":
             raise GitProtocolError("Planner must request plan review")
@@ -1615,6 +1627,7 @@ class LifecycleRunner:
             return
 
         if result.status == "blocked":
+            self._revoke_waiting(state)
             self._route_implementer_blocked(
                 state,
                 event_type="worker_blocked",
@@ -1626,13 +1639,7 @@ class LifecycleRunner:
             return
 
         clear_blocker_tracking(state)
-        if state.waiting_context is not None:
-            append_event(
-                self.repo,
-                self.config,
-                {"type": "waiting_resolved", "lifecycle_id": state.lifecycle_id},
-            )
-        self._clear_waiting(state)
+        self._revoke_waiting(state, resolved=True)
 
         if not state.plan_approved:
             raise GitProtocolError("Worker cannot run before initial plan PASS")
@@ -1876,6 +1883,7 @@ class LifecycleRunner:
         fingerprint: str | None = None,
         head: str | None = None,
     ) -> None:
+        self._revoke_waiting(state)
         head = head if head is not None else self._optional_head()
         if fingerprint is None and summary:
             fingerprint = compute_blocker_fingerprint(
@@ -2050,6 +2058,9 @@ class LifecycleRunner:
                 event_type="lifecycle_waiting",
             )
             return
+
+        if result.verdict == "revise" and active.target == "waiting":
+            self._revoke_waiting(state)
 
         if active.target == "blocked" and result.verdict == "pass":
             self._emit_review_result(state, slot, result)

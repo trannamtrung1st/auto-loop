@@ -141,7 +141,7 @@ def _waiting_recheck_lines(ctx: TurnContext) -> list[str]:
     waiting = ctx.waiting
     if waiting is None:
         return []
-    return [
+    lines = [
         "You previously reported WAITING because:",
         waiting.reason,
         "",
@@ -151,8 +151,16 @@ def _waiting_recheck_lines(ctx: TurnContext) -> list[str]:
         "If operator intervention is required, return BLOCKED.",
         "If progress is now possible, continue normally.",
         "Do not assume the external event succeeded merely because time elapsed.",
-        "",
     ]
+    if waiting.final_recheck_only:
+        lines.extend(
+            [
+                "The wait deadline has passed. This is the only remaining re-check.",
+                "Another WAITING result ends the wait as BLOCKED. Do not sleep or extend the deadline.",
+            ]
+        )
+    lines.append("")
+    return lines
 
 
 def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:

@@ -173,7 +173,7 @@ def test_waiting_recheck_can_become_blocked(tmp_path: Path):
     assert outcome.exit_code == ExitCode.BLOCKED
 
 
-def test_wait_deadline_becomes_blocked(tmp_path: Path):
+def test_wait_deadline_final_recheck_still_waiting_becomes_blocked(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     approve_plan(repo, provider)
@@ -183,11 +183,110 @@ def test_wait_deadline_becomes_blocked(tmp_path: Path):
     config = _suspend_config(repo, max_seconds=30, default_seconds=10)
     run_lifecycle(repo, run_opts(4), provider, config=config, clock=clock)
     clock.advance(31)
+    sleeps_before = clock.sleeps
+    provider.set_worker_waiting("CI is running")
     outcome = run_lifecycle(repo, run_opts(4, resuming=True), provider, config=config, clock=clock)
     assert outcome.exit_code == ExitCode.BLOCKED
     state = load_lifecycle_state(repo)
     assert state.status == LifecycleStatus.BLOCKED
+    assert state.waiting_context is None
+    assert state.last_confirmed_wait_fingerprint is None
+    assert clock.sleeps == sleeps_before
+    assert sum(1 for inv in provider.engine.invocations if inv.role == "worker") == 2
     assert any(event.get("type") == "waiting_timeout" for event in load_events(repo, config))
+
+
+def test_deadline_recheck_can_continue_when_condition_resolves(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    clock = FakeClock()
+    provider.set_worker_waiting("CI is running")
+    provider.set_reviewer_pass("batch", "waiting")
+    config = _suspend_config(repo, max_seconds=30, default_seconds=10)
+    run_lifecycle(repo, run_opts(6), provider, config=config, clock=clock)
+    clock.advance(31)
+    provider.set_worker_final_request()
+    provider.set_reviewer_complete()
+    outcome = run_lifecycle(repo, run_opts(6, resuming=True), provider, config=config, clock=clock)
+    assert outcome.exit_code == ExitCode.COMPLETE
+    assert load_lifecycle_state(repo).waiting_context is None
+
+
+def test_blocked_recheck_clears_waiting_context(tmp_path: Path):
+    from tests.integration.scenario_harness import PromptCapturingProvider
+
+    repo = make_repo(tmp_path)
+    provider = PromptCapturingProvider()
+    approve_plan(repo, provider._inner)
+    clock = FakeClock()
+    provider._inner.set_worker_waiting("CI is running")
+    provider._inner.set_reviewer_pass("batch", "waiting")
+    config = _suspend_config(repo)
+    run_lifecycle(repo, run_opts(4), provider, config=config, clock=clock)
+    clock.advance(60)
+    provider._inner.set_worker_blocked("push is still required")
+    provider._inner.set_reviewer_blocked("operator must push")
+    outcome = run_lifecycle(repo, run_opts(4, resuming=True), provider, config=config, clock=clock)
+    assert outcome.exit_code == ExitCode.BLOCKED
+    state = load_lifecycle_state(repo)
+    assert state.waiting_context is None
+    assert state.last_confirmed_wait_fingerprint is None
+    provider._inner.set_worker_final_request()
+    provider._inner.set_reviewer_complete()
+    run_lifecycle(repo, run_opts(4, resuming=True), provider, config=config, clock=clock)
+    assert provider.worker_prompts
+    assert "You previously reported WAITING" not in provider.worker_prompts[-1]
+
+
+def test_reviewer_revise_of_wait_revokes_confirmation(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    clock = FakeClock()
+    reason = "CI is running"
+    provider.set_worker_waiting(reason)
+    provider.set_reviewer_pass("batch", "waiting")
+    config = _suspend_config(repo)
+    run_lifecycle(repo, run_opts(4), provider, config=config, clock=clock)
+    clock.advance(60)
+    (repo / "changed.txt").write_text("evidence\n", encoding="utf-8")
+    provider.set_worker_waiting(reason)
+    provider.set_reviewer_revise("batch", "waiting")
+    outcome = run_lifecycle(repo, run_opts(2, resuming=True), provider, config=config, clock=clock)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state.waiting_context is None
+    assert state.last_confirmed_wait_fingerprint is None
+    assert state.next_session == "worker"
+    reviewers_after_revise = execution_reviewer_invocation_count(provider)
+    provider.set_worker_waiting(reason)
+    provider.set_reviewer_pass("batch", "waiting")
+    outcome = run_lifecycle(repo, run_opts(4, resuming=True), provider, config=config, clock=clock)
+    assert outcome.exit_code == ExitCode.WAITING
+    assert execution_reviewer_invocation_count(provider) == reviewers_after_revise + 1
+
+
+def test_suspend_resume_starts_a_fresh_runtime_budget(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    clock = FakeClock()
+    provider.set_worker_waiting("CI is running")
+    provider.set_reviewer_pass("batch", "waiting")
+    config = _suspend_config(repo)
+    assert run_lifecycle(repo, run_opts(4), provider, config=config, clock=clock).exit_code == ExitCode.WAITING
+    persisted = (repo / ".ai/auto-loop/runtime/state.json").read_text(encoding="utf-8")
+    assert "runtime_elapsed" not in persisted
+    clock.advance(60)
+    provider.set_worker_final_request()
+    provider.set_reviewer_complete()
+    short_runtime = run_opts(4, resuming=True)
+    short_runtime = type(short_runtime)(
+        **{**short_runtime.__dict__, "max_runtime_minutes": 1}
+    )
+    outcome = run_lifecycle(repo, short_runtime, provider, config=config, clock=clock)
+    assert outcome.exit_code == ExitCode.COMPLETE
 
 
 def test_auto_wait_sleeps_without_extra_provider_calls_and_stop_interrupts(tmp_path: Path):
