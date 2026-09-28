@@ -1515,6 +1515,7 @@ class LifecycleRunner:
 
     def _apply_planner_result(self, state: LifecycleState, result: PlannerResult) -> None:
         if result.status == "waiting":
+            self._clear_review_mutation_recovery(state, "planner")
             self._route_implementer_waiting(
                 state,
                 summary=self._wait_summary(result) or result.plan_summary,
@@ -1525,6 +1526,7 @@ class LifecycleRunner:
             )
             return
         if result.status == "blocked":
+            self._clear_review_mutation_recovery(state, "planner")
             self._revoke_waiting(state)
             self._route_implementer_blocked(
                 state,
@@ -1648,6 +1650,7 @@ class LifecycleRunner:
         result: WorkerResult,
     ) -> None:
         if result.status == "waiting":
+            self._clear_review_mutation_recovery(state, "worker")
             self._consume_false_blocker_repair(state)
             self._route_implementer_waiting(
                 state,
@@ -1660,6 +1663,7 @@ class LifecycleRunner:
             return
 
         if result.status == "blocked":
+            self._clear_review_mutation_recovery(state, "worker")
             self._revoke_waiting(state)
             self._route_implementer_blocked(
                 state,
@@ -1899,6 +1903,7 @@ class LifecycleRunner:
         return str(path.relative_to(self.repo))
 
     def _clear_review_mutation_recovery(self, state: LifecycleState, slot: SessionSlot) -> None:
+        """Drop active recovery once the implementer chooses a new semantic path."""
         recovery = state.review_mutation_recovery
         if recovery is not None and recovery.implementer_slot == slot:
             state.review_mutation_recovery = None

@@ -8,7 +8,7 @@ from pathlib import Path
 from auto_loop.events import load_events
 from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
-from auto_loop.lifecycle import CompletedProviderTurn, InflightMarker, utc_now
+from auto_loop.lifecycle import CompletedProviderTurn, InflightMarker, LifecycleStatus, utc_now
 from auto_loop.manifest import load_run_manifest
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
@@ -26,6 +26,7 @@ from tests.integration.scenario_harness import (
     run_opts,
 )
 from tests.repo_utils import frozen_config
+from tests.unit.test_waiting import FakeClock, _suspend_config
 
 
 class _MutatingReviewer(ScriptedProvider):
@@ -101,6 +102,38 @@ def _session_ids(repo: Path) -> dict[str, str | None]:
     state = load_lifecycle_state(repo)
     assert state is not None
     return {slot: state.sessions[slot].session_id for slot in state.sessions}
+
+
+def _final_mutation_with_changed_head(
+    tmp_path: Path,
+) -> tuple[Path, _MutatingReviewer, str, str]:
+    repo = make_repo(tmp_path)
+    provider = _MutatingReviewer(repo, "reviewer_change.txt", commit=True)
+    approve_plan(repo, provider)
+    commit_file(repo, "feature.txt", "x\n", "feature")
+    provider.set_response("worker", batch_worker_payload())
+    provider.set_reviewer_pass("batch", "W01")
+    run_lifecycle(repo, run_opts(2), provider)
+    approved = load_lifecycle_state(repo).last_approved_commit
+    assert approved
+    provider.arm()
+    provider.set_worker_final_request()
+    provider.set_reviewer_complete()
+    assert run_lifecycle(repo, run_opts(2), provider).exit_code == ExitCode.REVIEW_MUTATION_ERROR
+    observed = head_commit(repo)
+    assert observed != approved
+    return repo, provider, approved, observed
+
+
+def _plan_reviewer_mutation(repo: Path, provider: _MutatingReviewer) -> None:
+    provider.arm()
+    provider.set_planner_review_request()
+    provider.set_reviewer_pass("plan", "plan")
+    assert run_lifecycle(repo, run_opts(2), provider).exit_code == ExitCode.REVIEW_MUTATION_ERROR
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.review_mutation_recovery is not None
+    assert state.next_session == "planner"
 
 
 def test_final_reviewer_commit_is_fail_safe_and_resume_reconciles(tmp_path: Path):
@@ -400,3 +433,99 @@ def test_plan_reviewer_mutation_returns_to_planner_until_restored(tmp_path: Path
     assert state.phase == "execution"
     assert _session_ids(repo)["planner"] == sessions["planner"]
     assert _session_ids(repo)["plan_reviewer"] == sessions["plan_reviewer"]
+
+
+def test_mutation_recovery_cleared_when_worker_reports_waiting(tmp_path: Path):
+    repo, provider, _approved, _observed = _final_mutation_with_changed_head(tmp_path)
+    config = _suspend_config(repo)
+    clock = FakeClock()
+    reason = "CI is running for the pushed closure SHA"
+    provider.set_worker_waiting(reason)
+    provider.set_reviewer_pass("batch", "waiting")
+    outcome = run_lifecycle(
+        repo, run_opts(4, resuming=True), provider, config=config, clock=clock
+    )
+    assert outcome.exit_code == ExitCode.WAITING
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.review_mutation_recovery is None
+    assert state.status == LifecycleStatus.WAITING
+    report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
+    assert "review mutation recovery:" not in report
+    assert "Status: WAITING" in report
+
+    clock.advance(60)
+    provider.set_worker_waiting(reason)
+    start = len(provider.engine.invocations)
+    run_lifecycle(repo, run_opts(4, resuming=True), provider, config=config, clock=clock)
+    worker_prompts = [
+        inv.prompt for inv in provider.engine.invocations[start:] if inv.role == "worker"
+    ]
+    assert worker_prompts
+    assert "You previously reported WAITING" in worker_prompts[0]
+    assert "previous reviewer turn was discarded" not in worker_prompts[0].lower()
+
+
+def test_mutation_recovery_cleared_when_worker_reports_blocked(tmp_path: Path):
+    repo, provider, _approved, _observed = _final_mutation_with_changed_head(tmp_path)
+    config = _suspend_config(repo)
+    config.run.require_blocker_review = False
+    provider.set_worker_blocked("hosted deployment approval is missing")
+    outcome = run_lifecycle(
+        repo, run_opts(2, resuming=True), provider, config=config
+    )
+    assert outcome.exit_code == ExitCode.BLOCKED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.review_mutation_recovery is None
+    report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
+    assert "review mutation recovery:" not in report
+    assert "blocked:" in report
+
+
+def test_mutation_recovery_cleared_when_planner_reports_waiting(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = _MutatingReviewer(repo, ".ai/auto-loop/plan.md", commit=False)
+    _plan_reviewer_mutation(repo, provider)
+    config = _suspend_config(repo)
+    clock = FakeClock()
+    reason = "external spec review is already in progress"
+    provider.set_planner_waiting(reason)
+    provider.set_reviewer_pass("plan", "waiting", slot="plan_reviewer")
+    outcome = run_lifecycle(
+        repo, run_opts(4, resuming=True), provider, config=config, clock=clock
+    )
+    assert outcome.exit_code == ExitCode.WAITING
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.review_mutation_recovery is None
+    report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
+    assert "review mutation recovery:" not in report
+
+    clock.advance(60)
+    provider.set_planner_waiting(reason)
+    start = len(provider.engine.invocations)
+    run_lifecycle(repo, run_opts(4, resuming=True), provider, config=config, clock=clock)
+    planner_prompts = [
+        inv.prompt for inv in provider.engine.invocations[start:] if inv.role == "planner"
+    ]
+    assert planner_prompts
+    assert "You previously reported WAITING" in planner_prompts[0]
+    assert "previous plan-reviewer turn was discarded" not in planner_prompts[0].lower()
+
+
+def test_mutation_recovery_cleared_when_planner_reports_blocked(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = _MutatingReviewer(repo, ".ai/auto-loop/plan.md", commit=False)
+    _plan_reviewer_mutation(repo, provider)
+    config = frozen_config(repo)
+    config.run.require_blocker_review = False
+    provider.set_planner_blocked("external planning approval required")
+    outcome = run_lifecycle(repo, run_opts(2, resuming=True), provider, config=config)
+    assert outcome.exit_code == ExitCode.BLOCKED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.review_mutation_recovery is None
+    report = build_status_report(load_run_manifest(repo / ".ai" / "run.yaml"))
+    assert "review mutation recovery:" not in report
+    assert "blocked:" in report
