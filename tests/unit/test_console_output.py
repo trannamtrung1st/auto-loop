@@ -187,6 +187,23 @@ def test_review_result_rows_use_the_same_scope_labels():
     assert "Final review  BLOCKED" in text
 
 
+def test_false_blocker_review_rows_name_the_handoff():
+    console, stream = _console()
+    console.review_result(
+        "revise",
+        "batch",
+        1,
+        target="blocked",
+        reason="no genuine external blocker; final handoff required",
+    )
+    text = stream.getvalue()
+    assert _line_starting(text, "Batch review") == "Batch review  REVISE · blocked"
+    assert _line_starting(text, "Reason") == (
+        "Reason        no genuine external blocker; final handoff required"
+    )
+    assert _line_starting(text, "Next") == "Next          worker"
+
+
 def test_unknown_review_scope_falls_back_without_crashing():
     from auto_loop.console_output import review_scope_label
 

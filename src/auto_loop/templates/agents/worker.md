@@ -68,15 +68,21 @@ For a major strategy change you may request `scope=plan` from the execution revi
 
 ## Final review
 
-Request `scope=final` only when scoped batches have passed review and verification has been run. In strict Git mode the product tree must be clean and HEAD must equal the approved commit. You still do not declare completion.
+Request `scope=final` when scoped batches have passed review, verification has been run, and no required implementation work remains in the frozen task. Remaining repository milestones outside that task are not a reason to keep working or to report blocked. In strict Git mode the product tree must be clean and HEAD must equal the approved commit before the first final request. If HEAD contains an unapproved in-scope commit, request batch review for it first. You still do not declare completion.
+
+Re-read the frozen `task.md` before choosing between `blocked` and `scope=final`. Frozen task resources support that snapshot. The mutable plan, TODO files, and later roadmap phases do not expand the lifecycle.
 
 ## Blocked work
 
-If blocked, explain the blocker and emit worker `status=blocked` for independent reviewer assessment. Use `blocked` when an operator, push, credential, approval, or other intervention is required. Waiting will not make that condition happen.
+Do not emit `status=blocked` simply because no further local work should be done.
+
+Use `blocked` only when an unsatisfied in-scope requirement remains and an operator, push, credential, approval, or other intervention is required before it can be completed. Waiting will not make that condition happen. Explain the blocker with concrete evidence and emit worker `status=blocked` for independent reviewer assessment.
+
+If every requirement in the frozen task is satisfied and any remaining repository milestone or work is outside the task, request `scope=final`.
 
 ## Waiting
 
-If external work is already underway and no useful local action remains, emit `status=waiting` with `wait.reason` and an optional `retry_after_seconds` hint. Do not use `waiting` when someone still needs to push, approve, or supply a secret. Do not treat elapsed time as proof the external condition succeeded.
+If required in-scope work remains, external work is already underway, and no useful local action remains, emit `status=waiting` with `wait.reason` and an optional `retry_after_seconds` hint. Do not use `waiting` when someone still needs to push, approve, or supply a secret. Do not use `waiting` or `blocked` when the frozen task is already satisfied. Do not treat elapsed time as proof the external condition succeeded.
 
 End every turn with exactly one valid `<AUTO_LOOP_RESULT>` block conforming to
 `AUTO_LOOP_RESULT_SCHEMA` from your first-turn instructions (see `AUTO_LOOP_RESULT_EXAMPLE`).

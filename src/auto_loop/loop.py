@@ -43,11 +43,15 @@ from auto_loop.lifecycle import (
     utc_now,
 )
 from auto_loop.models import (
+    FALSE_BLOCKER_ENDGAME,
+    FALSE_BLOCKER_ENDGAME_FINDING_ID,
+    FALSE_BLOCKER_OPERATOR_REASON,
     ROLE_FOR_SLOT,
     PlannerResult,
     ReviewerResult,
     Role,
     WorkerResult,
+    is_false_blocker_endgame_revise,
 )
 from auto_loop.product_state import (
     assert_clean_product_tree,
@@ -1188,21 +1192,35 @@ class LifecycleRunner:
         state: LifecycleState,
         slot: SessionSlot,
         result: ReviewerResult,
+        *,
+        handoff_reason: str | None = None,
     ) -> None:
-        append_event(
-            self.repo,
-            self.config,
-            {
-                "type": "review_result",
-                "verdict": result.verdict,
-                "scope": result.scope,
-                "session_purpose": slot,
-                "finding_count": len(result.findings),
-                "turn": state.turn,
-                "lifecycle_id": state.lifecycle_id,
-            },
+        payload = {
+            "type": "review_result",
+            "verdict": result.verdict,
+            "scope": result.scope,
+            "session_purpose": slot,
+            "finding_count": len(result.findings),
+            "turn": state.turn,
+            "lifecycle_id": state.lifecycle_id,
+        }
+        if handoff_reason:
+            payload["target"] = result.target
+            payload["reason"] = handoff_reason
+        append_event(self.repo, self.config, payload)
+        self._console.review_result(
+            result.verdict,
+            result.scope,
+            len(result.findings),
+            target=result.target if handoff_reason else None,
+            reason=handoff_reason,
         )
-        self._console.review_result(result.verdict, result.scope, len(result.findings))
+
+    def _consume_false_blocker_repair(self, state: LifecycleState) -> None:
+        pending = state.pending_revision
+        if pending is None or pending.handoff_repair != FALSE_BLOCKER_ENDGAME:
+            return
+        state.pending_revision = pending.model_copy(update={"handoff_repair": None})
 
     def _route_implementer_blocked(
         self,
@@ -1252,6 +1270,7 @@ class LifecycleRunner:
             )
             return
         state.last_blocker_fingerprint = fingerprint
+        self._consume_false_blocker_repair(state)
         if not self.config.limits.require_blocker_review:
             self._suspend_lifecycle_blocked(
                 state,
@@ -1659,6 +1678,7 @@ class LifecycleRunner:
         else:
             raise GitProtocolError(f"Unsupported worker review scope: {result.review.scope}")
 
+        self._consume_false_blocker_repair(state)
         append_event(
             self.repo,
             self.config,
@@ -1884,6 +1904,7 @@ class LifecycleRunner:
         head: str | None = None,
     ) -> None:
         self._revoke_waiting(state)
+        self._consume_false_blocker_repair(state)
         head = head if head is not None else self._optional_head()
         if fingerprint is None and summary:
             fingerprint = compute_blocker_fingerprint(
@@ -2084,7 +2105,15 @@ class LifecycleRunner:
             )
             return
 
-        self._emit_review_result(state, slot, result)
+        false_blocker = is_false_blocker_endgame_revise(
+            result, target=active.target, session_purpose=slot
+        )
+        self._emit_review_result(
+            state,
+            slot,
+            result,
+            handoff_reason=FALSE_BLOCKER_OPERATOR_REASON if false_blocker else None,
+        )
 
         if slot == "plan_reviewer":
             if result.verdict == "pass":
@@ -2193,7 +2222,25 @@ class LifecycleRunner:
                 last_reviewed_head_commit=active.current_candidate_head,
                 round=active.round + 1,
                 finding_review_file=review_rel,
+                handoff_repair=FALSE_BLOCKER_ENDGAME if false_blocker else None,
             )
+            if false_blocker:
+                # The rejected claim is not a confirmed blocker. Repeating it must
+                # be reviewed again instead of tripping the identical-blocker guard.
+                clear_blocker_tracking(state)
+                append_event(
+                    self.repo,
+                    self.config,
+                    {
+                        "type": "blocked_handoff_rejected",
+                        "reason": FALSE_BLOCKER_OPERATOR_REASON,
+                        "review_file": review_rel,
+                        "finding_id": FALSE_BLOCKER_ENDGAME_FINDING_ID,
+                        "scope": result.scope,
+                        "target": result.target,
+                        "lifecycle_id": state.lifecycle_id,
+                    },
+                )
         else:
             state.pending_revision = None
 

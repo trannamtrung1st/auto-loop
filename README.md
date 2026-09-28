@@ -184,7 +184,7 @@ The same template ships inside the package as `auto_loop/templates/run.full.yaml
 | Code | Name | Meaning |
 |-----:|------|---------|
 | 0 | `COMPLETE` | Whole task accepted (final reviewer `COMPLETE`). |
-| 2 | `BLOCKED` | Reviewer or worker declared a genuine external blocker. |
+| 2 | `BLOCKED` | Required in-scope work remains and needs external or operator intervention. |
 | 3 | `LIMIT_REACHED` | `max_turns`, `max_runtime_minutes`, or no-progress limit hit. |
 | 4 | `STOPPED` | Operator stop (CLI or signal). |
 | 5 | `WAITING` | Lifecycle is waiting on an external condition (`run.wait_mode: suspend`). Resume continues the same sessions. |
@@ -204,8 +204,9 @@ The same template ships inside the package as `auto_loop/templates/run.full.yaml
 2. **Execution sessions** — Worker and execution reviewer start fresh after plan PASS. The worker owns `plan.md` and may update it. The task snapshot stays authoritative.
 3. **Reviews approve evidence** — A review can include a Git range, workspace path targets (tracked, untracked, or ignored), and inline content. An empty Git range is valid when other targets exist. In `git.mode: required`, product changes are reviewed as `last_approved_commit..HEAD` on a clean tree.
 4. **Baseline** — Batch `PASS` advances the approved Git head only when a Git range was reviewed. Path-only or content-only PASS records that target's fingerprint and does not synthesize a commit. An intentional rebase can remap that baseline only to a unique ancestor with the same product tree; auto-loop does not set it to current HEAD.
-5. **Final** — Only the execution reviewer may return `COMPLETE`. In `git.mode: required`, the first final request requires a clean tree and `HEAD == last_approved_commit`. After a final `REVISE`, the worker may request another final round on a descendant commit while `last_approved_commit` stays at the prior approved baseline until `COMPLETE`. In `optional` or `off`, completion is the reviewed final evidence, with no commit required.
-6. **Reviews** — Markdown artifacts under `<artifacts.root>/reviews/` are append-only evidence, including review cycle/round and target fingerprints.
+5. **Final** — Only the execution reviewer may return `COMPLETE`, and only for `scope=final` with `whole_task_reviewed=true`. In `git.mode: required`, the first final request requires a clean tree and `HEAD == last_approved_commit`. After a final `REVISE`, the worker may request another final round on a descendant commit while `last_approved_commit` stays at the prior approved baseline until `COMPLETE`. In `optional` or `off`, completion is the reviewed final evidence, with no commit required. A batch review, including `target=blocked`, cannot complete the lifecycle.
+6. **Blocked, waiting, and done** — `BLOCKED` means required in-scope work remains and needs intervention. `WAITING` means required in-scope work remains and an already-started external condition may resolve on its own. When the frozen task is satisfied and later repository work is outside that task, the worker requests `scope=final` instead of reporting blocked. If a blocked review is not a genuine external blocker, the reviewer returns `REVISE` (finding id `false_blocker_endgame` when nothing in scope remains). The controller keeps that repair on the pending revision and tells the worker to re-read the frozen task. The reviewer still performs the final review independently. An unapproved in-scope commit uses the normal batch-review path; it is not a blocker.
+7. **Reviews** — Markdown artifacts under `<artifacts.root>/reviews/` are append-only evidence, including review cycle/round and target fingerprints.
 
 ## Persistent sessions and recovery
 
@@ -283,7 +284,7 @@ Contributors working on this repository should read root [`AGENTS.md`](AGENTS.md
 
 ## Observability
 
-- **Events** — `<artifacts.root>/runtime/events.jsonl` (lifecycle started, reviews, baseline advanced, history reconciliation, stops, limits).
+- **Events** — `<artifacts.root>/runtime/events.jsonl` (lifecycle started, reviews, baseline advanced, history reconciliation, stops, limits). A rejected false endgame blocker is `blocked_handoff_rejected` plus the review result; the lifecycle stays running for the worker.
 - **State** — `<artifacts.root>/runtime/state.json` (phase, turn, next session, four session slots, active review, pending revision, inflight).
 - **Turn logs** — `<artifacts.root>/runtime/runs/<lifecycle_id>/` per-turn streams, named by session purpose. `.jsonl` is the raw provider NDJSON, appended as each line arrives (including the full `<AUTO_LOOP_RESULT>` protocol block). `.log` is the normalized thinking / message / tool trace, also appended immediately, but hides the raw result JSON for readability. Thinking and message prefixes are shown once per contiguous semantic block; further lines keep the model's explicit newlines without extra indentation. `auto-loop logs RUN_CONFIG --follow` tails that activity while the agent is running. `--raw` prints the JSONL unchanged.
 - **Run console** — normal and verbose runs show that trace live in the same terminal: thinking, assistant text, and tool start/end, as each event arrives, with the same once-per-block prefixes as the readable log. Narrative assistant text remains visible; the `<AUTO_LOOP_RESULT>` envelope is suppressed on the console and in readable `.log` files only (protocol parsing still uses the complete terminal response). Assistant text is shown once. Live deltas render immediately; a buffered assistant copy is shown only when those deltas were absent, and a repeated copy is skipped. `--quiet` hides the live trace and still writes the turn logs. `--verbose` keeps the trace and adds session and lifecycle diagnostics, with longer tool-argument excerpts. Tool results stay summarized; the full payload remains in the JSONL. `auto-loop logs --follow` tails the same trace from the turn log; it is not required to watch a run.

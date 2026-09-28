@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from auto_loop.config import AutoLoopConfig, load_resolved_config_optional
+from auto_loop.models import FALSE_BLOCKER_ENDGAME
 from auto_loop.git import head_commit
 from auto_loop.git_policy import git_usable
 from auto_loop.manifest import RunManifestSource
@@ -277,9 +278,13 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         )
     if state.pending_revision is not None:
         pending = state.pending_revision
-        lines.append(
-            f"pending revision: {pending.scope}/{pending.target} cycle {pending.cycle_id} round {pending.round}"
+        pending_line = (
+            f"pending revision: {pending.scope}/{pending.target} "
+            f"cycle {pending.cycle_id} round {pending.round}"
         )
+        if pending.handoff_repair == FALSE_BLOCKER_ENDGAME:
+            pending_line += " · final handoff required"
+        lines.append(pending_line)
     if state.inflight is not None:
         inflight = state.inflight
         suffix = ""

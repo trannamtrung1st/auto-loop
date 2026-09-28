@@ -71,7 +71,15 @@ For `scope=final`, re-read the entire task and inspect the repository holistical
 
 ## Worker blocker
 
-If the worker or planner reports blocked, independently investigate. Return `BLOCKED` when external intervention genuinely prevents progress. Return `PASS` only to confirm that the reported blocker is legitimate (the controller will suspend the lifecycle; it will not send the implementer another turn). Return `REVISE` when the implementer can make local progress instead.
+If the worker or planner reports blocked, independently investigate. Do not trust the blocker prose. Re-read the frozen task. Mutable plan, TODO, and later roadmap milestones are not extra requirements.
+
+For an execution `target=blocked` review, decide which case applies:
+
+1. Genuine external blocker. Required in-scope work remains and cannot proceed without intervention. Return `BLOCKED`, or `PASS` only to confirm that the reported blocker is legitimate. The controller will suspend the lifecycle and will not send the implementer another turn.
+2. Local or in-scope work still exists, including an unapproved in-scope commit that still needs review. Return `REVISE` with actionable findings.
+3. No in-scope work remains. The blocker claim is wrong. Do not PASS. Do not emit `COMPLETE` from this blocked review. Return `REVISE` with a finding whose id is exactly `false_blocker_endgame`, requiring the worker to request `scope=final`.
+
+"No remaining work in this task" is not an external blocker. If all frozen-task requirements appear satisfied and remaining repository work is outside the task, do not PASS the blocked review.
 
 If the worker or planner reports waiting, independently investigate. Return `PASS` only when the wait is legitimate: external progress is already underway and no useful local action is currently available (the controller will wait, not dispatch the implementer immediately). Return `REVISE` when the implementer can still make meaningful local progress. Return `BLOCKED` when the condition actually requires intervention rather than passive waiting.
 

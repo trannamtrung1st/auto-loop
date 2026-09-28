@@ -11,6 +11,7 @@ from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
     ActiveReview,
     LifecycleState,
+    PendingRevision,
     SessionRecord,
     adopt_session_identity,
     create_lifecycle,
@@ -82,6 +83,76 @@ def test_worker_prompt_surfaces_controller_repair_reason():
     assert "controller rejected it" in prompt.lower()
     assert "Final review requires explicit path" in prompt
     assert "interrupted" not in prompt.lower()
+
+
+def test_worker_prompt_keeps_false_blocker_repair_after_state_roundtrip():
+    state = create_lifecycle("abc123")
+    state.pending_revision = PendingRevision(
+        cycle_id="review-0003",
+        scope="batch",
+        target="blocked",
+        round=2,
+        finding_review_file=".ai/auto-loop/reviews/0004-batch-blocked.md",
+        handoff_repair="false_blocker_endgame",
+    )
+    loaded = LifecycleState.model_validate(state.model_dump(mode="json"))
+    assert loaded.pending_revision is not None
+    assert loaded.pending_revision.handoff_repair == "false_blocker_endgame"
+    ctx = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=".ai/auto-loop/reviews/0004-batch-blocked.md",
+        head_commit="abc123",
+        product_clean=True,
+        pending_revision=loaded.pending_revision,
+    )
+    prompt = build_worker_prompt(loaded, ctx)
+    assert "rejected the BLOCKED handoff" in prompt
+    assert "request scope=final" in prompt
+    assert "Re-read the frozen task" in prompt
+    assert "prefer amending the unapproved review-fix commit" not in prompt
+
+    ordinary = loaded.model_copy(
+        update={
+            "pending_revision": loaded.pending_revision.model_copy(
+                update={"handoff_repair": None}
+            )
+        }
+    )
+    ordinary_prompt = build_worker_prompt(
+        ordinary,
+        TurnContext(
+            task_path=".ai/auto-loop/task.md",
+            plan_path=".ai/auto-loop/plan.md",
+            latest_review_path=None,
+            head_commit="abc123",
+            product_clean=True,
+            pending_revision=ordinary.pending_revision,
+        ),
+    )
+    assert "rejected the BLOCKED handoff" not in ordinary_prompt
+
+
+def test_blocked_review_prompt_requires_revise_not_complete():
+    state = create_lifecycle("abc123")
+    ctx = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="abc123",
+        product_clean=True,
+    )
+    review = ActiveReview(
+        cycle_id="review-0002",
+        scope="batch",
+        target="blocked",
+        summary="nothing left in scope",
+        session_purpose="reviewer",
+    )
+    prompt = build_reviewer_prompt(state, ctx, review)
+    assert "Do not emit COMPLETE from this review." in prompt
+    assert "false_blocker_endgame" in prompt
+    assert "scope=final" in prompt
 
 
 def test_reviewer_batch_and_final_prompts():

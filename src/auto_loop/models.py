@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field, model_validator
 
 PROTOCOL_SCHEMA_VERSION = 2
 
+# Contracted finding id. The controller does not infer completion from prose.
+# A blocked-review REVISE that includes this id rejects a false endgame blocker
+# and asks the worker to request scope=final. It is not a completion verdict.
+HandoffRepairKind = Literal["false_blocker_endgame"]
+FALSE_BLOCKER_ENDGAME: HandoffRepairKind = "false_blocker_endgame"
+FALSE_BLOCKER_ENDGAME_FINDING_ID = FALSE_BLOCKER_ENDGAME
+FALSE_BLOCKER_OPERATOR_REASON = "no genuine external blocker; final handoff required"
+
 Role = Literal["planner", "worker", "reviewer"]
 SessionSlot = Literal["planner", "plan_reviewer", "worker", "reviewer"]
 ReviewScope = Literal["plan", "batch", "final"]
@@ -177,3 +185,21 @@ class ReviewerResult(BaseModel):
             if not self.whole_task_reviewed:
                 raise ValueError("COMPLETE verdict requires whole_task_reviewed=true")
         return self
+
+
+def is_false_blocker_endgame_revise(
+    result: ReviewerResult,
+    *,
+    target: str,
+    session_purpose: str,
+) -> bool:
+    """True when an execution blocked review rejects a non-blocker endgame.
+
+    Recognition is the contracted finding id only. Summary and finding prose
+    are not task-completion evidence.
+    """
+    if session_purpose != "reviewer":
+        return False
+    if result.verdict != "revise" or result.scope != "batch" or target != "blocked":
+        return False
+    return any(finding.id == FALSE_BLOCKER_ENDGAME_FINDING_ID for finding in result.findings)

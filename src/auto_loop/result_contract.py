@@ -30,8 +30,13 @@ _RESULT_RULES: dict[Role, str] = {
 - Every serialized result must include schema_version=2 and actor=worker.
 - `status` is a controller handoff action, not implementation progress. It has exactly three values:
   - `review_requested`: work/evidence is ready for review (even when more batches remain).
-  - `blocked`: progress requires operator or other intervention that will not happen by waiting.
-  - `waiting`: external work is already in progress and should change without operator action. Include wait.reason.
+  - `blocked`: required in-scope work remains and needs operator or other intervention that will not happen by waiting.
+  - `waiting`: required in-scope work remains, and external work is already in progress. Include wait.reason.
+- Do not emit status=blocked merely because no further local work should be done.
+- Re-read the frozen task.md before choosing between blocked and scope=final.
+- If every frozen-task requirement is satisfied and remaining repository work is outside the task, request scope=final.
+- Mutable plan.md, TODO files, and later roadmap milestones do not expand the frozen task.
+- An unapproved in-scope commit is not a blocker. Request batch review for it before final review.
 - Never use progress states such as `implementing`, `in_progress`, `continued`, `done`, or `complete`.
 - status=review_requested should include review describing scope, target, summary, and verification.
 - For committed Git changes, do not add a git_range target and do not set base_commit or head_commit.
@@ -44,7 +49,9 @@ _RESULT_RULES: dict[Role, str] = {
 - verdict=revise requires at least one finding with id, title, detail, evidence, required_change.
 - verdict=complete requires scope=final and whole_task_reviewed=true (sole whole-task completion).
 - PASS on scope=plan or batch does not complete the lifecycle.
-- COMPLETE is valid only for scope=final by the execution reviewer.""",
+- COMPLETE is valid only for scope=final by the execution reviewer.
+- target=blocked cannot emit verdict=complete. PASS confirms a genuine external blocker only.
+- If no in-scope work remains, return verdict=revise with finding id false_blocker_endgame and require scope=final. Do not PASS that blocker.""",
 }
 
 

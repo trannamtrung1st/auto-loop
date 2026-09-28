@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, model_validator
 from auto_loop.models import (
     ROLE_FOR_SLOT,
     ActiveReviewTarget,
+    HandoffRepairKind,
     ReviewScope,
     Role,
     SessionSlot,
@@ -89,6 +90,7 @@ class PendingRevision(BaseModel):
     last_reviewed_head_commit: str | None = None
     round: int
     finding_review_file: str | None = None
+    handoff_repair: HandoffRepairKind | None = None
 
 
 class InflightMarker(BaseModel):

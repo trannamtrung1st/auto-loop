@@ -73,6 +73,17 @@ def test_worker_json_schema_review_has_no_controller_git_fields():
     assert "legacy_git_range_ignored" not in review_props
 
 
+def test_endgame_rules_keep_complete_on_final_scope():
+    from auto_loop.result_contract import format_result_rules
+
+    worker = format_result_rules("worker")
+    reviewer = format_result_rules("reviewer")
+    assert "request scope=final" in worker
+    assert "status=blocked merely because" in worker
+    assert "false_blocker_endgame" in reviewer
+    assert "target=blocked cannot emit verdict=complete" in reviewer
+
+
 def test_example_parses_for_each_role():
     for role, parser in (
         ("planner", parse_planner_result),

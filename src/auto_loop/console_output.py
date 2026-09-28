@@ -329,13 +329,26 @@ class RunConsole:
             value.append(f" · {shown}", style=_META_STYLE)
         self._row(_review_row_label(scope), value)
 
-    def review_result(self, verdict: str, scope: str, finding_count: int = 0) -> None:
+    def review_result(
+        self,
+        verdict: str,
+        scope: str,
+        finding_count: int = 0,
+        *,
+        target: str | None = None,
+        reason: str | None = None,
+    ) -> None:
         value = Text()
         value.append(verdict.upper(), style=status_style(verdict))
-        if finding_count:
+        if target:
+            value.append(f" · {_single_line(target)}", style=_META_STYLE)
+        if finding_count and not reason:
             noun = "finding" if finding_count == 1 else "findings"
             value.append(f" · {finding_count} {noun}", style=_META_STYLE)
         self._row(_review_row_label(scope), value)
+        if reason:
+            self._row("Reason", Text(_single_line(reason)))
+            self._row("Next", Text("worker"))
 
     def baseline_advanced(self, head: str) -> None:
         value = Text()

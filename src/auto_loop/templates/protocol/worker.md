@@ -7,3 +7,6 @@
 - When a meaningful Git commit range exists, the controller includes `last_approved_commit..HEAD` as review evidence. Do not request review with an empty range and no other targets.
 - In strict Git mode (`git.mode: required`), commit product changes and request batch review only with a clean product tree.
 - Never rewrite approved history. Amending an unapproved review-fix commit in the current review cycle is allowed.
+- `status=blocked` means required in-scope work remains and needs operator intervention. Re-read the frozen task before choosing it.
+- If every frozen-task requirement is already satisfied, request `scope=final` instead of `blocked`.
+- An unapproved in-scope commit is not a blocker. Request batch review for it before final review.

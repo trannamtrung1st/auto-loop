@@ -11,7 +11,12 @@ from auto_loop.lifecycle import (
     PendingRevision,
     WaitingContext,
 )
-from auto_loop.models import Role, SessionSlot
+from auto_loop.models import (
+    FALSE_BLOCKER_ENDGAME,
+    FALSE_BLOCKER_ENDGAME_FINDING_ID,
+    Role,
+    SessionSlot,
+)
 from auto_loop.protocol import protocol_repair_diagnostic_lines
 from auto_loop.result_contract import format_output_repair_protocol_contract
 
@@ -163,6 +168,35 @@ def _waiting_recheck_lines(ctx: TurnContext) -> list[str]:
     return lines
 
 
+def _false_blocker_repair_lines(ctx: TurnContext) -> list[str]:
+    pending = ctx.pending_revision
+    if pending is None or pending.handoff_repair != FALSE_BLOCKER_ENDGAME:
+        return []
+    lines = [
+        "The reviewer rejected the BLOCKED handoff.",
+        "",
+        "The review indicates no external blocker remains and the lifecycle may "
+        "instead be ready for final review.",
+    ]
+    if pending.finding_review_file:
+        lines.append(f"Review artifact: {pending.finding_review_file}")
+    lines.extend(
+        [
+            "",
+            "Re-read the frozen task and current repository state.",
+            "Authority order: frozen task.md, frozen task resources, approved review "
+            "evidence, then current repository state. Mutable plan.md, TODO files, and "
+            "later roadmap milestones do not expand this lifecycle.",
+            "",
+            "If all in-scope requirements are complete, request scope=final.",
+            "If required work remains, perform it.",
+            "If a genuine external blocker exists, report BLOCKED with concrete evidence.",
+            "",
+        ]
+    )
+    return lines
+
+
 def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
     lines = [
         "Continue your planner role for the planning phase.",
@@ -247,18 +281,27 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
     )
     if ctx.pending_revision:
         pending = ctx.pending_revision
+        if pending.handoff_repair == FALSE_BLOCKER_ENDGAME:
+            pending_guidance = (
+                "- this pending cycle rejected a BLOCKED handoff; it is not a code-fix round"
+            )
+        elif pending.scope == "final":
+            pending_guidance = (
+                "- after final REVISE fixes, request final review again for the next "
+                "round; do not route those fixes through batch review first"
+            )
+        else:
+            pending_guidance = (
+                "- prefer amending the unapproved review-fix commit when Git fixes are needed"
+            )
         lines.extend(
             [
                 f"- pending review cycle: {pending.cycle_id} round {pending.round}",
                 f"- pending review target: {pending.scope}/{pending.target}",
-                (
-                    "- after final REVISE fixes, request final review again for the next "
-                    "round; do not route those fixes through batch review first"
-                    if pending.scope == "final"
-                    else "- prefer amending the unapproved review-fix commit when Git fixes are needed"
-                ),
+                pending_guidance,
             ]
         )
+    lines.extend(_false_blocker_repair_lines(ctx))
     lines.extend(
         [
             "",
@@ -313,6 +356,30 @@ def _format_targets(review: ActiveReview) -> list[str]:
         "Include every required target id in reviewed_target_ids when approving the review."
     )
     return lines
+
+
+def _blocked_review_lines(review: ActiveReview) -> list[str]:
+    if review.session_purpose != "reviewer" or review.target != "blocked":
+        return []
+    finding_id = FALSE_BLOCKER_ENDGAME_FINDING_ID
+    return [
+        "This review adjudicates a BLOCKED handoff. It is not a whole-task final review.",
+        "Do not emit COMPLETE from this review.",
+        "Re-read the frozen task. Mutable plan.md, TODO files, and later roadmap "
+        "milestones are not extra requirements.",
+        "",
+        "Choose exactly one outcome:",
+        "- Genuine external blocker: required in-scope work remains and cannot proceed "
+        "without operator intervention. Return PASS, or BLOCKED when intervention is "
+        "required. The controller will suspend the lifecycle.",
+        "- Local or in-scope work still exists, including an unapproved in-scope commit "
+        "that still needs review. Return REVISE with actionable findings. Do not use "
+        f"finding id `{finding_id}`.",
+        "- No required in-scope work remains, and any remaining repository work is "
+        "outside the frozen task. Do not PASS. Return REVISE with one finding whose "
+        f"id is exactly `{finding_id}`, requiring the worker to request scope=final.",
+        "",
+    ]
 
 
 def _append_reviewer_result_guidance(lines: list[str], ctx: TurnContext) -> None:
@@ -435,6 +502,10 @@ def build_reviewer_prompt(
     if target_lines:
         lines.append("")
         lines.extend(target_lines)
+    blocked_lines = _blocked_review_lines(review)
+    if blocked_lines:
+        lines.append("")
+        lines.extend(blocked_lines)
     lines.extend(
         [
             "",

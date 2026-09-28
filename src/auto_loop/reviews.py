@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from auto_loop.lifecycle import ActiveReview
-from auto_loop.models import Finding, PlannerResult, ReviewerResult, WorkerResult
+from auto_loop.models import (
+    FALSE_BLOCKER_OPERATOR_REASON,
+    Finding,
+    PlannerResult,
+    ReviewerResult,
+    WorkerResult,
+    is_false_blocker_endgame_revise,
+)
 from auto_loop.protocol import normalize_commit
 
 ReviewKind = Literal["plan", "batch", "revision", "final"]
@@ -163,6 +170,13 @@ def render_review_markdown(
         lines.append(f"- Reviewer session: `{reviewer_session_id}`")
     if reviewer.reviewed_target_ids:
         lines.append(f"- Acknowledged targets: {', '.join(reviewer.reviewed_target_ids)}")
+    if is_false_blocker_endgame_revise(
+        reviewer,
+        target=reviewer.target,
+        session_purpose=purpose or "",
+    ):
+        lines.append(f"- Handoff: {FALSE_BLOCKER_OPERATOR_REASON}")
+        lines.append("- Next: worker")
     lines.append(f"- Created at: {ts}")
     lines.append("")
     lines.extend(_format_targets(active_review, reviewer))

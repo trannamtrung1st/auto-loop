@@ -78,6 +78,48 @@ def test_reviewer_revise_requires_findings():
         )
 
 
+def test_false_blocker_endgame_matches_contracted_finding_id_only():
+    from auto_loop.models import FALSE_BLOCKER_ENDGAME_FINDING_ID, is_false_blocker_endgame_revise
+
+    finding = {
+        "id": FALSE_BLOCKER_ENDGAME_FINDING_ID,
+        "title": "Request final review",
+        "detail": "No in-scope work remains.",
+        "evidence": "task.md",
+        "required_change": "Request scope=final.",
+    }
+    revise = ReviewerResult(
+        schema_version=2,
+        actor="reviewer",
+        verdict="revise",
+        scope="batch",
+        target="blocked",
+        summary="not an external blocker",
+        findings=[finding],
+    )
+    assert is_false_blocker_endgame_revise(
+        revise, target="blocked", session_purpose="reviewer"
+    )
+    prose_only = ReviewerResult(
+        schema_version=2,
+        actor="reviewer",
+        verdict="revise",
+        scope="batch",
+        target="blocked",
+        summary="not an external blocker",
+        findings=[{**finding, "id": "f-1", "title": FALSE_BLOCKER_ENDGAME_FINDING_ID}],
+    )
+    assert not is_false_blocker_endgame_revise(
+        prose_only, target="blocked", session_purpose="reviewer"
+    )
+    assert not is_false_blocker_endgame_revise(
+        revise, target="blocked", session_purpose="plan_reviewer"
+    )
+    assert not is_false_blocker_endgame_revise(
+        revise, target="W01", session_purpose="reviewer"
+    )
+
+
 def test_complete_requires_final_scope_and_whole_task():
     with pytest.raises(ValidationError):
         ReviewerResult(
