@@ -360,6 +360,35 @@ def test_v2_state_without_history_reconciliation_field_loads():
     assert state.history_reconciliation is None
 
 
+def test_migrate_fabricated_unparsed_planner_mutation_completed_turn():
+    data = create_lifecycle("abc").model_dump(mode="json")
+    data["completed_provider_turn"] = {
+        "session_slot": "planner",
+        "role": "planner",
+        "turn": 1,
+        "session_id": "sess",
+        "result_kind": "planner",
+        "result": {
+            "schema_version": 2,
+            "actor": "planner",
+            "status": "review_requested",
+            "review": {"scope": "plan", "target": "plan", "summary": "x"},
+            "plan_summary": "(discarded: planner product mutation)",
+            "notes": [],
+        },
+        "transition_error": "Planning policy: Planner mutated product files",
+        "product_head_before": "abc123",
+        "product_changes_before": [],
+    }
+    migrated = migrate_lifecycle_data(data)
+    done = migrated["completed_provider_turn"]
+    assert done["result_parsed"] is False
+    assert done["result"] is None
+    state = LifecycleState.model_validate(migrated)
+    assert state.completed_provider_turn is not None
+    assert state.completed_provider_turn.result_parsed is False
+
+
 def test_v2_state_without_review_mutation_recovery_field_loads():
     data = create_lifecycle("abc").model_dump(mode="json")
     data.pop("review_mutation_recovery")

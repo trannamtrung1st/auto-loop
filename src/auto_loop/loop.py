@@ -849,6 +849,7 @@ class LifecycleRunner:
             turn=state.turn,
             session_id=session.session_id,
             result_kind=kind,  # type: ignore[arg-type]
+            result_parsed=True,
             result=result.model_dump(mode="json"),
             product_head_before=head_before,
             product_changes_before=changes_before,
@@ -1070,18 +1071,7 @@ class LifecycleRunner:
             turn=state.turn,
             session_id=session.session_id,
             result_kind="planner",
-            result={
-                "schema_version": 2,
-                "actor": "planner",
-                "status": "review_requested",
-                "review": {
-                    "scope": "plan",
-                    "target": "plan",
-                    "summary": "(discarded: planner product mutation)",
-                },
-                "plan_summary": "(discarded: planner product mutation)",
-                "notes": [],
-            },
+            result_parsed=False,
             transition_error=str(exc),
             product_head_before=head_before,
             product_changes_before=changes_before,
@@ -1263,7 +1253,12 @@ class LifecycleRunner:
                     "product_head_after": self._optional_head(),
                     "expected_head": state.initial_base_commit,
                     "transition_error": done.transition_error,
-                    "result_status": done.result.get("status"),
+                    "result_parsed": done.result_parsed,
+                    "result_status": (
+                        done.result.get("status")
+                        if done.result_parsed and done.result is not None
+                        else None
+                    ),
                     "message": reason,
                 },
             )
@@ -2957,6 +2952,10 @@ class LifecycleRunner:
                 return
             if is_planning_baseline_transition_error(done.transition_error):
                 self._resume_after_recorded_baseline_mismatch(state)
+                return
+            if not done.result_parsed or done.result is None:
+                if self._retry_discarded_planner_turn(state):
+                    self._planner_turn(state)
                 return
             self._transition_planner(state, PlannerResult.model_validate(done.result))
         elif done.result_kind == "worker":

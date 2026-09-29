@@ -406,6 +406,8 @@ def test_planner_mutation_blocks_protocol_repair_redispatch(tmp_path: Path):
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.completed_provider_turn is not None
+    assert state.completed_provider_turn.result_parsed is False
+    assert state.completed_provider_turn.result is None
     assert "mutated" in (state.completed_provider_turn.transition_error or "").lower()
     assert state.inflight is None or not state.inflight.output_only_protocol_repair
 
@@ -418,3 +420,11 @@ def test_planner_mutation_blocks_protocol_repair_redispatch(tmp_path: Path):
     assert state is not None
     assert state.plan_approved is True
     assert head_commit(repo) == baseline
+    discarded = [
+        event
+        for event in load_events(repo, frozen_config(repo))
+        if event.get("type") == "planner_turn_discarded"
+    ]
+    assert len(discarded) == 1
+    assert discarded[0]["result_parsed"] is False
+    assert discarded[0]["result_status"] is None

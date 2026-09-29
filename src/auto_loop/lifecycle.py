@@ -191,11 +191,14 @@ class ReviewMutationRecovery(BaseModel):
 
 
 class CompletedProviderTurn(BaseModel):
-    """Provider output that was parsed, before controller transition succeeds.
+    """Provider output captured before controller transition succeeds.
 
-    ``inflight`` means the provider call is still outstanding. This record means
-    the provider finished and the result was parsed. A later validation failure
-    keeps the record so resume does not pretend the turn never happened.
+    ``inflight`` means the provider call is still outstanding. When
+    ``result_parsed`` is true, the provider finished and protocol output was
+    parsed into ``result``. When false, the provider may have returned output
+    that was never parsed (for example product mutation detected before parse).
+    A later validation failure keeps the record so resume does not pretend the
+    turn never happened.
     """
 
     session_slot: SessionSlot
@@ -203,10 +206,19 @@ class CompletedProviderTurn(BaseModel):
     turn: int
     session_id: str | None = None
     result_kind: Literal["planner", "worker", "reviewer"]
-    result: dict[str, Any]
+    result_parsed: bool = True
+    result: dict[str, Any] | None = None
     transition_error: str | None = None
     product_head_before: str | None = None
     product_changes_before: list[list[str]] | None = None
+
+    @model_validator(mode="after")
+    def _result_parsed_consistency(self) -> CompletedProviderTurn:
+        if self.result_parsed and self.result is None:
+            raise ValueError("result is required when result_parsed is true")
+        if not self.result_parsed and self.result is not None:
+            raise ValueError("result must be omitted when result_parsed is false")
+        return self
 
 
 class ApprovedTargetEvidence(BaseModel):
@@ -463,6 +475,25 @@ def _migrate_v1_active_review(
     }
 
 
+_DISCARDED_PLANNER_MUTATION_PLAN_SUMMARY = "(discarded: planner product mutation)"
+
+
+def _migrate_completed_provider_turn(raw: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(raw)
+    if "result_parsed" in migrated:
+        return migrated
+    result = migrated.get("result")
+    if isinstance(result, dict):
+        if result.get("plan_summary") == _DISCARDED_PLANNER_MUTATION_PLAN_SUMMARY:
+            migrated["result_parsed"] = False
+            migrated["result"] = None
+        else:
+            migrated["result_parsed"] = True
+    else:
+        migrated["result_parsed"] = result is not None
+    return migrated
+
+
 def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
     """Normalize persisted lifecycle JSON to runtime schema v2."""
     version = data.get("schema_version", 1)
@@ -481,6 +512,10 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
         data.setdefault("waiting_context", None)
         data.setdefault("last_run_failure", None)
         data.setdefault("history_reconciliation", None)
+        done = data.get("completed_provider_turn")
+        if isinstance(done, dict):
+            data = dict(data)
+            data["completed_provider_turn"] = _migrate_completed_provider_turn(done)
         return data
     if version != 1:
         raise ValueError(f"Unsupported lifecycle schema_version {version}")
