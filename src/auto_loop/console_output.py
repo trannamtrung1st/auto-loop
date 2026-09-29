@@ -356,6 +356,12 @@ class RunConsole:
         value.append(f" · {_single_line(head)[:7]}", style=_META_STYLE)
         self._row("Baseline", value)
 
+    def planning_baseline_blocked(self) -> None:
+        value = Text()
+        value.append("reconciliation required", style="bold yellow")
+        value.append(" · planner not started", style=_META_STYLE)
+        self._row("Planning", value)
+
     def planner_turn_discarded(self) -> None:
         value = Text()
         value.append("discarded", style="bold yellow")

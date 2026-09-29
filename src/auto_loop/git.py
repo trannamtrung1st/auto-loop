@@ -14,26 +14,32 @@ class GitError(Exception):
 
 
 PLANNING_POLICY_PREFIX = "Planning policy violation:"
+PLANNING_BASELINE_PREFIX = "Planning baseline reconciliation required."
 
-_LEGACY_PLANNER_POLICY_MARKERS = (
-    "Planner mutated product files outside the artifact root",
+_PLANNER_MUTATION_MARKER = "Planner mutated product files outside the artifact root"
+_LEGACY_BASELINE_MARKERS = (
     "Product HEAD must remain at initial baseline before plan PASS",
     "Product working tree is not clean",
 )
 
 
-def is_planner_policy_transition_error(message: str | None) -> bool:
-    """True when a completed planner turn failed planning policy.
+def is_planner_mutation_transition_error(message: str | None) -> bool:
+    """True when the completed planner turn itself changed product Git state."""
+    return _PLANNER_MUTATION_MARKER in (message or "")
 
-    New failures use ``PLANNING_POLICY_PREFIX``. Older lifecycles stored the
-    bare invariant text; those turns are the same non-replayable failure.
+
+def is_planning_baseline_transition_error(message: str | None) -> bool:
+    """True when planning was blocked because the baseline was already invalid.
+
+    This is not planner mutation. Older builds stored the bare HEAD or dirty-tree
+    invariant on the completed turn after dispatching anyway.
     """
     text = (message or "").strip()
-    if not text:
+    if not text or is_planner_mutation_transition_error(text):
         return False
-    if text.startswith(PLANNING_POLICY_PREFIX):
+    if text.startswith(PLANNING_BASELINE_PREFIX):
         return True
-    return any(marker in text for marker in _LEGACY_PLANNER_POLICY_MARKERS)
+    return any(marker in text for marker in _LEGACY_BASELINE_MARKERS)
 
 
 class GitProtocolError(GitError):
@@ -57,12 +63,19 @@ class GitProtocolError(GitError):
         self.state_preserved = state_preserved
 
 
-class PlanningPolicyError(GitProtocolError):
-    """Planner turn changed product state or left the planning baseline.
+class PlanningBaselineError(GitProtocolError):
+    """Required planning baseline does not match the repository.
 
-    These failures are turn-local. They are not replayable transitions: resume
-    discards the completed planner turn once the repository is a valid planning
-    baseline again, and starts a fresh planner turn.
+    Raised before the planner is dispatched. The planner did not change product
+    Git state. Resume continues after the operator restores the baseline.
+    """
+
+
+class PlanningPolicyError(GitProtocolError):
+    """The planner changed product Git state during its turn.
+
+    The failure is turn-local and is not replayed. Resume discards that result
+    once the repository is a valid planning baseline again.
     """
 
 

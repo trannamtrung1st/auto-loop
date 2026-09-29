@@ -8,8 +8,9 @@ from pathlib import Path
 from auto_loop.active_review_evidence import STALE_REVIEW_REASON
 from auto_loop.config import AutoLoopConfig, load_resolved_config_optional
 from auto_loop.models import FALSE_BLOCKER_ENDGAME
-from auto_loop.git import head_commit, is_planner_policy_transition_error
+from auto_loop.git import head_commit, is_planner_mutation_transition_error
 from auto_loop.git_policy import git_usable
+from auto_loop.lifecycle import LifecycleState
 from auto_loop.manifest import RunManifestSource
 from auto_loop.paths import workspace_relative
 from auto_loop.product_state import is_product_tree_clean, product_excludes
@@ -386,7 +387,7 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
     if (
         completed is not None
         and completed.result_kind == "planner"
-        and is_planner_policy_transition_error(completed.transition_error)
+        and is_planner_mutation_transition_error(completed.transition_error)
     ):
         lines.extend(
             [
@@ -399,6 +400,18 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
         )
         if state.initial_base_commit:
             lines.append(f"expected planning HEAD: {state.initial_base_commit[:7]}")
+    elif _planning_baseline_needs_operator(repo, config, state):
+        observed = _head_label(repo, config)
+        lines.extend(
+            [
+                "",
+                "planning baseline: reconciliation required before the planner starts",
+                f"expected planning HEAD: {state.initial_base_commit[:7]}",
+                f"observed HEAD: {observed}",
+                "restore that baseline outside Auto Loop, then resume",
+                f"resume: auto-loop resume {config_rel}",
+            ]
+        )
     if completed is not None:
         if completed.transition_error:
             lines.append(
@@ -410,6 +423,23 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
                 f"provider turn completed: {completed.session_slot} turn {completed.turn}"
             )
     return "\n".join(lines)
+
+
+def _planning_baseline_needs_operator(
+    repo: Path,
+    config: AutoLoopConfig,
+    state: LifecycleState,
+) -> bool:
+    """Required planning cannot start while HEAD or the product tree is off baseline."""
+    if state.phase != "planning" or state.next_session != "planner":
+        return False
+    if config.git.mode != "required":
+        return False
+    if not state.initial_base_commit or not git_usable(repo, config):
+        return False
+    if head_commit(repo) != state.initial_base_commit:
+        return True
+    return not is_product_tree_clean(repo, excludes=product_excludes(config))
 
 
 def _head_label(repo: Path, config: AutoLoopConfig) -> str:

@@ -19,15 +19,18 @@ from auto_loop.context_manifest import validate_context
 from auto_loop.task_resources import compose_turn_resource_manifest
 from auto_loop.exits import ExitCode
 from auto_loop.git import (
+    PLANNING_BASELINE_PREFIX,
     PLANNING_POLICY_PREFIX,
     GitProtocolError,
+    PlanningBaselineError,
     PlanningPolicyError,
     ReviewRequestError,
     assert_approved_baseline_ancestry,
     format_git_protocol_error,
     head_commit,
     is_ancestor,
-    is_planner_policy_transition_error,
+    is_planner_mutation_transition_error,
+    is_planning_baseline_transition_error,
     resolve_commit,
 )
 from auto_loop.git_policy import git_usable, repository_required_error
@@ -1036,19 +1039,10 @@ class LifecycleRunner:
                 )
 
     def _assert_planning_policy(self, state: LifecycleState) -> None:
+        """Reject a planner result that changed product Git state during the turn."""
         done = state.completed_provider_turn
         if done is None:
             return
-        if self.config.git.mode == "required" and self._git_usable():
-            if head_commit(self.repo) != state.initial_base_commit:
-                raise PlanningPolicyError(
-                    f"{PLANNING_POLICY_PREFIX} Product HEAD must remain at "
-                    "initial baseline before plan PASS"
-                )
-            try:
-                assert_clean_product_tree(self.repo, excludes=self._excludes())
-            except GitProtocolError as exc:
-                raise PlanningPolicyError(f"{PLANNING_POLICY_PREFIX} {exc}") from exc
         current_head, current_changes = self._product_snapshot()
         before = done.product_changes_before
         if current_head != done.product_head_before or not product_working_fingerprints_equal(
@@ -1058,19 +1052,67 @@ class LifecycleRunner:
                 f"{PLANNING_POLICY_PREFIX} Planner mutated product files outside the artifact root"
             )
 
+    def _required_planning_baseline_ok(self, state: LifecycleState) -> bool:
+        if self.config.git.mode != "required" or not self._git_usable():
+            return True
+        expected = state.initial_base_commit
+        if not expected:
+            return False
+        try:
+            current = head_commit(self.repo)
+        except GitProtocolError:
+            return False
+        if current != expected:
+            return False
+        return is_product_tree_clean(self.repo, excludes=self._excludes())
+
+    def _raise_if_planning_baseline_blocked(self, state: LifecycleState) -> None:
+        """Stop before planner dispatch when required planning state is already invalid."""
+        if self._required_planning_baseline_ok(state):
+            return
+        observed = self._optional_head()
+        tree = "n/a"
+        if self._git_usable():
+            tree = (
+                "clean"
+                if is_product_tree_clean(self.repo, excludes=self._excludes())
+                else "dirty"
+            )
+        expected = state.initial_base_commit
+        lines = [
+            PLANNING_BASELINE_PREFIX,
+            "The planner was not started.",
+            "Product-state reconciliation happens outside the planner.",
+            f"Expected HEAD: {expected or 'n/a'}",
+            f"Observed HEAD: {observed or 'n/a'}",
+            f"Product tree: {tree}",
+            "Restore product HEAD to the expected baseline and a clean product tree, "
+            "then resume.",
+            f"Resume with: auto-loop resume {self.options.user_config_rel}",
+        ]
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "planning_baseline_blocked",
+                "lifecycle_id": state.lifecycle_id,
+                "expected_head": expected,
+                "observed_head": observed,
+                "product_tree": tree,
+            },
+        )
+        self._console.planning_baseline_blocked()
+        commits: dict[str, str] = {}
+        if expected:
+            commits["Expected"] = expected
+        if observed:
+            commits["HEAD"] = observed
+        raise PlanningBaselineError("\n".join(lines), commits=commits)
+
     def _planning_baseline_satisfied(self, state: LifecycleState) -> bool:
         """True when a fresh planner turn is allowed to start from this repository."""
         if self.config.git.mode == "required" and self._git_usable():
-            expected = state.initial_base_commit
-            if not expected:
-                return False
-            try:
-                current = head_commit(self.repo)
-            except GitProtocolError:
-                return False
-            if current != expected:
-                return False
-            return is_product_tree_clean(self.repo, excludes=self._excludes())
+            return self._required_planning_baseline_ok(state)
         done = state.completed_provider_turn
         if done is None:
             return False
@@ -1108,7 +1150,8 @@ class LifecycleRunner:
                 else "dirty"
             )
         lines = [
-            "Planning policy violation cannot be replayed.",
+            "Planner changed product Git state during planning.",
+            "That result cannot be replayed.",
             "The planner must leave product HEAD and the product tree unchanged.",
             "Product-state reconciliation happens outside the planner.",
         ]
@@ -1301,9 +1344,42 @@ class LifecycleRunner:
         if state.sessions[slot].status == "retired":
             raise GitProtocolError(f"Planning session {slot} is retired and cannot be resumed")
 
+    def _resume_after_recorded_baseline_mismatch(self, state: LifecycleState) -> None:
+        """Drop an unapplied planner result once the operator restores the baseline.
+
+        The stored error means the baseline was already invalid. It is not a
+        planner product mutation, so this does not emit ``planner_turn_discarded``.
+        """
+        if not self._required_planning_baseline_ok(state):
+            self._raise_if_planning_baseline_blocked(state)
+            return
+        done = state.completed_provider_turn
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "planning_baseline_cleared",
+                "lifecycle_id": state.lifecycle_id,
+                "turn": done.turn if done is not None else None,
+                "expected_head": state.initial_base_commit,
+                "observed_head": self._optional_head(),
+                "message": (
+                    "Previous planner result was not applied because the planning "
+                    "baseline was already invalid."
+                ),
+            },
+        )
+        state.completed_provider_turn = None
+        state.next_session = "planner"
+        state.inflight = None
+        state.updated_at = utc_now()
+        self._save_state(state)
+        self._planner_turn(state)
+
     def _planner_turn(self, state: LifecycleState) -> None:
         self._assert_planning_slot_active(state, "planner")
         while True:
+            self._raise_if_planning_baseline_blocked(state)
             product_before = self._product_snapshot()
             while True:
                 prompt = self._compose_role_turn_prompt(state, "planner")
@@ -2817,9 +2893,12 @@ class LifecycleRunner:
             return
         if done.result_kind == "planner":
             self._assert_planning_slot_active(state, "planner")
-            if is_planner_policy_transition_error(done.transition_error):
+            if is_planner_mutation_transition_error(done.transition_error):
                 if self._retry_discarded_planner_turn(state):
                     self._planner_turn(state)
+                return
+            if is_planning_baseline_transition_error(done.transition_error):
+                self._resume_after_recorded_baseline_mismatch(state)
                 return
             self._transition_planner(state, PlannerResult.model_validate(done.result))
         elif done.result_kind == "worker":
