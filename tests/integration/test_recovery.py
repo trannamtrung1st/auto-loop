@@ -4,6 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from auto_loop.exits import ExitCode
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import InflightMarker, utc_now
@@ -126,7 +127,7 @@ def test_inflight_before_provider_launch_invokes_once_without_extra_commits(tmp_
     assert head_commit(repo) == initial_head
 
 
-def test_inflight_resume_with_uncommitted_product_file_keeps_single_head(tmp_path: Path):
+def test_inflight_planner_resume_blocked_while_dirty_then_recovers(tmp_path: Path):
     repo = _repo(tmp_path)
     from auto_loop.git import head_commit
 
@@ -154,15 +155,34 @@ def test_inflight_resume_with_uncommitted_product_file_keeps_single_head(tmp_pat
     provider._inner.engine.sessions["planner"] = "planner-session-1"
     provider.set_worker_plan_request()
     provider.set_reviewer_pass("plan", "plan")
-    run_lifecycle(
+    blocked = run_lifecycle(
         repo,
         RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
         provider,
     )
+    assert blocked.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert provider.worker_prompts == []
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.inflight is not None
+    assert state.inflight.session_slot == "planner"
     assert partial.read_text(encoding="utf-8") == "in progress\n"
+    assert head_commit(repo) == initial_head
+
+    partial.unlink()
+    resumed = run_lifecycle(
+        repo,
+        RunOptions("auto", "auto", max_turns=2, max_runtime_minutes=60, verbose=False, quiet=True),
+        provider,
+    )
+    assert resumed.exit_code == ExitCode.LIMIT_REACHED
+    assert not partial.exists()
     assert head_commit(repo) == initial_head
     assert provider.worker_prompts
     assert "interrupted" in provider.worker_prompts[0].lower()
+    reloaded = load_lifecycle_state(repo)
+    assert reloaded is not None
+    assert reloaded.inflight is None
 
 
 def test_inflight_cleared_after_successful_handoff(tmp_path: Path):

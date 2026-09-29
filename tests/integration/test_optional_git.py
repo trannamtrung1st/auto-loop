@@ -109,18 +109,19 @@ def test_required_dirty_planning_is_rejected(tmp_path: Path):
     provider.set_planner_review_request()
     outcome = run_lifecycle(repo, run_opts(2), provider)
     assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert outcome.message is not None
+    assert "Planning baseline reconciliation required" in outcome.message
     state = load_lifecycle_state(repo)
     assert state is not None
     assert state.inflight is None
     assert state.next_session == "planner"
-    assert state.completed_provider_turn is not None
-    assert state.completed_provider_turn.transition_error
-    assert state.completed_provider_turn.result["status"] == "review_requested"
+    assert state.completed_provider_turn is None
+    assert len(provider.engine.invocations) == 0
     calls = len(provider.engine.invocations)
     resumed = run_lifecycle(repo, run_opts(1), provider)
     assert resumed.exit_code == ExitCode.GIT_PROTOCOL_ERROR
     assert len(provider.engine.invocations) == calls
-    assert load_lifecycle_state(repo).inflight is None
+    assert load_lifecycle_state(repo).completed_provider_turn is None
 
 
 def test_ignored_path_review_does_not_require_a_commit(tmp_path: Path):
