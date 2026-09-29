@@ -13,6 +13,29 @@ class GitError(Exception):
     """Git command or repository discovery failure."""
 
 
+PLANNING_POLICY_PREFIX = "Planning policy violation:"
+
+_LEGACY_PLANNER_POLICY_MARKERS = (
+    "Planner mutated product files outside the artifact root",
+    "Product HEAD must remain at initial baseline before plan PASS",
+    "Product working tree is not clean",
+)
+
+
+def is_planner_policy_transition_error(message: str | None) -> bool:
+    """True when a completed planner turn failed planning policy.
+
+    New failures use ``PLANNING_POLICY_PREFIX``. Older lifecycles stored the
+    bare invariant text; those turns are the same non-replayable failure.
+    """
+    text = (message or "").strip()
+    if not text:
+        return False
+    if text.startswith(PLANNING_POLICY_PREFIX):
+        return True
+    return any(marker in text for marker in _LEGACY_PLANNER_POLICY_MARKERS)
+
+
 class GitProtocolError(GitError):
     """Review range or product-state invariant violation."""
 
@@ -32,6 +55,15 @@ class GitProtocolError(GitError):
         self.paths = tuple(paths or ())
         self.details = tuple(details or ())
         self.state_preserved = state_preserved
+
+
+class PlanningPolicyError(GitProtocolError):
+    """Planner turn changed product state or left the planning baseline.
+
+    These failures are turn-local. They are not replayable transitions: resume
+    discards the completed planner turn once the repository is a valid planning
+    baseline again, and starts a fresh planner turn.
+    """
 
 
 class ReviewRequestError(GitProtocolError):

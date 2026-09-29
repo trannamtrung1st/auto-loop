@@ -19,12 +19,15 @@ from auto_loop.context_manifest import validate_context
 from auto_loop.task_resources import compose_turn_resource_manifest
 from auto_loop.exits import ExitCode
 from auto_loop.git import (
+    PLANNING_POLICY_PREFIX,
     GitProtocolError,
+    PlanningPolicyError,
     ReviewRequestError,
     assert_approved_baseline_ancestry,
     format_git_protocol_error,
     head_commit,
     is_ancestor,
+    is_planner_policy_transition_error,
     resolve_commit,
 )
 from auto_loop.git_policy import git_usable, repository_required_error
@@ -1038,16 +1041,163 @@ class LifecycleRunner:
             return
         if self.config.git.mode == "required" and self._git_usable():
             if head_commit(self.repo) != state.initial_base_commit:
-                raise GitProtocolError(
-                    "Product HEAD must remain at initial baseline before plan PASS"
+                raise PlanningPolicyError(
+                    f"{PLANNING_POLICY_PREFIX} Product HEAD must remain at "
+                    "initial baseline before plan PASS"
                 )
-            assert_clean_product_tree(self.repo, excludes=self._excludes())
+            try:
+                assert_clean_product_tree(self.repo, excludes=self._excludes())
+            except GitProtocolError as exc:
+                raise PlanningPolicyError(f"{PLANNING_POLICY_PREFIX} {exc}") from exc
         current_head, current_changes = self._product_snapshot()
         before = done.product_changes_before
         if current_head != done.product_head_before or not product_working_fingerprints_equal(
             before, current_changes
         ):
-            raise GitProtocolError("Planner mutated product files outside the artifact root")
+            raise PlanningPolicyError(
+                f"{PLANNING_POLICY_PREFIX} Planner mutated product files outside the artifact root"
+            )
+
+    def _planning_baseline_satisfied(self, state: LifecycleState) -> bool:
+        """True when a fresh planner turn is allowed to start from this repository."""
+        if self.config.git.mode == "required" and self._git_usable():
+            expected = state.initial_base_commit
+            if not expected:
+                return False
+            try:
+                current = head_commit(self.repo)
+            except GitProtocolError:
+                return False
+            if current != expected:
+                return False
+            return is_product_tree_clean(self.repo, excludes=self._excludes())
+        done = state.completed_provider_turn
+        if done is None:
+            return False
+        current_head, current_changes = self._product_snapshot()
+        return current_head == done.product_head_before and product_working_fingerprints_equal(
+            done.product_changes_before, current_changes
+        )
+
+    def _fresh_planner_turn_reason(self) -> str:
+        if self.config.git.mode == "required":
+            return (
+                "Planner turn discarded: product state changed during planning.\n"
+                "Repository is now back at the required planning baseline.\n"
+                "Starting a fresh planner turn; product Git state must remain unchanged.\n"
+                "Do not repair or revert product Git state."
+            )
+        return (
+            "Planner turn discarded: product state changed during planning.\n"
+            "Repository matches the product state from before that planner turn.\n"
+            "Starting a fresh planner turn; product Git state must remain unchanged.\n"
+            "Do not repair or revert product Git state."
+        )
+
+    def _planner_baseline_recovery_message(self, state: LifecycleState) -> str:
+        observed = None
+        try:
+            observed = self._optional_head()
+        except GitProtocolError:
+            observed = None
+        tree = "n/a"
+        if self._git_usable():
+            tree = (
+                "clean"
+                if is_product_tree_clean(self.repo, excludes=self._excludes())
+                else "dirty"
+            )
+        lines = [
+            "Planning policy violation cannot be replayed.",
+            "The planner must leave product HEAD and the product tree unchanged.",
+            "Product-state reconciliation happens outside the planner.",
+        ]
+        done = state.completed_provider_turn
+        if self.config.git.mode == "required" and state.initial_base_commit:
+            lines.append(f"Expected HEAD: {state.initial_base_commit}")
+            lines.append(f"Observed HEAD: {observed or 'n/a'}")
+            lines.append(f"Product tree: {tree}")
+            lines.append(
+                "Restore product HEAD to the expected baseline and a clean product tree, "
+                "then resume."
+            )
+        else:
+            expected = done.product_head_before if done is not None else None
+            lines.append(f"Expected product HEAD: {expected or 'n/a'}")
+            lines.append(f"Observed HEAD: {observed or 'n/a'}")
+            lines.append(f"Product tree: {tree}")
+            lines.append(
+                "Restore the product tree to its state before the failed planner turn, "
+                "then resume."
+            )
+        lines.append(f"Resume with: auto-loop resume {self.options.user_config_rel}")
+        return "\n".join(lines)
+
+    def _retry_discarded_planner_turn(self, state: LifecycleState) -> bool:
+        """Discard a non-replayable planner failure when the baseline is safe.
+
+        The discard is saved before the fresh turn is reopened. A crash in
+        between leaves no completed turn to replay; resume starts the planner again.
+
+        Returns False when the protocol-retry budget is exhausted and the run must stop.
+        """
+        if not self._planning_baseline_satisfied(state):
+            expected = state.initial_base_commit
+            observed = None
+            try:
+                observed = self._optional_head()
+            except GitProtocolError:
+                observed = None
+            commits: dict[str, str] = {}
+            if expected:
+                commits["Expected"] = expected
+            if observed:
+                commits["HEAD"] = observed
+            raise GitProtocolError(
+                self._planner_baseline_recovery_message(state),
+                commits=commits,
+            )
+        done = state.completed_provider_turn
+        reason = self._fresh_planner_turn_reason()
+        if done is not None:
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "planner_turn_discarded",
+                    "lifecycle_id": state.lifecycle_id,
+                    "turn": done.turn,
+                    "session_slot": done.session_slot,
+                    "session_id": done.session_id,
+                    "product_head_before": done.product_head_before,
+                    "product_head_after": self._optional_head(),
+                    "expected_head": state.initial_base_commit,
+                    "transition_error": done.transition_error,
+                    "result_status": done.result.get("status"),
+                    "message": reason,
+                },
+            )
+            self._console.planner_turn_discarded()
+        state.completed_provider_turn = None
+        state.next_session = "planner"
+        state.consecutive_protocol_failures += 1
+        exhausted = state.consecutive_protocol_failures > self.config.limits.protocol_retries
+        state.inflight = None
+        state.updated_at = utc_now()
+        if exhausted:
+            state.last_run_failure = ProtocolRunFailure(
+                session="planner",
+                turn=state.turn,
+                repair_reason=reason,
+            )
+            self._save_state(state)
+            self._persist_inflight(state, "planner", repair_reason=reason)
+            self._terminal_exit = ExitCode.PROTOCOL_ERROR
+            self._terminal_message = f"{reason}\nProtocol repair exhausted."
+            return False
+        self._save_state(state)
+        self._persist_inflight(state, "planner", repair_reason=reason)
+        return True
 
     def _assert_final_complete_valid(
         self,
@@ -1153,23 +1303,30 @@ class LifecycleRunner:
 
     def _planner_turn(self, state: LifecycleState) -> None:
         self._assert_planning_slot_active(state, "planner")
-        product_before = self._product_snapshot()
         while True:
-            prompt = self._compose_role_turn_prompt(state, "planner")
-            protected = capture_protected_baseline(self.repo, self.config)
-            final_text = self._invoke_slot("planner", prompt, state)
-            assert_protected_unchanged(self.repo, self.config, protected)
+            product_before = self._product_snapshot()
+            while True:
+                prompt = self._compose_role_turn_prompt(state, "planner")
+                protected = capture_protected_baseline(self.repo, self.config)
+                final_text = self._invoke_slot("planner", prompt, state)
+                assert_protected_unchanged(self.repo, self.config, protected)
+                try:
+                    result = parse_planner_result(final_text)
+                except ProtocolParseError as exc:
+                    if self._protocol_repair_or_fail(
+                        state, "planner", parse_error=exc, output_only_repair=True
+                    ):
+                        continue
+                    raise
+                break
+            self._adopt_parsed_result(state, "planner", "planner", result, product_before)
             try:
-                result = parse_planner_result(final_text)
-            except ProtocolParseError as exc:
-                if self._protocol_repair_or_fail(
-                    state, "planner", parse_error=exc, output_only_repair=True
-                ):
-                    continue
-                raise
+                self._transition_planner(state, result)
+            except PlanningPolicyError:
+                if not self._retry_discarded_planner_turn(state):
+                    return
+                continue
             break
-        self._adopt_parsed_result(state, "planner", "planner", result, product_before)
-        self._transition_planner(state, result)
         self._note_protocol_turn_success(state)
 
     def _transition_planner(self, state: LifecycleState, result: PlannerResult) -> None:
@@ -1178,6 +1335,9 @@ class LifecycleRunner:
             self._apply_planner_result(state, result)
         except ProtocolParseError as exc:
             self._reopen_provider_turn(state, "planner", repair_reason=format_protocol_repair_reason(exc))
+            raise
+        except PlanningPolicyError as exc:
+            self._note_transition_error(state, exc)
             raise
         except GitProtocolError as exc:
             self._note_transition_error(state, exc)
@@ -2657,6 +2817,10 @@ class LifecycleRunner:
             return
         if done.result_kind == "planner":
             self._assert_planning_slot_active(state, "planner")
+            if is_planner_policy_transition_error(done.transition_error):
+                if self._retry_discarded_planner_turn(state):
+                    self._planner_turn(state)
+                return
             self._transition_planner(state, PlannerResult.model_validate(done.result))
         elif done.result_kind == "worker":
             self._transition_worker(state, WorkerResult.model_validate(done.result))

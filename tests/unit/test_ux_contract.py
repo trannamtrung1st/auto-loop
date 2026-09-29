@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -467,3 +468,30 @@ def test_symlink_in_workspace_artifact_root_excluded_from_product_tree(tmp_path:
 
     (state_dir / "plan.md").write_text("plan\n", encoding="utf-8")
     assert is_product_tree_clean(repo, excludes=product_excludes(prepared.config))
+
+
+_EDIT_STATE_JSON = re.compile(
+    r"(?i)\b(?:edit|modify|change|update|hand-edit|patch|rewrite)\b[^.\n]{0,80}state\.json"
+)
+
+
+def test_recovery_copy_does_not_instruct_editing_state_json():
+    """Operator recovery tells the user to resume, not to edit runtime state."""
+    repo = Path(__file__).resolve().parents[2]
+    roots = [repo / "README.md", repo / "docs", repo / "src" / "auto_loop"]
+    files: list[Path] = []
+    for root in roots:
+        if root.is_file():
+            files.append(root)
+        else:
+            files.extend(path for path in root.rglob("*") if path.suffix in {".md", ".py"})
+    hits: list[str] = []
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for match in _EDIT_STATE_JSON.finditer(text):
+            prefix = text[max(0, match.start() - 48) : match.start()].lower()
+            if any(token in prefix for token in ("do not", "don't", "never")):
+                continue
+            rel = path.relative_to(repo)
+            hits.append(f"{rel}: {match.group(0)}")
+    assert hits == []

@@ -173,11 +173,13 @@ def _review_mutation_recovery_lines(ctx: TurnContext) -> list[str]:
             f"- HEAD: {short_sha(ctx.head_commit)}",
             "",
             "The controller did not trust or approve that change.",
-            "Inspect and reconcile the current plan and repository evidence.",
-            "If it matches the intended planning evidence, request plan review again.",
-            "If the change was unintended, restore that evidence before requesting review.",
+            "Inspect the current plan.",
+            "Product-state reconciliation must happen outside the planner.",
+            "Leave product HEAD and the product working tree unchanged.",
+            "Update only the plan, then request plan review again.",
             "Do not assume the previous plan-review verdict remains valid.",
             "Do not implement product changes.",
+            "Do not repair or revert product Git state.",
             "",
         ]
     return [
@@ -224,11 +226,13 @@ def _stale_review_recovery_lines(ctx: TurnContext, recovery: ReviewMutationRecov
             f"- HEAD: {short_sha(ctx.head_commit)}",
             "",
             "The previous plan-reviewer result, if any, is not trusted.",
-            "Inspect and reconcile the current plan and repository evidence.",
-            "If the current state is legitimate in-scope planning work, request plan review again.",
-            "If the change was unintended, repair or revert it before requesting review.",
+            "Inspect the current plan.",
+            "Product-state reconciliation must happen outside the planner.",
+            "Leave product HEAD and the product working tree unchanged.",
+            "If the current plan is the intended planning work, request plan review again.",
             "Do not assume the previous plan review remains valid.",
             "Do not implement product changes.",
+            "Do not repair or revert product Git state.",
             "",
         ]
     return [

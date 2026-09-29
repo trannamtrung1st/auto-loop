@@ -356,6 +356,15 @@ class RunConsole:
         value.append(f" · {_single_line(head)[:7]}", style=_META_STYLE)
         self._row("Baseline", value)
 
+    def planner_turn_discarded(self) -> None:
+        value = Text()
+        value.append("discarded", style="bold yellow")
+        value.append(
+            " · product baseline restored; starting a fresh planner turn",
+            style=_META_STYLE,
+        )
+        self._row("Planner", value)
+
     def baseline_reconciled(self, old: str, new: str) -> None:
         value = Text()
         value.append("reconciled", style="bold green")

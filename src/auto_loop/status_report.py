@@ -8,7 +8,7 @@ from pathlib import Path
 from auto_loop.active_review_evidence import STALE_REVIEW_REASON
 from auto_loop.config import AutoLoopConfig, load_resolved_config_optional
 from auto_loop.models import FALSE_BLOCKER_ENDGAME
-from auto_loop.git import head_commit
+from auto_loop.git import head_commit, is_planner_policy_transition_error
 from auto_loop.git_policy import git_usable
 from auto_loop.manifest import RunManifestSource
 from auto_loop.paths import workspace_relative
@@ -383,6 +383,22 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
             ]
         )
     completed = state.completed_provider_turn
+    if (
+        completed is not None
+        and completed.result_kind == "planner"
+        and is_planner_policy_transition_error(completed.transition_error)
+    ):
+        lines.extend(
+            [
+                "",
+                "planner recovery: failed planner product mutation is not replayed",
+                "resume starts a fresh planner turn when product HEAD is the planning "
+                "baseline and the product tree is clean",
+                f"resume: auto-loop resume {config_rel}",
+            ]
+        )
+        if state.initial_base_commit:
+            lines.append(f"expected planning HEAD: {state.initial_base_commit[:7]}")
     if completed is not None:
         if completed.transition_error:
             lines.append(

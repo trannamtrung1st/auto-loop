@@ -403,6 +403,9 @@ def test_plan_reviewer_mutation_returns_to_planner_until_restored(tmp_path: Path
     assert all(inv.role != "plan_reviewer" for inv in new)
     assert "previous plan-review verdict remains valid" in new[0].prompt
     assert "Do not implement product changes." in new[0].prompt
+    assert "Do not repair or revert product Git state." in new[0].prompt
+    assert "repair or revert it before" not in new[0].prompt.lower()
+    assert "Product-state reconciliation must happen outside the planner." in new[0].prompt
     assert _session_ids(repo)["planner"] == sessions["planner"]
     assert _session_ids(repo)["plan_reviewer"] == sessions["plan_reviewer"]
 
