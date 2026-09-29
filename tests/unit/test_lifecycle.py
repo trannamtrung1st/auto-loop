@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
     ReviewMutationRecovery,
     ActiveReview,
+    CompletedProviderTurn,
     LifecycleState,
     PendingRevision,
     SessionRecord,
@@ -358,6 +360,36 @@ def test_v2_state_without_history_reconciliation_field_loads():
     data.pop("history_reconciliation")
     state = LifecycleState.model_validate(migrate_lifecycle_data(data))
     assert state.history_reconciliation is None
+
+
+def test_unparsed_completed_turn_rejects_non_planner():
+    with pytest.raises(ValidationError):
+        CompletedProviderTurn(
+            session_slot="worker",
+            role="worker",
+            turn=1,
+            result_kind="worker",
+            result_parsed=False,
+            transition_error="x",
+        )
+
+
+def test_migrate_does_not_synthesize_unparsed_for_missing_worker_result():
+    data = create_lifecycle("abc").model_dump(mode="json")
+    data["completed_provider_turn"] = {
+        "session_slot": "worker",
+        "role": "worker",
+        "turn": 1,
+        "session_id": "sess",
+        "result_kind": "worker",
+        "product_head_before": "abc123",
+        "product_changes_before": [],
+    }
+    migrated = migrate_lifecycle_data(data)
+    done = migrated["completed_provider_turn"]
+    assert done.get("result_parsed") is not False
+    with pytest.raises(ValidationError):
+        LifecycleState.model_validate(migrated)
 
 
 def test_migrate_fabricated_unparsed_planner_mutation_completed_turn():

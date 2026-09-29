@@ -195,10 +195,10 @@ class CompletedProviderTurn(BaseModel):
 
     ``inflight`` means the provider call is still outstanding. When
     ``result_parsed`` is true, the provider finished and protocol output was
-    parsed into ``result``. When false, the provider may have returned output
-    that was never parsed (for example product mutation detected before parse).
-    A later validation failure keeps the record so resume does not pretend the
-    turn never happened.
+    parsed into ``result``. When false, only planner turns may omit ``result``
+    (for example product mutation detected before parse). Worker and reviewer
+    completed turns must always be parsed. A later validation failure keeps the
+    record so resume does not pretend the turn never happened.
     """
 
     session_slot: SessionSlot
@@ -216,8 +216,13 @@ class CompletedProviderTurn(BaseModel):
     def _result_parsed_consistency(self) -> CompletedProviderTurn:
         if self.result_parsed and self.result is None:
             raise ValueError("result is required when result_parsed is true")
-        if not self.result_parsed and self.result is not None:
-            raise ValueError("result must be omitted when result_parsed is false")
+        if not self.result_parsed:
+            if self.result is not None:
+                raise ValueError("result must be omitted when result_parsed is false")
+            if self.result_kind != "planner":
+                raise ValueError(
+                    "unparsed completed provider turns are currently supported only for planner"
+                )
         return self
 
 
@@ -483,14 +488,15 @@ def _migrate_completed_provider_turn(raw: dict[str, Any]) -> dict[str, Any]:
     if "result_parsed" in migrated:
         return migrated
     result = migrated.get("result")
-    if isinstance(result, dict):
-        if result.get("plan_summary") == _DISCARDED_PLANNER_MUTATION_PLAN_SUMMARY:
-            migrated["result_parsed"] = False
-            migrated["result"] = None
-        else:
-            migrated["result_parsed"] = True
-    else:
-        migrated["result_parsed"] = result is not None
+    if (
+        isinstance(result, dict)
+        and migrated.get("result_kind") == "planner"
+        and result.get("plan_summary") == _DISCARDED_PLANNER_MUTATION_PLAN_SUMMARY
+    ):
+        migrated["result_parsed"] = False
+        migrated["result"] = None
+    elif isinstance(result, dict):
+        migrated["result_parsed"] = True
     return migrated
 
 
