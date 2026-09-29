@@ -285,6 +285,25 @@ def test_legacy_unprefixed_policy_error_is_not_replayed(tmp_path: Path):
     assert "planner_turn_discarded" in _event_types(repo)
 
 
+class _MutatingMalformedPlanner(ScriptedProvider):
+    """Mutate product Git on the first planner turn, then return invalid protocol."""
+
+    def __init__(self, repo: Path) -> None:
+        super().__init__()
+        self.repo = repo
+        self.mutated = False
+
+    def invoke(self, argv: list[str]):
+        slot = os.environ.get("AUTO_LOOP_FAKE_SLOT")
+        if slot == "planner" and not self.mutated:
+            self.mutated = True
+            path = self.repo / "unexpected.txt"
+            path.write_text("drift\n", encoding="utf-8")
+            git(self.repo, "add", "unexpected.txt")
+            git(self.repo, "commit", "-m", "planner drift")
+        return super().invoke(argv)
+
+
 class _DriftingPlanner(ScriptedProvider):
     """On the first planner turn, commit product work and leave HEAD there."""
 
@@ -367,3 +386,35 @@ def test_planner_is_not_dispatched_until_planning_baseline_is_restored(tmp_path:
     assert state.phase == "execution"
     assert head_commit(repo) == baseline
     assert "planner_turn_discarded" not in _event_types(repo)
+
+
+def test_planner_mutation_blocks_protocol_repair_redispatch(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    baseline = head_commit(repo)
+    provider = _MutatingMalformedPlanner(repo)
+    provider.set_invalid_protocol_response("planner")
+    provider.set_planner_review_request()
+    provider.set_reviewer_pass("plan", "plan")
+
+    outcome = run_lifecycle(repo, run_opts(3), provider)
+    assert outcome.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert outcome.message is not None
+    assert "Planner changed product Git state during planning." in outcome.message
+    planner = [inv for inv in provider.engine.invocations if inv.role == "planner"]
+    assert len(planner) == 1
+    assert head_commit(repo) != baseline
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.completed_provider_turn is not None
+    assert "mutated" in (state.completed_provider_turn.transition_error or "").lower()
+    assert state.inflight is None or not state.inflight.output_only_protocol_repair
+
+    git(repo, "reset", "--hard", baseline)
+    start = len(provider.engine.invocations)
+    resumed = run_lifecycle(repo, run_opts(2), provider)
+    assert resumed.exit_code == ExitCode.LIMIT_REACHED
+    assert len([inv for inv in provider.engine.invocations[start:] if inv.role == "planner"]) == 1
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.plan_approved is True
+    assert head_commit(repo) == baseline

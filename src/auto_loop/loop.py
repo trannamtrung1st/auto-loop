@@ -1038,19 +1038,66 @@ class LifecycleRunner:
                     )
                 )
 
+    def _planner_product_mutation_error(self) -> PlanningPolicyError:
+        return PlanningPolicyError(
+            f"{PLANNING_POLICY_PREFIX} Planner mutated product files outside the artifact root"
+        )
+
+    def _assert_planner_attempt_product_unchanged(
+        self,
+        product_before: tuple[str | None, list[list[str]] | None],
+    ) -> None:
+        """Ensure one planner provider invocation did not change product Git state."""
+        head_before, changes_before = product_before
+        current_head, current_changes = self._product_snapshot()
+        if current_head != head_before or not product_working_fingerprints_equal(
+            changes_before, current_changes
+        ):
+            raise self._planner_product_mutation_error()
+
+    def _record_planner_product_mutation_attempt(
+        self,
+        state: LifecycleState,
+        product_before: tuple[str | None, list[list[str]] | None],
+    ) -> None:
+        """Persist a failed planner attempt when product state changed before parse."""
+        head_before, changes_before = product_before
+        session = state.sessions["planner"]
+        exc = self._planner_product_mutation_error()
+        state.completed_provider_turn = CompletedProviderTurn(
+            session_slot="planner",
+            role="planner",
+            turn=state.turn,
+            session_id=session.session_id,
+            result_kind="planner",
+            result={
+                "schema_version": 2,
+                "actor": "planner",
+                "status": "review_requested",
+                "review": {
+                    "scope": "plan",
+                    "target": "plan",
+                    "summary": "(discarded: planner product mutation)",
+                },
+                "plan_summary": "(discarded: planner product mutation)",
+                "notes": [],
+            },
+            transition_error=str(exc),
+            product_head_before=head_before,
+            product_changes_before=changes_before,
+        )
+        state.inflight = None
+        state.updated_at = utc_now()
+        self._save_state(state)
+
     def _assert_planning_policy(self, state: LifecycleState) -> None:
         """Reject a planner result that changed product Git state during the turn."""
         done = state.completed_provider_turn
         if done is None:
             return
-        current_head, current_changes = self._product_snapshot()
-        before = done.product_changes_before
-        if current_head != done.product_head_before or not product_working_fingerprints_equal(
-            before, current_changes
-        ):
-            raise PlanningPolicyError(
-                f"{PLANNING_POLICY_PREFIX} Planner mutated product files outside the artifact root"
-            )
+        self._assert_planner_attempt_product_unchanged(
+            (done.product_head_before, done.product_changes_before)
+        )
 
     def _required_planning_baseline_ok(self, state: LifecycleState) -> bool:
         if self.config.git.mode != "required" or not self._git_usable():
@@ -1381,20 +1428,31 @@ class LifecycleRunner:
         while True:
             self._raise_if_planning_baseline_blocked(state)
             product_before = self._product_snapshot()
+            attempt_parsed = False
             while True:
-                prompt = self._compose_role_turn_prompt(state, "planner")
-                protected = capture_protected_baseline(self.repo, self.config)
-                final_text = self._invoke_slot("planner", prompt, state)
-                assert_protected_unchanged(self.repo, self.config, protected)
                 try:
+                    self._assert_planner_attempt_product_unchanged(product_before)
+                    prompt = self._compose_role_turn_prompt(state, "planner")
+                    protected = capture_protected_baseline(self.repo, self.config)
+                    final_text = self._invoke_slot("planner", prompt, state)
+                    assert_protected_unchanged(self.repo, self.config, protected)
+                    self._assert_planner_attempt_product_unchanged(product_before)
                     result = parse_planner_result(final_text)
+                except PlanningPolicyError:
+                    self._record_planner_product_mutation_attempt(state, product_before)
+                    if not self._retry_discarded_planner_turn(state):
+                        return
+                    break
                 except ProtocolParseError as exc:
                     if self._protocol_repair_or_fail(
                         state, "planner", parse_error=exc, output_only_repair=True
                     ):
                         continue
                     raise
+                attempt_parsed = True
                 break
+            if not attempt_parsed:
+                continue
             self._adopt_parsed_result(state, "planner", "planner", result, product_before)
             try:
                 self._transition_planner(state, result)
