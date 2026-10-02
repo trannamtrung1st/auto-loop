@@ -173,6 +173,32 @@ class ScriptedProvider:
             },
         )
 
+    def set_worker_replan(
+        self,
+        reason: str = "The approved strategy is no longer reliable.",
+        *,
+        affected: list[str] | None = None,
+    ) -> None:
+        self.set_response(
+            "worker",
+            {
+                "schema_version": 2,
+                "actor": "worker",
+                "status": "replan_requested",
+                "review": None,
+                "replan": {
+                    "reason": reason,
+                    "evidence": ["Implementation contradicted the approved strategy."],
+                    "affected_plan_items": affected or ["P3"],
+                    "safe_to_keep": ["P1"],
+                    "suggested_direction": "Revise the affected plan items.",
+                },
+                "work_summary": reason,
+                "verification": [],
+                "notes": [],
+            },
+        )
+
     def set_worker_blocked(self, summary: str = "blocked on external dependency") -> None:
         self.set_response(
             "worker",

@@ -19,7 +19,7 @@ FALSE_BLOCKER_OPERATOR_REASON = "no genuine external blocker; final handoff requ
 Role = Literal["planner", "worker", "reviewer"]
 SessionSlot = Literal["planner", "plan_reviewer", "worker", "reviewer"]
 ReviewScope = Literal["plan", "batch", "final"]
-WorkerStatus = Literal["review_requested", "blocked", "waiting"]
+WorkerStatus = Literal["review_requested", "replan_requested", "blocked", "waiting"]
 PlannerStatus = Literal["review_requested", "blocked", "waiting"]
 ReviewerVerdict = Literal["pass", "revise", "complete", "blocked"]
 VerificationResult = Literal["pass", "fail", "not_run"]
@@ -112,6 +112,25 @@ class WaitRequest(BaseModel):
         return self
 
 
+class ReplanRequest(BaseModel):
+    """Worker evidence that the current strategy needs planning-level reconsideration.
+
+    Advisory fields other than ``reason`` do not authorize controller decisions.
+    """
+
+    reason: str
+    evidence: list[str] = Field(default_factory=list)
+    affected_plan_items: list[str] = Field(default_factory=list)
+    safe_to_keep: list[str] = Field(default_factory=list)
+    suggested_direction: str | None = None
+
+    @model_validator(mode="after")
+    def reason_required(self) -> ReplanRequest:
+        if not self.reason.strip():
+            raise ValueError("replan.reason must be non-empty")
+        return self
+
+
 class PlannerResult(BaseModel):
     schema_version: Literal[2]
     actor: Literal["planner"]
@@ -139,6 +158,7 @@ class WorkerResult(BaseModel):
     actor: Literal["worker"]
     status: WorkerStatus
     review: ReviewRequest | None = None
+    replan: ReplanRequest | None = None
     wait: WaitRequest | None = None
     work_summary: str
     verification: list[VerificationEvidence] = Field(default_factory=list)
@@ -148,6 +168,13 @@ class WorkerResult(BaseModel):
     def worker_constraints(self) -> WorkerResult:
         if self.status == "waiting" and self.wait is None:
             raise ValueError("Worker waiting requires a wait request")
+        if self.status == "replan_requested":
+            if self.replan is None:
+                raise ValueError("Worker replan_requested requires a replan request")
+            if self.review is not None:
+                raise ValueError("Worker replan_requested must not include a review request")
+        elif self.replan is not None:
+            raise ValueError("replan is only valid when status is replan_requested")
         return self
 
 

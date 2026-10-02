@@ -21,7 +21,8 @@ from auto_loop.models import (
 
 RUNTIME_SCHEMA_VERSION = 2
 LEGACY_V1_PLAN_TARGET_PATH = "__auto_loop_legacy_v1_plan__"
-LifecyclePhase = Literal["planning", "execution"]
+LifecyclePhase = Literal["planning", "execution", "replanning"]
+ReplanSource = Literal["worker", "operator"]
 SessionStatus = Literal["pending", "active", "retired", "legacy_not_created"]
 
 
@@ -57,6 +58,8 @@ class ActiveReview(BaseModel):
     plan_sha256: str | None = None
     targets: list[ActiveReviewTarget] = Field(default_factory=list)
     wait_retry_after_seconds: int | None = None
+    replan_cycle_id: str | None = None
+    replan_reason: str | None = None
 
     @property
     def has_git_target(self) -> bool:
@@ -146,6 +149,45 @@ class WaitingContext(BaseModel):
     review_target: str | None = None
     recheck_pending: bool = False
     final_recheck_only: bool = False
+
+
+class ReplanContext(BaseModel):
+    """Why execution returned to planning, plus the product snapshot that produced the evidence.
+
+    The snapshot is the replan baseline. It is not ``initial_base_commit``.
+    """
+
+    cycle_id: str
+    requested_at_turn: int
+    reason: str
+    evidence: list[str] = Field(default_factory=list)
+    affected_plan_items: list[str] = Field(default_factory=list)
+    safe_to_keep: list[str] = Field(default_factory=list)
+    suggested_direction: str | None = None
+    requested_plan_sha256: str
+    product_head: str | None = None
+    product_rows: list[list[str]] = Field(default_factory=list)
+    worker_session_id: str | None = None
+    source: ReplanSource = "worker"
+
+
+class ReplanResumeContext(BaseModel):
+    """One-shot worker context after a replan or operator plan review passes."""
+
+    cycle_id: str
+    reason: str
+    review_file: str | None = None
+    review_summary: str | None = None
+    source: ReplanSource = "worker"
+
+
+class ReplanInvalidation(BaseModel):
+    """Stale replan baseline. The worker must reconcile; the planner result is not trusted."""
+
+    cycle_id: str
+    expected_head: str | None = None
+    observed_head: str | None = None
+    message: str
 
 
 class BlockedResumeContext(BaseModel):
@@ -271,6 +313,10 @@ class LifecycleState(BaseModel):
     reviewer_retry_after_mutation: bool = False
     reviewer_fresh_inspection_required: bool = False
     history_reconciliation: HistoryReconciliation | None = None
+    replan_seq: int = 0
+    replan_context: ReplanContext | None = None
+    replan_resume: ReplanResumeContext | None = None
+    replan_invalidation: ReplanInvalidation | None = None
     started_at: datetime
     updated_at: datetime
 
@@ -392,6 +438,8 @@ def session_consistency_errors(state: LifecycleState) -> list[str]:
             errors.append("inflight role does not match session slot")
     if state.phase == "planning" and state.next_session not in ("planner", "plan_reviewer"):
         errors.append("planning phase next_session must be planner or plan_reviewer")
+    if state.phase == "replanning" and state.next_session not in ("planner", "plan_reviewer"):
+        errors.append("replanning phase next_session must be planner or plan_reviewer")
     if state.phase == "execution" and state.next_session not in ("worker", "reviewer"):
         errors.append("execution phase next_session must be worker or reviewer")
     return errors
@@ -518,6 +566,10 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
         data.setdefault("waiting_context", None)
         data.setdefault("last_run_failure", None)
         data.setdefault("history_reconciliation", None)
+        data.setdefault("replan_seq", 0)
+        data.setdefault("replan_context", None)
+        data.setdefault("replan_resume", None)
+        data.setdefault("replan_invalidation", None)
         done = data.get("completed_provider_turn")
         if isinstance(done, dict):
             data = dict(data)
@@ -596,6 +648,10 @@ def migrate_lifecycle_data(data: dict[str, Any]) -> dict[str, Any]:
     migrated.setdefault("last_blocker_fingerprint", None)
     migrated.setdefault("last_confirmed_wait_fingerprint", None)
     migrated.setdefault("waiting_context", None)
+    migrated.setdefault("replan_seq", 0)
+    migrated.setdefault("replan_context", None)
+    migrated.setdefault("replan_resume", None)
+    migrated.setdefault("replan_invalidation", None)
     return migrated
 
 

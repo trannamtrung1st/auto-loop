@@ -28,11 +28,13 @@ _RESULT_RULES: dict[Role, str] = {
 - Never emit reviewer verdict fields or worker-style whole-task completion.""",
     "worker": """\
 - Every serialized result must include schema_version=2 and actor=worker.
-- `status` is a controller handoff action, not implementation progress. It has exactly three values:
+- `status` is a controller handoff action, not implementation progress. It has exactly four values:
   - `review_requested`: work/evidence is ready for review (even when more batches remain).
+  - `replan_requested`: implementation evidence invalidates the current strategy and you cannot safely author the replacement. Include replan.reason. Do not include review.
   - `blocked`: required in-scope work remains and needs operator or other intervention that will not happen by waiting.
   - `waiting`: required in-scope work remains, and external work is already in progress. Include wait.reason.
-- Do not emit status=blocked merely because no further local work should be done.
+- Do not emit status=blocked merely because the approved plan is no longer viable or because no further local work should be done.
+- A stale or invalid plan is neither blocked nor waiting. Adapt, request scope=plan, or request replanning.
 - Re-read the frozen task.md before choosing between blocked and scope=final.
 - If every frozen-task requirement is satisfied and remaining repository work is outside the task, request scope=final.
 - Mutable plan.md, TODO files, and later roadmap milestones do not expand the frozen task.

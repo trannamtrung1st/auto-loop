@@ -62,9 +62,23 @@ Request review when the evidence you want approved is stable.
 
 After plan approval, implement one coherent batch, verify, and update the plan if needed. Request `scope=batch` with the evidence that represents the batch. Commits are required only in strict Git mode.
 
+## Plan changes during execution
+
+Do not report `blocked` merely because the approved plan is no longer viable.
+
+When implementation evidence conflicts with the plan:
+
+1. If the change is tactical, adapt and continue. No special lifecycle transition is required.
+2. If the strategy changes materially and you can confidently update it, update `plan.md` and request `scope=plan` from the execution reviewer. This does not resume the planning sessions.
+3. If planning-level reconsideration is required and you cannot safely author the replacement strategy, emit `status=replan_requested` with a non-empty `replan.reason`. Do not include a review request. The controller reactivates the planner and plan reviewer, then returns you to the same worker session.
+4. Use `blocked` only when external or operator action is genuinely required.
+5. Use `waiting` only when that external action is already underway.
+
+A bad plan is neither `blocked` nor `waiting`.
+
 ## Plan-only review
 
-For a major strategy change you may request `scope=plan` from the execution reviewer before implementing further. This does not resume the retired planning sessions.
+For a major strategy change you understand and can update yourself, request `scope=plan` from the execution reviewer before implementing further. This does not resume the retired planning sessions.
 
 ## Final review
 

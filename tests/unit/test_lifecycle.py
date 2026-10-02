@@ -10,11 +10,14 @@ from pydantic import ValidationError
 from auto_loop.git import head_commit
 from auto_loop.init_cmd import bootstrap_workspace
 from auto_loop.lifecycle import (
-    ReviewMutationRecovery,
     ActiveReview,
     CompletedProviderTurn,
     LifecycleState,
     PendingRevision,
+    ReplanContext,
+    ReplanInvalidation,
+    ReplanResumeContext,
+    ReviewMutationRecovery,
     SessionRecord,
     adopt_session_identity,
     create_lifecycle,
@@ -24,7 +27,12 @@ from auto_loop.lifecycle import (
 )
 from auto_loop.providers.cursor import SessionError
 from auto_loop.models import ActiveGitTarget, ActivePathTarget
-from auto_loop.prompts import TurnContext, build_reviewer_prompt, build_worker_prompt
+from auto_loop.prompts import (
+    TurnContext,
+    build_planner_prompt,
+    build_reviewer_prompt,
+    build_worker_prompt,
+)
 from auto_loop.review_targets import fingerprint_path
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state, state_path
 
@@ -641,3 +649,114 @@ def test_migrate_v1_unmigratable_active_review_routes_to_worker():
     state = LifecycleState.model_validate(migrated)
     assert state.active_review is None
     assert state.next_session == "worker"
+
+
+def test_migrate_v2_defaults_replan_fields():
+    state = create_lifecycle("abc")
+    data = state.model_dump(mode="json")
+    data.pop("replan_context")
+    data.pop("replan_resume")
+    data.pop("replan_invalidation")
+    data.pop("replan_seq")
+    loaded = LifecycleState.model_validate(migrate_lifecycle_data(data))
+    assert loaded.replan_context is None
+    assert loaded.replan_resume is None
+    assert loaded.replan_invalidation is None
+    assert loaded.replan_seq == 0
+
+
+def test_replanning_phase_allows_only_planning_slots():
+    state = create_lifecycle("abc")
+    state.phase = "replanning"
+    state.next_session = "planner"
+    assert session_consistency_errors(state) == []
+    state.next_session = "worker"
+    assert any("replanning" in error for error in session_consistency_errors(state))
+
+
+def test_worker_template_sends_stale_plans_to_replan_not_blocked():
+    template = (
+        Path(__file__).resolve().parents[2] / "src" / "auto_loop" / "templates" / "agents" / "worker.md"
+    ).read_text(encoding="utf-8")
+    assert "status=replan_requested" in template
+    assert "Do not report `blocked` merely because the approved plan is no longer viable." in template
+    assert "Use `blocked` only when external or operator action is genuinely required." in template
+
+
+def test_worker_prompt_distinguishes_replan_from_blocked():
+    state = create_lifecycle("abc123")
+    ctx = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="abc123",
+        product_clean=True,
+    )
+    prompt = build_worker_prompt(state, ctx)
+    assert "status=replan_requested" in prompt
+    assert "Do not report blocked merely because the approved plan is no longer viable." in prompt
+
+
+def test_replan_resume_and_invalidation_prompts():
+    state = create_lifecycle("abc123")
+    resume = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="def456",
+        product_clean=False,
+        replan_resume=ReplanResumeContext(
+            cycle_id="replan-0001",
+            reason="Revision lineage is separate from the approval baseline.",
+            review_summary="Amended plan matches the evidence.",
+        ),
+    )
+    resumed = build_worker_prompt(state, resume)
+    assert "Execution-time replanning completed." in resumed
+    assert "Revision lineage is separate" in resumed
+    invalid = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="def456",
+        product_clean=False,
+        replan_invalidation=ReplanInvalidation(
+            cycle_id="replan-0001",
+            expected_head="aaa",
+            observed_head="bbb",
+            message="Replan evidence changed while planning.\nExpected HEAD: aaa\nObserved HEAD: bbb",
+        ),
+    )
+    text = build_worker_prompt(state, invalid)
+    assert "Expected HEAD: aaa" in text
+    assert "request a new replan" in text
+
+
+def test_planner_replan_prompt_does_not_use_initial_baseline_rule():
+    state = create_lifecycle("aaa")
+    state.phase = "replanning"
+    state.last_approved_commit = "aaa"
+    ctx = TurnContext(
+        task_path=".ai/auto-loop/task.md",
+        plan_path=".ai/auto-loop/plan.md",
+        latest_review_path=None,
+        head_commit="ccc",
+        product_clean=False,
+        phase="replanning",
+        replan=ReplanContext(
+            cycle_id="replan-0001",
+            requested_at_turn=4,
+            reason="P3 assumed one commit could represent two lineages.",
+            evidence=["HEAD moved without moving the approved baseline."],
+            affected_plan_items=["P3", "P4"],
+            safe_to_keep=["P1"],
+            requested_plan_sha256="hash",
+            product_head="ccc",
+            product_rows=[["src/app.py", "M", "abc"]],
+        ),
+    )
+    prompt = build_planner_prompt(state, ctx)
+    assert "execution-time replan" in prompt
+    assert "Do not modify product files." in prompt
+    assert "Do not reset the repository to the initial planning baseline." in prompt
+    assert "P3, P4" in prompt

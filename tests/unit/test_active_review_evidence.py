@@ -93,6 +93,25 @@ def test_required_mode_dirty_tree_invalidates_matching_head(tmp_path: Path):
     assert mismatch.observed_head == head
 
 
+def test_plan_review_allows_dirty_product_tree(tmp_path: Path):
+    repo = _repo(tmp_path)
+    config = frozen_config(repo)
+    plan_path = repo / config.plan_file
+    plan_path.write_text("# plan\n", encoding="utf-8")
+    plan_hash = sha256_file(plan_path)
+    (repo / "partial.txt").write_text("partial\n", encoding="utf-8")
+    active = ActiveReview(
+        cycle_id="c1",
+        scope="plan",
+        target="plan",
+        summary="execution replan",
+        session_purpose="plan_reviewer",
+        plan_sha256=plan_hash,
+        targets=[plan_path_target(repo, config.plan_file, git_mode=config.git.mode)],
+    )
+    assert active_review_evidence_matches(repo, config, active)
+
+
 def test_waiting_adjudication_allows_dirty_product_tree(tmp_path: Path):
     repo = _repo(tmp_path)
     config = frozen_config(repo)

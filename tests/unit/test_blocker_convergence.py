@@ -177,7 +177,7 @@ def test_same_blocker_after_evidence_change_git_mode_off(tmp_path: Path):
     assert execution_reviewer_invocation_count(provider) == 2
 
 
-def test_worker_plan_update_before_repeat_blocker_gets_reviewer(tmp_path: Path):
+def test_operator_plan_edit_then_repeat_blocker_still_reaches_reviewer(tmp_path: Path):
     repo = make_repo(tmp_path)
     provider = ScriptedProvider()
     approve_plan(repo, provider)
@@ -188,6 +188,7 @@ def test_worker_plan_update_before_repeat_blocker_gets_reviewer(tmp_path: Path):
     run_lifecycle(repo, run_opts(2), provider)
     plan_path = repo / ".ai/auto-loop/plan.md"
     plan_path.write_text(plan_path.read_text(encoding="utf-8") + "\n## Worker plan tweak\n", encoding="utf-8")
+    provider.set_plan_reviewer_pass()
     provider.set_worker_blocked(summary)
     provider.set_reviewer_pass("batch", "blocked")
     outcome = run_lifecycle(repo, run_opts(4), provider)

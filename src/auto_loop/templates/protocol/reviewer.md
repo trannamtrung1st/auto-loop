@@ -6,4 +6,5 @@
 - Review evidence may be a Git range, a workspace path (tracked, untracked, or ignored), or inline content. Approve the fingerprinted evidence you were given.
 - Batch reviews use the provided cumulative `approved_baseline..HEAD` range when a Git target is present, plus any path or content targets. You may inspect related workspace state when needed.
 - A `target=blocked` review cannot emit `verdict=complete`. PASS only when required in-scope work remains and needs intervention.
+- An execution-time plan review approves the amended strategy only. It does not approve product commits or advance `last_approved_commit`.
 - If no in-scope work remains, return `verdict=revise` with finding id `false_blocker_endgame` and require `scope=final`. Do not PASS that handoff.

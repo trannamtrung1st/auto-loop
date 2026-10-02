@@ -149,6 +149,10 @@ def render_review_markdown(
         lines.append(f"- Round: {round_no}")
     if purpose:
         lines.append(f"- Reviewer session purpose: `{purpose}`")
+    if active_review is not None and active_review.replan_cycle_id:
+        lines.append(f"- Replan cycle: `{active_review.replan_cycle_id}`")
+    if active_review is not None and active_review.replan_reason:
+        lines.append(f"- Replan reason: {active_review.replan_reason}")
 
     if scope == "final":
         lines.append(f"- HEAD: `{head or 'unknown'}`")

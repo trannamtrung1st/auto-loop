@@ -21,7 +21,14 @@ def is_evidence_adjudication(active: ActiveReview) -> bool:
 
 
 def requires_clean_product_tree_for_review(active: ActiveReview) -> bool:
-    return not is_evidence_adjudication(active)
+    """Batch and final product reviews need a clean tree in required Git mode.
+
+    Plan review evidence is the plan file. Execution-time replanning freezes a
+    dirty product tree on purpose, so dirt alone must not invalidate that review.
+    """
+    if is_evidence_adjudication(active) or active.scope == "plan":
+        return False
+    return True
 
 
 @dataclass(frozen=True)

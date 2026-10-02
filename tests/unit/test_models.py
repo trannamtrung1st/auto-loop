@@ -45,6 +45,43 @@ def test_worker_result_minimal():
     assert result.actor == "worker"
 
 
+def test_worker_replan_requested_requires_reason_and_rejects_review():
+    result = WorkerResult(
+        schema_version=2,
+        actor="worker",
+        status="replan_requested",
+        replan={"reason": "The persistence assumption is false."},
+        work_summary="Need a new strategy.",
+    )
+    assert result.replan is not None
+    assert result.review is None
+    with pytest.raises(ValidationError, match="replan.reason"):
+        WorkerResult(
+            schema_version=2,
+            actor="worker",
+            status="replan_requested",
+            replan={"reason": "  "},
+            work_summary="empty",
+        )
+    with pytest.raises(ValidationError, match="must not include a review"):
+        WorkerResult(
+            schema_version=2,
+            actor="worker",
+            status="replan_requested",
+            review={"scope": "plan", "target": "plan", "summary": "nope"},
+            replan={"reason": "strategy failed"},
+            work_summary="mixed",
+        )
+    with pytest.raises(ValidationError, match="only valid when status is replan_requested"):
+        WorkerResult(
+            schema_version=2,
+            actor="worker",
+            status="blocked",
+            replan={"reason": "not a replan"},
+            work_summary="blocked",
+        )
+
+
 def test_reviewer_pass_rejects_findings():
     with pytest.raises(ValidationError, match="findings"):
         ReviewerResult(

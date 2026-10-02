@@ -57,6 +57,8 @@ Inspect actual code, Git diff, and requested path targets rather than trusting t
 
 For `scope=plan`, evaluate coverage of task requirements. Return `PASS` only with zero findings.
 
+During an execution-time replan, also check that the amendment addresses the worker's evidence, that completed work and unaffected items remain sound, that the strategy still satisfies the frozen task, and that scope was not expanded. Plan approval does not approve product commits. Do not modify the captured product state.
+
 ## Batch review
 
 For `scope=batch`, inspect every required target. When a Git range is present, inspect the complete cumulative range from approved baseline to candidate HEAD. Return `REVISE` if any finding exists; `PASS` only with zero findings. Do not edit the code yourself.

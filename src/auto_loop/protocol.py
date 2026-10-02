@@ -294,10 +294,13 @@ def _reject_implementer_forbidden_fields(data: dict[str, Any], actor: str) -> No
             )
         )
     if data.get("status") in ("complete", "pass"):
+        allowed = "review_requested, blocked, or waiting"
+        if actor == "worker":
+            allowed = "review_requested, replan_requested, blocked, or waiting"
         raise ProtocolParseError(
             ProtocolDiagnostic(
                 code=ProtocolDiagnosticCode.WORKER_FORBIDDEN_VERDICT,
-                message=f"{actor.capitalize()} status must be review_requested, blocked, or waiting",
+                message=f"{actor.capitalize()} status must be {allowed}",
                 detail=f"status={data.get('status')!r}",
             )
         )

@@ -258,8 +258,6 @@ def test_scenario_AA_worker_requests_execution_phase_plan_review(tmp_path: Path)
     approve_plan(repo, provider)
     plan_reviewer_id = load_lifecycle_state(repo).sessions["plan_reviewer"].session_id
     baseline = load_lifecycle_state(repo).last_approved_commit
-    plan = repo / ".ai/auto-loop" / "plan.md"
-    plan.write_text(plan.read_text(encoding="utf-8") + "\nexecution update\n", encoding="utf-8")
     provider.set_response("worker", _plan_update_payload())
     provider.set_reviewer_revise("plan", "plan-update", slot="reviewer")
     provider.set_response("worker", _plan_update_payload())

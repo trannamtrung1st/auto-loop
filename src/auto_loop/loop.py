@@ -45,6 +45,10 @@ from auto_loop.lifecycle import (
     LifecycleStatus,
     PendingRevision,
     ProtocolRunFailure,
+    ReplanContext,
+    ReplanInvalidation,
+    ReplanResumeContext,
+    ReplanSource,
     ReviewMutationRecovery,
     SessionSlot,
     WaitingContext,
@@ -579,6 +583,9 @@ class LifecycleRunner:
                 state.reviewer_fresh_inspection_required
                 and slot in ("reviewer", "plan_reviewer")
             ),
+            replan=state.replan_context,
+            replan_resume=state.replan_resume if slot == "worker" else None,
+            replan_invalidation=state.replan_invalidation if slot == "worker" else None,
         )
 
     def _parse_provider_attempt(
@@ -1148,6 +1155,8 @@ class LifecycleRunner:
 
     def _planning_baseline_satisfied(self, state: LifecycleState) -> bool:
         """True when a fresh planner turn is allowed to start from this repository."""
+        if state.phase == "replanning":
+            return self._replan_product_matches(state)
         if self.config.git.mode == "required" and self._git_usable():
             return self._required_planning_baseline_ok(state)
         done = state.completed_provider_turn
@@ -1158,7 +1167,14 @@ class LifecycleRunner:
             done.product_changes_before, current_changes
         )
 
-    def _fresh_planner_turn_reason(self) -> str:
+    def _fresh_planner_turn_reason(self, state: LifecycleState) -> str:
+        if state.phase == "replanning":
+            return (
+                "Planner turn discarded: product state changed during replanning.\n"
+                "Repository matches the captured replan snapshot.\n"
+                "Starting a fresh planner turn; product Git state must remain unchanged.\n"
+                "Do not repair or revert product Git state."
+            )
         if self.config.git.mode == "required":
             return (
                 "Planner turn discarded: product state changed during planning.\n"
@@ -1221,6 +1237,9 @@ class LifecycleRunner:
 
         Returns False when the protocol-retry budget is exhausted and the run must stop.
         """
+        if state.phase == "replanning" and not self._replan_product_matches(state):
+            self._invalidate_replan(state)
+            return False
         if not self._planning_baseline_satisfied(state):
             expected = state.initial_base_commit
             observed = None
@@ -1238,7 +1257,7 @@ class LifecycleRunner:
                 commits=commits,
             )
         done = state.completed_provider_turn
-        reason = self._fresh_planner_turn_reason()
+        reason = self._fresh_planner_turn_reason(state)
         if done is not None:
             append_event(
                 self.repo,
@@ -1381,7 +1400,7 @@ class LifecycleRunner:
     def _assert_planning_slot_active(self, state: LifecycleState, slot: SessionSlot) -> None:
         if slot not in ("planner", "plan_reviewer"):
             return
-        if state.phase != "planning":
+        if state.phase not in ("planning", "replanning"):
             raise GitProtocolError(f"Cannot invoke {slot} during execution phase")
         if state.sessions[slot].status == "retired":
             raise GitProtocolError(f"Planning session {slot} is retired and cannot be resumed")
@@ -1418,10 +1437,258 @@ class LifecycleRunner:
         self._save_state(state)
         self._planner_turn(state)
 
+    def _replan_product_matches(self, state: LifecycleState) -> bool:
+        ctx = state.replan_context
+        if ctx is None:
+            return False
+        head, rows = self._product_snapshot()
+        return head == ctx.product_head and product_working_fingerprints_equal(
+            ctx.product_rows, rows
+        )
+
+    def _replan_dispatch_allowed(self, state: LifecycleState) -> bool:
+        """False when a stale replan snapshot was invalidated and the planner must not start."""
+        if state.phase != "replanning":
+            return True
+        if state.replan_context is None:
+            raise GitProtocolError("Replanning requires replan context")
+        if self._replan_product_matches(state):
+            return True
+        self._invalidate_replan(state)
+        return False
+
+    def _reactivate_planning_sessions(self, state: LifecycleState) -> None:
+        for slot in ("planner", "plan_reviewer"):
+            record = state.sessions[slot]
+            if record.session_id:
+                record.status = "active"
+            elif record.status in ("retired", "legacy_not_created"):
+                record.status = "pending"
+
+    def _retire_planning_sessions(self, state: LifecycleState) -> None:
+        for slot in ("planner", "plan_reviewer"):
+            state.sessions[slot].status = "retired"
+
+    def _next_replan_id(self, state: LifecycleState) -> str:
+        state.replan_seq += 1
+        return f"replan-{state.replan_seq:04d}"
+
+    def _capture_replan_context(
+        self,
+        state: LifecycleState,
+        *,
+        reason: str,
+        evidence: list[str],
+        affected_plan_items: list[str],
+        safe_to_keep: list[str],
+        suggested_direction: str | None,
+        source: ReplanSource,
+    ) -> ReplanContext:
+        head, rows = self._product_snapshot()
+        plan_hash = self._plan_hash() or ""
+        return ReplanContext(
+            cycle_id=self._next_replan_id(state),
+            requested_at_turn=state.turn,
+            reason=reason,
+            evidence=list(evidence),
+            affected_plan_items=list(affected_plan_items),
+            safe_to_keep=list(safe_to_keep),
+            suggested_direction=suggested_direction,
+            requested_plan_sha256=plan_hash,
+            product_head=head,
+            product_rows=[list(row) for row in (rows or [])],
+            worker_session_id=state.sessions["worker"].session_id,
+            source=source,
+        )
+
+    def _enter_replanning(self, state: LifecycleState, ctx: ReplanContext, *, next_session: SessionSlot) -> None:
+        state.replan_context = ctx
+        state.replan_invalidation = None
+        state.current_plan_sha256 = ctx.requested_plan_sha256 or state.current_plan_sha256
+        self._reactivate_planning_sessions(state)
+        state.phase = "replanning"
+        state.next_session = next_session
+        state.active_review = None
+        state.pending_revision = None
+
+    def _invalidate_replan(self, state: LifecycleState) -> None:
+        ctx = state.replan_context
+        head, _rows = self._product_snapshot()
+        cycle_id = ctx.cycle_id if ctx is not None else "replan"
+        expected = ctx.product_head if ctx is not None else None
+        message = "\n".join(
+            [
+                "Replan evidence changed while planning.",
+                f"Expected HEAD: {expected or 'n/a'}",
+                f"Observed HEAD: {head or 'n/a'}",
+                "The replan request is now stale.",
+                "Reconcile current implementation state and either continue, "
+                "request plan review, or request a new replan.",
+            ]
+        )
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "replan_invalidated",
+                "lifecycle_id": state.lifecycle_id,
+                "cycle_id": cycle_id,
+                "turn": state.turn,
+                "expected_head": expected,
+                "observed_head": head,
+            },
+        )
+        self._console.replan_invalidated()
+        state.replan_invalidation = ReplanInvalidation(
+            cycle_id=cycle_id,
+            expected_head=expected,
+            observed_head=head,
+            message=message,
+        )
+        state.replan_context = None
+        state.phase = "execution"
+        state.next_session = "worker"
+        state.active_review = None
+        state.pending_revision = None
+        state.review_mutation_recovery = None
+        state.reviewer_retry_after_mutation = False
+        state.reviewer_fresh_inspection_required = False
+        self._retire_planning_sessions(state)
+        state.completed_provider_turn = None
+        state.inflight = None
+        state.updated_at = utc_now()
+        self._save_state(state)
+
+    def _clear_replan_worker_context(self, state: LifecycleState) -> None:
+        if state.replan_resume is None and state.replan_invalidation is None:
+            return
+        state.replan_resume = None
+        state.replan_invalidation = None
+
+    def _apply_worker_replan(self, state: LifecycleState, result: WorkerResult) -> None:
+        request = result.replan
+        if request is None or not request.reason.strip():
+            raise GitProtocolError("Worker replan_requested requires replan.reason")
+        existing = state.replan_context
+        if (
+            existing is not None
+            and existing.source == "worker"
+            and existing.requested_at_turn == state.turn
+        ):
+            ctx = existing
+        else:
+            ctx = self._capture_replan_context(
+                state,
+                reason=request.reason.strip(),
+                evidence=request.evidence,
+                affected_plan_items=request.affected_plan_items,
+                safe_to_keep=request.safe_to_keep,
+                suggested_direction=request.suggested_direction,
+                source="worker",
+            )
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "replan_requested",
+                    "turn": state.turn,
+                    "cycle_id": ctx.cycle_id,
+                    "reason": ctx.reason,
+                    "lifecycle_id": state.lifecycle_id,
+                },
+            )
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "replan_started",
+                    "turn": state.turn,
+                    "cycle_id": ctx.cycle_id,
+                    "lifecycle_id": state.lifecycle_id,
+                },
+            )
+        detail = ", ".join(request.affected_plan_items) or request.reason.strip()
+        self._console.replan_requested(detail)
+        self._console.replan_started(ctx.cycle_id)
+        clear_blocker_tracking(state)
+        self._revoke_waiting(state, resolved=True)
+        self._clear_review_mutation_recovery(state, "worker")
+        self._enter_replanning(state, ctx, next_session="planner")
+        self._persist_after_turn(state)
+
+    def _route_operator_plan_mutation(self, state: LifecycleState) -> bool:
+        """Route an out-of-band plan edit through plan review before the worker resumes."""
+        if state.phase != "execution" or state.next_session != "worker":
+            return False
+        if state.completed_provider_turn is not None or state.inflight is not None:
+            return False
+        if state.replan_invalidation is not None or state.replan_resume is not None:
+            return False
+        expected = state.current_plan_sha256
+        if not expected:
+            return False
+        current = self._plan_hash()
+        if current is None or current == expected:
+            return False
+        ctx = self._capture_replan_context(
+            state,
+            reason="Plan changed outside the lifecycle.",
+            evidence=[
+                f"Previous plan fingerprint: {expected}",
+                f"Current plan fingerprint: {current}",
+            ],
+            affected_plan_items=[],
+            safe_to_keep=[],
+            suggested_direction=None,
+            source="operator",
+        )
+        # The operator already authored the amendment. Review that plan, not the previous hash.
+        ctx.requested_plan_sha256 = current
+        self._enter_replanning(state, ctx, next_session="plan_reviewer")
+        state.current_plan_sha256 = expected
+        cycle_id = next_cycle_id(state)
+        state.active_review = ActiveReview(
+            cycle_id=cycle_id,
+            round=1,
+            scope="plan",
+            target="plan",
+            summary="Operator-authored plan amendment requires review before execution resumes.",
+            session_purpose="plan_reviewer",
+            plan_summary="Plan changed outside the lifecycle.",
+            plan_sha256=current,
+            targets=[
+                plan_path_target(
+                    self.repo, self.config.plan_file, git_mode=self.config.git.mode
+                )
+            ],
+        )
+        self._attach_replan_review(state, state.active_review)
+        append_event(
+            self.repo,
+            self.config,
+            {
+                "type": "operator_plan_change_detected",
+                "lifecycle_id": state.lifecycle_id,
+                "cycle_id": ctx.cycle_id,
+                "turn": state.turn,
+                "previous_plan_sha256": expected,
+                "current_plan_sha256": current,
+            },
+        )
+        self._console.operator_plan_change()
+        state.updated_at = utc_now()
+        self._save_state(state)
+        return True
+
     def _planner_turn(self, state: LifecycleState) -> None:
         self._assert_planning_slot_active(state, "planner")
+        if state.phase == "replanning":
+            self._console.replan_planner()
         while True:
-            self._raise_if_planning_baseline_blocked(state)
+            if not self._replan_dispatch_allowed(state):
+                return
+            if state.phase != "replanning":
+                self._raise_if_planning_baseline_blocked(state)
             product_before = self._product_snapshot()
             attempt_parsed = False
             while True:
@@ -1862,7 +2129,21 @@ class LifecycleRunner:
                 "lifecycle_id": state.lifecycle_id,
             },
         )
-        self._console.review_requested(result.review.scope, result.review.target)
+        note = "execution replan" if state.phase == "replanning" else None
+        if state.phase == "replanning" and state.replan_context is not None:
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "replan_review_requested",
+                    "scope": "plan",
+                    "target": result.review.target,
+                    "cycle_id": state.replan_context.cycle_id,
+                    "turn": state.turn,
+                    "lifecycle_id": state.lifecycle_id,
+                },
+            )
+        self._console.review_requested(result.review.scope, result.review.target, note=note)
         self._clear_review_mutation_recovery(state, "planner")
         cycle_id, round_no = self._planning_review_cycle(state, result.review.target)
         state.active_review = ActiveReview(
@@ -1880,8 +2161,16 @@ class LifecycleRunner:
                 )
             ],
         )
+        self._attach_replan_review(state, state.active_review)
         state.next_session = "plan_reviewer"
         self._persist_after_turn(state)
+
+    def _attach_replan_review(self, state: LifecycleState, review: ActiveReview) -> None:
+        ctx = state.replan_context
+        if state.phase != "replanning" or ctx is None:
+            return
+        review.replan_cycle_id = ctx.cycle_id
+        review.replan_reason = ctx.reason
 
     def _make_plan_update_review(self, state: LifecycleState, result: WorkerResult) -> ActiveReview:
         assert result.review is not None
@@ -1909,6 +2198,8 @@ class LifecycleRunner:
         )
 
     def _worker_turn(self, state: LifecycleState) -> None:
+        if state.replan_resume is not None:
+            self._console.worker_resumed("revised plan")
         while True:
             prompt = self._compose_role_turn_prompt(state, "worker")
             protected = capture_protected_baseline(self.repo, self.config)
@@ -1952,6 +2243,12 @@ class LifecycleRunner:
         state: LifecycleState,
         result: WorkerResult,
     ) -> None:
+        state.current_plan_sha256 = self._plan_hash()
+        self._clear_replan_worker_context(state)
+        if result.status == "replan_requested":
+            self._apply_worker_replan(state, result)
+            return
+
         if result.status == "waiting":
             self._clear_review_mutation_recovery(state, "worker")
             self._consume_false_blocker_repair(state)
@@ -2641,6 +2938,8 @@ class LifecycleRunner:
             return
         if slot == "plan_reviewer":
             self._assert_planning_slot_active(state, "plan_reviewer")
+            if not self._replan_dispatch_allowed(state):
+                return
         while True:
             prompt = self._compose_role_turn_prompt(
                 state, slot, reviewer_review=state.active_review
@@ -2783,6 +3082,9 @@ class LifecycleRunner:
         )
 
         if slot == "plan_reviewer":
+            if state.phase == "replanning":
+                self._apply_replan_review(state, result, review_rel)
+                return
             if result.verdict == "pass":
                 self._record_approved_evidence(state, active)
                 plan_hash = self._plan_hash()
@@ -2791,8 +3093,7 @@ class LifecycleRunner:
                 state.current_plan_sha256 = plan_hash
                 state.planning_completed_at = utc_now()
                 state.phase = "execution"
-                state.sessions["planner"].status = "retired"
-                state.sessions["plan_reviewer"].status = "retired"
+                self._retire_planning_sessions(state)
                 state.active_review = None
                 state.pending_revision = None
                 state.next_session = "worker"
@@ -2916,9 +3217,82 @@ class LifecycleRunner:
         state.next_session = "worker"
         self._persist_after_turn(state)
 
+    def _apply_replan_review(
+        self,
+        state: LifecycleState,
+        result: ReviewerResult,
+        review_rel: str,
+    ) -> None:
+        if not self._replan_product_matches(state):
+            self._invalidate_replan(state)
+            return
+        ctx = state.replan_context
+        if ctx is None:
+            raise GitProtocolError("Replanning requires replan context")
+        active = state.active_review
+        if result.verdict == "pass":
+            approved_head = state.last_approved_commit
+            state.current_plan_sha256 = self._plan_hash()
+            state.replan_resume = ReplanResumeContext(
+                cycle_id=ctx.cycle_id,
+                reason=ctx.reason,
+                review_file=review_rel,
+                review_summary=result.summary,
+                source=ctx.source,
+            )
+            state.replan_context = None
+            state.phase = "execution"
+            self._retire_planning_sessions(state)
+            state.active_review = None
+            state.pending_revision = None
+            state.next_session = "worker"
+            state.last_approved_commit = approved_head
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "replan_approved",
+                    "lifecycle_id": state.lifecycle_id,
+                    "cycle_id": ctx.cycle_id,
+                    "turn": state.turn,
+                    "source": ctx.source,
+                },
+            )
+            self._console.replan_approved()
+            self._persist_after_turn(state)
+            return
+        if result.verdict == "revise":
+            if active is None:
+                raise GitProtocolError("Replan review missing active review")
+            state.pending_revision = PendingRevision(
+                cycle_id=active.cycle_id,
+                scope=active.scope,
+                target=active.target,
+                round=active.round + 1,
+                finding_review_file=review_rel,
+            )
+            state.active_review = None
+            state.next_session = "planner"
+            state.phase = "replanning"
+            append_event(
+                self.repo,
+                self.config,
+                {
+                    "type": "replan_revised",
+                    "lifecycle_id": state.lifecycle_id,
+                    "cycle_id": ctx.cycle_id,
+                    "turn": state.turn,
+                },
+            )
+            self._persist_after_turn(state)
+            return
+        raise GitProtocolError(f"Unsupported replan review verdict: {result.verdict}")
+
     def _replay_reviewer_completed_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
         if slot == "plan_reviewer":
             self._assert_planning_slot_active(state, "plan_reviewer")
+            if not self._replan_dispatch_allowed(state):
+                return
         if not self._guard_active_review_before_reviewer(state, slot):
             return
         done = state.completed_provider_turn
@@ -2946,6 +3320,9 @@ class LifecycleRunner:
             return
         if done.result_kind == "planner":
             self._assert_planning_slot_active(state, "planner")
+            if state.phase == "replanning" and not self._replan_product_matches(state):
+                self._invalidate_replan(state)
+                return
             if is_planner_mutation_transition_error(done.transition_error):
                 if self._retry_discarded_planner_turn(state):
                     self._planner_turn(state)
@@ -3070,6 +3447,11 @@ class LifecycleRunner:
                     self._save_state(state)
                 state = self._reconcile_untrusted_reviewer_for_fresh_inspection(state)
                 state = self._load_state() or state
+                if state.phase == "replanning" and state.replan_context is not None:
+                    if not self._replan_product_matches(state):
+                        self._invalidate_replan(state)
+                        state = self._load_state() or state
+                        continue
                 if state.completed_provider_turn is not None and state.inflight is None:
                     done = state.completed_provider_turn
                     if done.result_kind == "reviewer" and not self._guard_active_review_before_reviewer(
@@ -3090,6 +3472,9 @@ class LifecycleRunner:
                     elif slot == "plan_reviewer":
                         self._reviewer_slot_turn(state, "plan_reviewer")
                     elif slot == "worker":
+                        if self._route_operator_plan_mutation(state):
+                            state = self._load_state() or state
+                            continue
                         self._worker_turn(state)
                     else:
                         self._reviewer_slot_turn(state, "reviewer")

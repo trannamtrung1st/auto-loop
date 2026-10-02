@@ -33,6 +33,18 @@ Write/update the plan file.
 Do not modify product implementation files.
 Do not create product commits.
 
+## Execution-time replanning
+
+When the controller reactivates you after implementation has begun, treat the turn as an amendment.
+
+Preserve valid completed work and reconsider only the portions of the plan affected by new implementation evidence.
+
+Current repository state outranks stale session assumptions.
+
+Do not modify product files. Do not reset the repository to the initial planning baseline. The captured implementation snapshot must stay unchanged.
+
+The task snapshot remains the authority. Do not expand the lifecycle beyond the frozen task.
+
 ## Revision
 
 When plan reviewer returns findings:
@@ -48,7 +60,7 @@ Emit `status=blocked` when planning cannot continue without operator interventio
 
 ## End of role
 
-When plan review passes, your planning role is finished for this lifecycle.
+When the initial plan review passes, your planning role is finished until the controller reactivates this same session for an execution-time replan.
 
 The worker will receive the approved plan in a separate session and may later update it when implementation reality changes.
 

@@ -9,6 +9,9 @@ from auto_loop.lifecycle import (
     BlockedResumeContext,
     LifecycleState,
     PendingRevision,
+    ReplanContext,
+    ReplanInvalidation,
+    ReplanResumeContext,
     ReviewMutationRecovery,
     WaitingContext,
 )
@@ -47,6 +50,9 @@ class TurnContext:
     review_mutation_recovery: ReviewMutationRecovery | None = None
     review_mutation_retry: bool = False
     reviewer_fresh_inspection_required: bool = False
+    replan: ReplanContext | None = None
+    replan_resume: ReplanResumeContext | None = None
+    replan_invalidation: ReplanInvalidation | None = None
 
 
 def _append_manifest(body: str, manifest: str) -> str:
@@ -264,6 +270,59 @@ def _stale_review_recovery_lines(ctx: TurnContext, recovery: ReviewMutationRecov
     ]
 
 
+def _replan_resume_lines(ctx: TurnContext) -> list[str]:
+    resume = ctx.replan_resume
+    if resume is None:
+        return []
+    if resume.source == "operator":
+        lines = [
+            "An operator changed the plan outside the lifecycle.",
+            "That plan was reviewed before execution resumed.",
+            "",
+            f"Reason: {resume.reason}",
+        ]
+    else:
+        lines = [
+            "Execution-time replanning completed.",
+            "",
+            f"Reason: {resume.reason}",
+        ]
+    if resume.review_summary:
+        lines.append(f"Plan review: {resume.review_summary}")
+    if resume.review_file:
+        lines.append(f"Replan review artifact: {resume.review_file}")
+    lines.extend(
+        [
+            "",
+            "The current plan has changed since your last execution turn.",
+            "Re-read:",
+            "- frozen task",
+            "- current plan",
+            "- current repository state",
+            "- replan review artifact",
+            "",
+            "Preserve valid completed work and continue from the revised plan.",
+            "",
+        ]
+    )
+    return lines
+
+
+def _replan_invalidation_lines(ctx: TurnContext) -> list[str]:
+    invalid = ctx.replan_invalidation
+    if invalid is None:
+        return []
+    return [
+        invalid.message,
+        "",
+        "The previous replan request is stale.",
+        "Reconcile the current implementation state, then either continue, "
+        "update the plan and request scope=plan, or request a new replan.",
+        "Do not treat this as an external blocker.",
+        "",
+    ]
+
+
 def _blocked_resume_lines(ctx: TurnContext) -> list[str]:
     blocked = ctx.blocked_resume
     if blocked is None:
@@ -342,22 +401,84 @@ def _false_blocker_repair_lines(ctx: TurnContext) -> list[str]:
     return lines
 
 
-def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
+def _replan_evidence_lines(replan: ReplanContext) -> list[str]:
     lines = [
-        "Continue your planner role for the planning phase.",
+        "This is an execution-time replan.",
         "",
-        "Durable state:",
-        f"- task: {ctx.task_path}",
-        f"- plan: {ctx.plan_path}",
-        f"- initial product HEAD: {state.initial_base_commit or 'n/a'}",
-        f"- current HEAD: {ctx.head_commit or 'n/a'}",
-        f"- product tree: {_tree_label(ctx)}",
-        f"- latest plan review: {_format_review_path(ctx.latest_review_path)}",
-        "- planning phase only; do not implement product changes",
+        "The initial plan was previously approved and execution has already begun.",
+        "Do not assume your earlier repository observations remain current.",
+        "Current repository state outranks stale session assumptions.",
         "",
-        "Reconcile repository/task/review evidence, update the plan, and request plan review.",
+        "Re-read:",
+        "- frozen task",
+        "- frozen task resources",
+        "- current plan",
+        "- worker replan request",
+        "- completed/approved review evidence",
+        "- current repository state",
         "",
+        "Preserve completed valid work.",
+        "Revise only what implementation evidence requires.",
+        "Do not modify product files.",
+        "Do not reset the repository to the initial planning baseline.",
+        "",
+        f"- replan cycle: {replan.cycle_id}",
+        f"- reason: {replan.reason}",
     ]
+    if replan.evidence:
+        lines.append("- evidence:")
+        lines.extend(f"  - {item}" for item in replan.evidence)
+    if replan.affected_plan_items:
+        lines.append(f"- affected plan items: {', '.join(replan.affected_plan_items)}")
+    if replan.safe_to_keep:
+        lines.append(f"- safe to keep: {', '.join(replan.safe_to_keep)}")
+    if replan.suggested_direction:
+        lines.append(f"- suggested direction: {replan.suggested_direction}")
+    lines.append(f"- product HEAD at request: {replan.product_head or 'n/a'}")
+    lines.append("")
+    return lines
+
+
+def build_planner_prompt(state: LifecycleState, ctx: TurnContext) -> str:
+    if ctx.phase == "replanning" and ctx.replan is not None:
+        lines = [
+            "Continue your planner role for this execution-time replan.",
+            "",
+            "Durable state:",
+            f"- task: {ctx.task_path}",
+            f"- plan: {ctx.plan_path}",
+            f"- initial product HEAD: {state.initial_base_commit or 'n/a'}",
+            f"- current HEAD: {ctx.head_commit or 'n/a'}",
+            f"- product tree: {_tree_label(ctx)}",
+            f"- last approved product commit: {state.last_approved_commit or 'n/a'}",
+            f"- latest plan review: {_format_review_path(ctx.latest_review_path)}",
+            "- replanning only; do not implement product changes",
+            "",
+        ]
+        lines.extend(_replan_evidence_lines(ctx.replan))
+        lines.extend(
+            [
+                "Treat this as an amendment. Preserve unaffected plan items.",
+                "Update the plan, record why the amendment was needed, and request plan review.",
+                "",
+            ]
+        )
+    else:
+        lines = [
+            "Continue your planner role for the planning phase.",
+            "",
+            "Durable state:",
+            f"- task: {ctx.task_path}",
+            f"- plan: {ctx.plan_path}",
+            f"- initial product HEAD: {state.initial_base_commit or 'n/a'}",
+            f"- current HEAD: {ctx.head_commit or 'n/a'}",
+            f"- product tree: {_tree_label(ctx)}",
+            f"- latest plan review: {_format_review_path(ctx.latest_review_path)}",
+            "- planning phase only; do not implement product changes",
+            "",
+            "Reconcile repository/task/review evidence, update the plan, and request plan review.",
+            "",
+        ]
     lines.extend(_blocked_resume_lines(ctx))
     lines.extend(_review_mutation_recovery_lines(ctx))
     lines.extend(_waiting_recheck_lines(ctx))
@@ -423,6 +544,17 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
             "- When you update the plan during implementation, do not add it to review.targets.",
             "- The controller records plan_sha256 separately.",
             "- Use scope=plan when the plan itself is the subject of review.",
+            "",
+            "When implementation evidence conflicts with the plan:",
+            "1. If the change is tactical, adapt and continue.",
+            "2. If the strategy changes materially but you can confidently update it, "
+            "update plan.md and request scope=plan.",
+            "3. If planning-level reconsideration is required and you cannot safely author "
+            "the replacement strategy, emit status=replan_requested with replan.reason. "
+            "Do not include a review request.",
+            "4. Use blocked only when external or operator action is genuinely required.",
+            "5. Use waiting only when that external action is already underway.",
+            "Do not report blocked merely because the approved plan is no longer viable.",
         ]
     )
     if ctx.pending_revision:
@@ -457,6 +589,8 @@ def build_worker_prompt(state: LifecycleState, ctx: TurnContext) -> str:
             "",
         ]
     )
+    lines.extend(_replan_resume_lines(ctx))
+    lines.extend(_replan_invalidation_lines(ctx))
     lines.extend(_blocked_resume_lines(ctx))
     lines.extend(_review_mutation_recovery_lines(ctx))
     lines.extend(_waiting_recheck_lines(ctx))
@@ -544,12 +678,35 @@ def build_reviewer_prompt(
     retry = _review_mutation_retry_lines(ctx)
     fresh = _review_fresh_inspection_lines(ctx)
     if purpose == "plan_reviewer":
-        lines = retry + fresh + [
-            "Review the current initial plan.",
-            "",
-            "This is the planning-only reviewer session.",
-            "Do not assume implementation has started.",
-            f"Read the task from the beginning (`{ctx.task_path}`).",
+        if ctx.phase == "replanning":
+            opening = [
+                "Review the amended execution strategy.",
+                "",
+                "This is an execution-time replan review, not the original planning review.",
+                "Your earlier session memory may be stale. Current lifecycle state and "
+                "repository evidence take precedence.",
+                "Check whether the amendment addresses the replan evidence, whether completed "
+                "work remains valid, whether unaffected items remain sound, and whether the "
+                "revised strategy still satisfies the frozen task without expanding scope.",
+                "Plan approval does not approve product commits.",
+                f"Read the task from the beginning (`{ctx.task_path}`).",
+            ]
+            if ctx.replan is not None:
+                opening.extend(
+                    [
+                        f"Replan cycle: {ctx.replan.cycle_id}",
+                        f"Replan reason: {ctx.replan.reason}",
+                    ]
+                )
+        else:
+            opening = [
+                "Review the current initial plan.",
+                "",
+                "This is the planning-only reviewer session.",
+                "Do not assume implementation has started.",
+                f"Read the task from the beginning (`{ctx.task_path}`).",
+            ]
+        lines = retry + fresh + opening + [
             "Inspect the repository as needed to test plan feasibility.",
             f"Review `{ctx.plan_path}` for coverage, ordering, risks, and verification.",
             "",

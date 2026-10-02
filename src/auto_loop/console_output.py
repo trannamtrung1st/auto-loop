@@ -321,13 +321,55 @@ class RunConsole:
         short = _single_line(session_id)[:8]
         self._row("Session", Text(f"{short} · {action}", style=_META_STYLE), min_level=min_level)
 
-    def review_requested(self, scope: str, target: str) -> None:
+    def review_requested(self, scope: str, target: str, *, note: str | None = None) -> None:
         value = Text()
         value.append("requested")
         shown = _review_request_target(scope, target)
         if shown:
             value.append(f" · {shown}", style=_META_STYLE)
+        if note:
+            value.append(f" · {_single_line(note)}", style=_META_STYLE)
         self._row(_review_row_label(scope), value)
+
+    def replan_requested(self, detail: str) -> None:
+        value = Text()
+        value.append("replanning requested")
+        if detail:
+            value.append(f" · {_single_line(detail)}", style=_META_STYLE)
+        self._row("Worker", value)
+
+    def replan_started(self, cycle_id: str) -> None:
+        value = Text()
+        value.append("started", style=_NEUTRAL_BOLD)
+        value.append(f" · {_single_line(cycle_id)}", style=_META_STYLE)
+        self._row("Replan", value)
+
+    def replan_planner(self) -> None:
+        self._row("Planner", Text("revising plan"))
+
+    def replan_approved(self) -> None:
+        value = Text()
+        value.append("approved", style="bold green")
+        self._row("Replan", value)
+
+    def worker_resumed(self, detail: str) -> None:
+        value = Text()
+        value.append("resumed")
+        if detail:
+            value.append(f" · {_single_line(detail)}", style=_META_STYLE)
+        self._row("Worker", value)
+
+    def operator_plan_change(self) -> None:
+        value = Text()
+        value.append("changed outside the lifecycle", style="bold yellow")
+        value.append(" · plan review required", style=_META_STYLE)
+        self._row("Plan", value)
+
+    def replan_invalidated(self) -> None:
+        value = Text()
+        value.append("stale", style="bold yellow")
+        value.append(" · worker reconciliation", style=_META_STYLE)
+        self._row("Replan", value)
 
     def review_result(
         self,

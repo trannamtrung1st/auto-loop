@@ -71,6 +71,8 @@ def _session_label(status: str, session_id: str | None) -> str:
 
 
 def _phase_label(state) -> str:
+    if state.phase == "replanning":
+        return "replanning"
     if state.next_session in ("reviewer", "plan_reviewer") or state.active_review is not None:
         return "review"
     return state.phase
@@ -103,6 +105,8 @@ def resume_phase_label(state) -> str:
         return "batch handoff"
     if scope == "batch":
         return "batch review"
+    if state.phase == "replanning":
+        return "replanning"
     if scope == "plan" or slot == "plan_reviewer":
         return "plan review"
     if state.phase == "planning":
@@ -357,6 +361,34 @@ def build_status_report(source: RunManifestSource, *, now: datetime | None = Non
                 f"protocol error: {protocol_failure.session} turn {protocol_failure.turn} · repair exhausted",
                 f"resume: auto-loop resume {config_rel}",
                 f"reason: {reason_line}",
+            ]
+        )
+    if state.phase == "replanning" and state.replan_context is not None:
+        ctx = state.replan_context
+        items = ", ".join(ctx.affected_plan_items) if ctx.affected_plan_items else "n/a"
+        product_head = ctx.product_head[:7] if ctx.product_head else "n/a"
+        lines.extend(
+            [
+                "",
+                f"Status: {state.status.value.upper()}",
+                "Phase: REPLANNING",
+                f"Requested by: {ctx.source}",
+                f"Reason: {ctx.reason}",
+                f"Affected plan items: {items}",
+                f"Product HEAD: {product_head}",
+                f"Next session: {next_session}",
+            ]
+        )
+    if state.replan_invalidation is not None:
+        invalid = state.replan_invalidation
+        lines.extend(
+            [
+                "",
+                "replan reconciliation: previous replan evidence is stale",
+                f"cycle: {invalid.cycle_id}",
+                f"expected HEAD: {invalid.expected_head[:7] if invalid.expected_head else 'n/a'}",
+                f"observed HEAD: {invalid.observed_head[:7] if invalid.observed_head else 'n/a'}",
+                "next session: worker",
             ]
         )
     if state.waiting_context is not None and state.status.value == "waiting":
