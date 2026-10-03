@@ -1110,6 +1110,12 @@ class LifecycleRunner:
             return False
         return is_product_tree_clean(self.repo, excludes=self._excludes())
 
+    def _raise_if_initial_plan_review_baseline_blocked(self, state: LifecycleState) -> None:
+        """Stop before initial plan review when product state drifted after planner handoff."""
+        if state.phase != "planning":
+            return
+        self._raise_if_planning_baseline_blocked(state)
+
     def _raise_if_planning_baseline_blocked(self, state: LifecycleState) -> None:
         """Stop before planner dispatch when required planning state is already invalid."""
         if self._required_planning_baseline_ok(state):
@@ -1123,9 +1129,14 @@ class LifecycleRunner:
                 else "dirty"
             )
         expected = state.initial_base_commit
+        blocked_slot = (
+            "plan reviewer"
+            if state.phase == "planning" and state.next_session == "plan_reviewer"
+            else "planner"
+        )
         lines = [
             PLANNING_BASELINE_PREFIX,
-            "The planner was not started.",
+            f"The {blocked_slot} was not started.",
             "Product-state reconciliation happens outside the planner.",
             f"Expected HEAD: {expected or 'n/a'}",
             f"Observed HEAD: {observed or 'n/a'}",
@@ -1622,7 +1633,7 @@ class LifecycleRunner:
             return False
         if state.completed_provider_turn is not None or state.inflight is not None:
             return False
-        if state.replan_invalidation is not None or state.replan_resume is not None:
+        if state.replan_invalidation is not None:
             return False
         expected = state.current_plan_sha256
         if not expected:
@@ -1644,6 +1655,7 @@ class LifecycleRunner:
         )
         # The operator already authored the amendment. Review that plan, not the previous hash.
         ctx.requested_plan_sha256 = current
+        state.replan_resume = None
         self._enter_replanning(state, ctx, next_session="plan_reviewer")
         state.current_plan_sha256 = expected
         cycle_id = next_cycle_id(state)
@@ -2938,7 +2950,9 @@ class LifecycleRunner:
             return
         if slot == "plan_reviewer":
             self._assert_planning_slot_active(state, "plan_reviewer")
-            if not self._replan_dispatch_allowed(state):
+            if state.phase == "planning":
+                self._raise_if_initial_plan_review_baseline_blocked(state)
+            elif not self._replan_dispatch_allowed(state):
                 return
         while True:
             prompt = self._compose_role_turn_prompt(
@@ -3086,6 +3100,7 @@ class LifecycleRunner:
                 self._apply_replan_review(state, result, review_rel)
                 return
             if result.verdict == "pass":
+                self._raise_if_initial_plan_review_baseline_blocked(state)
                 self._record_approved_evidence(state, active)
                 plan_hash = self._plan_hash()
                 state.plan_approved = True
@@ -3291,7 +3306,9 @@ class LifecycleRunner:
     def _replay_reviewer_completed_turn(self, state: LifecycleState, slot: SessionSlot) -> None:
         if slot == "plan_reviewer":
             self._assert_planning_slot_active(state, "plan_reviewer")
-            if not self._replan_dispatch_allowed(state):
+            if state.phase == "planning":
+                self._raise_if_initial_plan_review_baseline_blocked(state)
+            elif not self._replan_dispatch_allowed(state):
                 return
         if not self._guard_active_review_before_reviewer(state, slot):
             return

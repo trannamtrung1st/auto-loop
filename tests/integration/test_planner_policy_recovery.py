@@ -15,7 +15,7 @@ from auto_loop.manifest import load_run_manifest
 from auto_loop.providers.scripted import ScriptedProvider
 from auto_loop.runtime import load_lifecycle_state, save_lifecycle_state
 from auto_loop.status_report import build_status_report
-from tests.integration.scenario_harness import git, make_repo, run_lifecycle, run_opts
+from tests.integration.scenario_harness import commit_file, git, make_repo, run_lifecycle, run_opts
 from tests.repo_utils import frozen_config
 
 
@@ -428,3 +428,80 @@ def test_planner_mutation_blocks_protocol_repair_redispatch(tmp_path: Path):
     assert len(discarded) == 1
     assert discarded[0]["result_parsed"] is False
     assert discarded[0]["result_status"] is None
+
+
+def _stop_at_initial_plan_review(repo: Path, provider: ScriptedProvider) -> str:
+    provider.set_planner_review_request()
+    outcome = run_lifecycle(repo, run_opts(1), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.phase == "planning"
+    assert state.next_session == "plan_reviewer"
+    assert state.active_review is not None
+    assert state.initial_base_commit
+    return state.initial_base_commit
+
+
+def test_plan_reviewer_not_dispatched_after_external_head_drift(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    baseline = _stop_at_initial_plan_review(repo, provider)
+    commit_file(repo, "external.txt", "drift\n", "external drift")
+    start = len(provider.engine.invocations)
+    provider.set_plan_reviewer_pass()
+    blocked = run_lifecycle(repo, run_opts(2), provider)
+    assert blocked.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert blocked.message is not None
+    assert "Planning baseline reconciliation required." in blocked.message
+    assert "The plan reviewer was not started." in blocked.message
+    assert baseline in blocked.message
+    reviewers = [inv for inv in provider.engine.invocations[start:] if inv.role == "plan_reviewer"]
+    assert reviewers == []
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.plan_approved is False
+    assert state.next_session == "plan_reviewer"
+    assert "planning_baseline_blocked" in _event_types(repo)
+
+    git(repo, "reset", "--hard", baseline)
+    provider.set_plan_reviewer_pass()
+    resumed = run_lifecycle(repo, run_opts(1), provider)
+    assert resumed.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.plan_approved is True
+    assert state.phase == "execution"
+    assert head_commit(repo) == baseline
+
+
+def test_plan_reviewer_not_dispatched_when_product_tree_is_dirty(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    baseline = _stop_at_initial_plan_review(repo, provider)
+    dirty = repo / "dirty.txt"
+    dirty.write_text("uncommitted\n", encoding="utf-8")
+    start = len(provider.engine.invocations)
+    provider.set_plan_reviewer_pass()
+    blocked = run_lifecycle(repo, run_opts(2), provider)
+    assert blocked.exit_code == ExitCode.GIT_PROTOCOL_ERROR
+    assert blocked.message is not None
+    assert "Planning baseline reconciliation required." in blocked.message
+    assert "The plan reviewer was not started." in blocked.message
+    assert baseline in blocked.message
+    reviewers = [inv for inv in provider.engine.invocations[start:] if inv.role == "plan_reviewer"]
+    assert reviewers == []
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.plan_approved is False
+    assert state.next_session == "plan_reviewer"
+
+    dirty.unlink()
+    provider.set_plan_reviewer_pass()
+    resumed = run_lifecycle(repo, run_opts(1), provider)
+    assert resumed.exit_code == ExitCode.LIMIT_REACHED
+    state = load_lifecycle_state(repo)
+    assert state is not None
+    assert state.plan_approved is True
+    assert state.phase == "execution"
+    assert head_commit(repo) == baseline

@@ -586,6 +586,56 @@ def test_resume_after_replan_revise_reuses_the_planner(tmp_path: Path):
     assert _events(repo).count("replan_revised") == 1
 
 
+def test_operator_plan_edit_after_replan_pass_runs_plan_reviewer_before_worker(
+    tmp_path: Path,
+):
+    repo = make_repo(tmp_path)
+    provider = ScriptedProvider()
+    approve_plan(repo, provider)
+    approved_head = _state(repo).last_approved_commit
+    provider.set_worker_replan()
+    provider.set_planner_review_request()
+    provider.set_plan_reviewer_pass()
+    stopped = run_lifecycle(repo, run_opts(3), provider)
+    assert stopped.exit_code == ExitCode.LIMIT_REACHED
+    state = _state(repo)
+    assert state.replan_resume is not None
+    assert state.next_session == "worker"
+    plan = repo / ".ai" / "auto-loop" / "plan.md"
+    plan.write_text(
+        plan.read_text(encoding="utf-8") + "\nOperator post-replan edit.\n",
+        encoding="utf-8",
+    )
+    start = len(provider.engine.invocations)
+    provider.set_plan_reviewer_pass()
+    provider.set_response(
+        "worker",
+        {
+            "schema_version": 2,
+            "actor": "worker",
+            "status": "blocked",
+            "work_summary": "Acknowledged the operator plan amendment.",
+            "verification": [],
+            "notes": [],
+        },
+    )
+    outcome = run_lifecycle(repo, run_opts(3), provider)
+    assert outcome.exit_code == ExitCode.LIMIT_REACHED
+    reviewers = _invocations(provider, "plan_reviewer", start=start)
+    workers = _invocations(provider, "worker", start=start)
+    assert len(reviewers) == 1
+    assert len(workers) == 1
+    roles = [inv.role for inv in provider.engine.invocations[start:]]
+    assert roles.index("plan_reviewer") < roles.index("worker")
+    assert "An operator changed the plan outside the lifecycle." in workers[0].prompt
+    assert "operator_plan_change_detected" in _events(repo)
+    final = _state(repo)
+    assert final.phase == "execution"
+    assert final.replan_resume is None
+    assert final.last_approved_commit == approved_head
+    assert head_commit(repo) == approved_head
+
+
 def test_replan_without_git_preserves_the_filesystem_snapshot(tmp_path: Path):
     repo = tmp_path / "plain"
     repo.mkdir()
