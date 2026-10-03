@@ -1137,7 +1137,7 @@ class LifecycleRunner:
         lines = [
             PLANNING_BASELINE_PREFIX,
             f"The {blocked_slot} was not started.",
-            "Product-state reconciliation happens outside the planner.",
+            "Product-state reconciliation happens outside Auto Loop planning.",
             f"Expected HEAD: {expected or 'n/a'}",
             f"Observed HEAD: {observed or 'n/a'}",
             f"Product tree: {tree}",

@@ -455,6 +455,7 @@ def test_plan_reviewer_not_dispatched_after_external_head_drift(tmp_path: Path):
     assert blocked.message is not None
     assert "Planning baseline reconciliation required." in blocked.message
     assert "The plan reviewer was not started." in blocked.message
+    assert "Product-state reconciliation happens outside Auto Loop planning." in blocked.message
     assert baseline in blocked.message
     reviewers = [inv for inv in provider.engine.invocations[start:] if inv.role == "plan_reviewer"]
     assert reviewers == []
